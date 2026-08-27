@@ -162,6 +162,7 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="include\BackgroundPolicy.h" />
     <ClInclude Include="include\BackgroundRenderer.h" />
     <ClInclude Include="include\BuildInfo.h" />
     <ClInclude Include="include\blpDecoder.h" />
@@ -193,6 +194,7 @@
     <ClInclude Include="include\jarkUtils.h" />
     <ClInclude Include="include\tinyxml2.h" />
     <ClInclude Include="include\videoDecoder.h" />
+    <ClInclude Include="include\WheelInput.h" />
     <ClInclude Include="Resource.h" />
   </ItemGroup>
   <ItemGroup>

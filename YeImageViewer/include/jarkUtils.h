@@ -364,7 +364,7 @@ enum class ActionENUM:int64_t {
 
 enum class CursorPos :int {
     centerArea = 0, leftEdge, rightEdge, toolbarPrevious, toolbarNext,
-    toolbarRotateLeft, toolbarRotateRight, toolbarSetting, toolbar, centerTop,
+    toolbarRotateLeft, toolbarRotateRight, toolbarSetting, toolbar, centerTop, presentationClose,
 };
 
 enum class ShowExtraUI :int {

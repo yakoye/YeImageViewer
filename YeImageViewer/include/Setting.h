@@ -221,6 +221,25 @@ public:
             jarkUtils::overlayImg(winCanvas, GlobalVar::settingParameter.UI_LANG == 0 ? helpPageDark : helpPageDarkEN, 0, 50);
         else
             jarkUtils::overlayImg(winCanvas, GlobalVar::settingParameter.UI_LANG == 0 ? helpPage : helpPageEN, 0, 50);
+
+        static constexpr std::array<const char*, 3> wheelHintsZH{
+            "切换图片：Ctrl + 鼠标滚轮 / 窗口左右边缘 / 左右方向键",
+            "放大缩小：普通鼠标滚轮 / 上下方向键",
+            "平移图片：Shift + 鼠标滚轮上下滚动 / 鼠标拖动 / W/A/S/D 键",
+        };
+        static constexpr std::array<const char*, 3> wheelHintsEN{
+            "Switch: Ctrl + mouse wheel / left-right edges / Left-Right keys",
+            "Zoom: Mouse wheel / Up-Down keys",
+            "Panning: Shift + mouse wheel vertically / mouse drag / W-A-S-D keys",
+        };
+        const auto& hints = GlobalVar::settingParameter.UI_LANG == 0 ? wheelHintsZH : wheelHintsEN;
+        textDrawer.setSize(SettingLayout::FONT_SIZE);
+        for (std::size_t i = 0; i < SettingLayout::HELP_WHEEL_HINTS.size(); ++i) {
+            const auto& rect = SettingLayout::HELP_WHEEL_HINTS[i];
+            const cv::Rect cvRect{ rect.x, rect.y, rect.width, rect.height };
+            cv::rectangle(winCanvas, cvRect, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
+            textDrawer.putAlignLeft(winCanvas, cvRect, hints[i], GlobalVar::currentTheme.FG);
+        }
     }
 
     void refreshAboutTab() {

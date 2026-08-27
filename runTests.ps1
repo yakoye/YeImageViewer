@@ -19,7 +19,8 @@ $toolbarIcons = @(
     (Join-Path $repoRoot "YeImageViewer\file\icons\next.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\rotate-left.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\rotate-right.svg"),
-    (Join-Path $repoRoot "YeImageViewer\file\icons\settings.svg")
+    (Join-Path $repoRoot "YeImageViewer\file\icons\settings.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\close.svg")
 )
 
 if (-not $SkipBuild) {
@@ -40,7 +41,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.7.0"
+$expectedFileVersion = "1.36.9.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -128,6 +129,10 @@ public static class YeImageViewerTestNativeV1365
 
     [DllImport("user32.dll")]
     public static extern bool IsWindowEnabled(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter,
+        int x, int y, int width, int height, uint flags);
 
     [DllImport("user32.dll")]
     public static extern uint GetWindowThreadProcessId(IntPtr window, IntPtr processId);
@@ -270,6 +275,54 @@ try {
         throw "Fresh-install regression failed: framed window did not restore active mouse and keyboard interaction."
     }
     Write-Host "PASS background click restores an active, enabled framed window."
+
+    # WM_MOUSEWHEEL packs modifier flags in the low word and the signed wheel
+    # delta in the high word. Keep the cursor in the image area so an
+    # unmodified wheel exercises the normal zoom path.
+    $freshFramedCenterX = [int]($freshFramedWidth / 2)
+    $freshFramedCenterY = [int]($freshFramedHeight / 2)
+    $freshFramedCenterPosition = [IntPtr](($freshFramedCenterY -shl 16) -bor ($freshFramedCenterX -band 0xFFFF))
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $freshWindow, 0x0200, [UIntPtr]::Zero, $freshFramedCenterPosition)
+
+    $wheelStartTitle = New-Object Text.StringBuilder 2048
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $freshWindow, $wheelStartTitle, $wheelStartTitle.Capacity)
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $freshWindow, 0x020A, [UIntPtr][uint64]4287102984, $freshFramedCenterPosition)
+    Start-Sleep -Milliseconds 700
+    $wheelNextTitle = New-Object Text.StringBuilder 2048
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $freshWindow, $wheelNextTitle, $wheelNextTitle.Capacity)
+    if ($wheelNextTitle.ToString() -eq $wheelStartTitle.ToString()) {
+        throw "Wheel regression failed: Ctrl + wheel down did not switch to the next image."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $freshWindow, 0x020A, [UIntPtr][uint64]0x00780008, $freshFramedCenterPosition)
+    Start-Sleep -Milliseconds 700
+    $wheelReturnedTitle = New-Object Text.StringBuilder 2048
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $freshWindow, $wheelReturnedTitle, $wheelReturnedTitle.Capacity)
+    if ($wheelReturnedTitle.ToString() -ne $wheelStartTitle.ToString()) {
+        throw "Wheel regression failed: Ctrl + wheel up did not return to the previous image."
+    }
+
+    $wheelInitialZoom = [regex]::Match($wheelReturnedTitle.ToString(), '(\d+)%')
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $freshWindow, 0x020A, [UIntPtr][uint64]0x00780000, $freshFramedCenterPosition)
+    Start-Sleep -Milliseconds 350
+    $wheelZoomTitle = New-Object Text.StringBuilder 2048
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $freshWindow, $wheelZoomTitle, $wheelZoomTitle.Capacity)
+    $wheelChangedZoom = [regex]::Match($wheelZoomTitle.ToString(), '(\d+)%')
+    if (-not $wheelInitialZoom.Success -or -not $wheelChangedZoom.Success -or
+        $wheelChangedZoom.Groups[1].Value -eq $wheelInitialZoom.Groups[1].Value) {
+        throw "Wheel regression failed: ordinary wheel no longer zooms the current image."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $freshWindow, 0x020A, [UIntPtr][uint64]4287102976, $freshFramedCenterPosition)
+    Start-Sleep -Milliseconds 350
+    Write-Host "PASS Ctrl + wheel switches images and ordinary wheel keeps zooming."
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0100, [UIntPtr]0x27, [IntPtr]::Zero)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0101, [UIntPtr]0x27, [IntPtr]::Zero)
@@ -462,14 +515,18 @@ try {
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0112, [UIntPtr]0xF030, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 250
-    if (-not [YeImageViewerTestNativeV1365]::IsZoomed($window)) {
-        throw "Escape regression failed: test window did not maximize."
+    $maximizePresentationStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64()
+    if (($maximizePresentationStyle -band 0x00C00000) -ne 0 -or
+        [YeImageViewerTestNativeV1365]::IsZoomed($window)) {
+        throw "Presentation regression failed: maximize did not enter borderless presentation mode."
     }
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 250
+    $maximizeRestoredStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64()
     $viewerProcess.Refresh()
-    if ($viewerProcess.HasExited -or [YeImageViewerTestNativeV1365]::IsZoomed($window)) {
-        throw "Escape regression failed: Escape did not restore the maximized window."
+    if ($viewerProcess.HasExited -or ($maximizeRestoredStyle -band 0x00C00000) -eq 0 -or
+        [YeImageViewerTestNativeV1365]::IsZoomed($window)) {
+        throw "Presentation regression failed: Escape did not restore the pre-presentation frame."
     }
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
@@ -478,7 +535,7 @@ try {
     if ($viewerProcess.HasExited -or -not $viewerProcess.Responding) {
         throw "Escape regression failed: default Escape preference closed the normal window."
     }
-    Write-Host "PASS Escape restores fullscreen/maximized states and does not close by default."
+    Write-Host "PASS maximize enters presentation and Escape restores the framed window."
 
     $clientRect = New-Object YeImageViewerTestNativeV1365+RECT
     [void][YeImageViewerTestNativeV1365]::GetClientRect($window, [ref]$clientRect)
@@ -508,6 +565,52 @@ try {
         throw "Overlay regression failed: bottom toolbar hover was not responsive."
     }
     Write-Host "PASS compact bottom toolbar hover remains responsive."
+
+    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0112, [UIntPtr]0xF030, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 300
+    $presentationAfterMaximize = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64()
+    if (($presentationAfterMaximize -band 0x00C00000) -ne 0) {
+        throw "Presentation overlay regression failed: maximize did not re-enter presentation."
+    }
+
+    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0111, [UIntPtr]1010, [IntPtr]::Zero)
+    $settingDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $presentationSettingWindow = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$viewerProcess.Id, "YeImageViewerSettingWnd")
+    } while ($presentationSettingWindow -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $settingDeadline)
+    if ($presentationSettingWindow -eq [IntPtr]::Zero) {
+        throw "Presentation overlay regression failed: Settings did not open over presentation."
+    }
+    [void][YeImageViewerTestNativeV1365]::SetWindowPos(
+        $presentationSettingWindow, [IntPtr]::Zero, 80, 80, 0, 0, 0x0015)
+    [void][YeImageViewerTestNativeV1365]::SetWindowPos(
+        $presentationSettingWindow, [IntPtr]::Zero, 420, 180, 0, 0, 0x0015)
+    Start-Sleep -Milliseconds 300
+    $viewerProcess.Refresh()
+    $styleAfterSettingMove = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64()
+    if ($viewerProcess.HasExited -or -not $viewerProcess.Responding -or
+        ($styleAfterSettingMove -band 0x00C00000) -ne 0) {
+        throw "Presentation overlay regression failed after moving Settings over the image."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $presentationSettingWindow, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
+    Write-Host "PASS moving Settings over the image keeps presentation stable."
+
+    $presentationClientRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($window, [ref]$presentationClientRect)
+    $presentationWidth = $presentationClientRect.Right - $presentationClientRect.Left
+    $closeX = $presentationWidth - 12 - 21
+    $closeY = 12 + 21
+    $closePosition = [IntPtr](($closeY -shl 16) -bor ($closeX -band 0xFFFF))
+    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0200, [UIntPtr]::Zero, $closePosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0201, [UIntPtr]1, $closePosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0202, [UIntPtr]0, $closePosition)
+    if (-not $viewerProcess.WaitForExit(3000)) {
+        throw "Presentation close regression failed: persistent close button did not exit."
+    }
+    Write-Host "PASS persistent presentation close button exits cleanly."
 }
 finally {
     if ($viewerProcess -and -not $viewerProcess.HasExited) {

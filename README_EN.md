@@ -13,7 +13,7 @@
 
 **YeImageViewer** is a minimal, fast native Windows image viewer. It supports common still images, animations, RAW files, iOS Live Photos, and Android Motion Photos, together with EXIF display, printing, simple editing, and file associations.
 
-Current version: **v1.36.7** · [Changelog](CHANGELOG.md)
+Current version: **v1.36.9** · [Changelog](CHANGELOG.md)
 
 This project is based on [JarkViewer](https://github.com/jark006/JarkViewer) and is licensed under GNU GPL v3. Thanks to upstream author JARK006 and all contributors.
 
@@ -21,10 +21,10 @@ This project is based on [JarkViewer](https://github.com/jark006/JarkViewer) and
 
 ## Controls
 
-1. Switch images: click or scroll at the left/right edge, or press `Left` / `Right`
-2. Zoom: scroll in the window center, or press `Up` / `Down`
+1. Switch images: use `Ctrl + mouse wheel`, click or scroll at the left/right edge, or press `Left` / `Right`
+2. Zoom: use the unmodified mouse wheel, or press `Up` / `Down`
 3. Rotate: use the bottom-right toolbar, or press `Q` / `E`
-4. Pan: drag with the mouse, or press `W` / `A` / `S` / `D`
+4. Pan: use `Shift + mouse wheel` vertically, drag with the mouse, or press `W` / `A` / `S` / `D`
 5. Image information: click the mouse wheel, or press `Tab` / `I`
 6. Fullscreen: double-click, or press `F` / `F11`
 7. Copy image: `Ctrl + C`

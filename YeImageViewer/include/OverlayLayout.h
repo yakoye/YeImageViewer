@@ -8,6 +8,8 @@ inline constexpr int TOOLBAR_RIGHT_MARGIN = 8;
 inline constexpr int TOOLBAR_BOTTOM_MARGIN = 6;
 inline constexpr int TOOLBAR_REVEAL_PADDING = 10;
 inline constexpr int EDGE_HIT_WIDTH = 50;
+inline constexpr int PRESENTATION_CLOSE_SIZE = 42;
+inline constexpr int PRESENTATION_CLOSE_MARGIN = 12;
 
 struct Rect {
     int x = 0;
@@ -31,7 +33,17 @@ enum class Hit {
     RotateRight,
     Settings,
     Toolbar,
+    PresentationClose,
 };
+
+constexpr Rect presentationCloseRect(int canvasWidth, int) {
+    return {
+        canvasWidth - PRESENTATION_CLOSE_MARGIN - PRESENTATION_CLOSE_SIZE,
+        PRESENTATION_CLOSE_MARGIN,
+        PRESENTATION_CLOSE_SIZE,
+        PRESENTATION_CLOSE_SIZE,
+    };
+}
 
 constexpr int toolbarWidth() {
     return ICON_SIZE * 5 + TOOLBAR_GAP * 4;
@@ -96,6 +108,7 @@ constexpr Rect nextImageIconRect(int canvasWidth, int canvasHeight) {
 constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y) {
     if (canvasWidth < 100 || canvasHeight < 100) return Hit::None;
 
+    if (presentationCloseRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::PresentationClose;
     if (toolbarPreviousRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ToolbarPreviousImage;
     if (toolbarNextRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ToolbarNextImage;
     if (rotateLeftRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::RotateLeft;

@@ -1,6 +1,7 @@
 #include "MotionPhotoUtils.h"
 #include "MonitorPlacement.h"
 #include "BackgroundRenderer.h"
+#include "BackgroundPolicy.h"
 #include "EscapeBehavior.h"
 #include "ImageInterpolation.h"
 #include "InitialWindowLayout.h"
@@ -8,6 +9,7 @@
 #include "OverlayLayout.h"
 #include "RotationStore.h"
 #include "SettingLayout.h"
+#include "WheelInput.h"
 #include "StbImageDecoder.h"
 #include "SvgRenderer.h"
 
@@ -238,6 +240,16 @@ void expectBackgroundRendering() {
         BackgroundRenderer::compositeBgra(halfTransparentColor,
             BackgroundMode::Black, false, 0, 0,
             theme, darkGrid, lightGrid) == 0xFF402010u);
+    passOrFail("presentation canvas always requests frosted glass",
+        BackgroundPolicy::canvasMode(true, BackgroundMode::White) == BackgroundMode::FrostedGlass &&
+        BackgroundPolicy::requestsFrostedGlass(true, BackgroundMode::Black));
+    passOrFail("configured background only changes the image area during presentation",
+        BackgroundPolicy::imageAreaMode(BackgroundMode::White) == BackgroundMode::White &&
+        BackgroundPolicy::imageAreaMode(BackgroundMode::Black) == BackgroundMode::Black &&
+        BackgroundPolicy::canvasMode(false, BackgroundMode::Transparent) == BackgroundMode::Transparent);
+    passOrFail("presentation tint is stable and normal fallback stays opaque",
+        BackgroundPolicy::presentationCanvasPixel(true, theme) == BackgroundPolicy::PRESENTATION_TINT &&
+        BackgroundPolicy::presentationCanvasPixel(false, theme) == theme);
 }
 
 void expectOverlayLayout() {
@@ -250,6 +262,7 @@ void expectOverlayLayout() {
     constexpr auto settings = OverlayLayout::settingsRect(width, height);
     constexpr auto previous = OverlayLayout::previousImageIconRect(width, height);
     constexpr auto next = OverlayLayout::nextImageIconRect(width, height);
+    constexpr auto close = OverlayLayout::presentationCloseRect(width, height);
 
     passOrFail("bottom toolbar uses five equal compact icons",
         OverlayLayout::ICON_SIZE == 30 &&
@@ -279,6 +292,9 @@ void expectOverlayLayout() {
     passOrFail("wide previous and next edge hit areas are preserved",
         OverlayLayout::hitTest(width, height, 40, 300) == OverlayLayout::Hit::EdgePreviousImage &&
         OverlayLayout::hitTest(width, height, 760, 300) == OverlayLayout::Hit::EdgeNextImage);
+    passOrFail("presentation close button stays in the upper-right corner",
+        close.x == 746 && close.y == 12 && close.width == 42 && close.height == 42 &&
+        OverlayLayout::hitTest(width, height, 767, 33) == OverlayLayout::Hit::PresentationClose);
 }
 
 void expectInitialWindowLayout() {
@@ -383,7 +399,7 @@ void expectMonitorPlacement() {
 }
 
 void expectToolbarIcons(const std::vector<std::string>& paths) {
-    bool allValid = paths.size() == 5;
+    bool allValid = paths.size() == 6;
     for (const auto& path : paths) {
         const auto source = readFile(path);
         const auto renderer = SvgRenderer::create(source);
@@ -402,7 +418,7 @@ void expectToolbarIcons(const std::vector<std::string>& paths) {
         allValid = allValid && bitmap.width == 30 && bitmap.height == 30 &&
             visiblePixels > 400 && lightPixels > 10;
     }
-    passOrFail("all five IconPark toolbar SVG resources render at the common size", allValid);
+    passOrFail("all six IconPark overlay SVG resources render correctly", allValid);
 }
 
 void expectRotationPersistence() {
@@ -466,6 +482,28 @@ void expectSettingLayout() {
         SettingLayout::GENERAL_CHECK_BOXES.back().y +
             SettingLayout::GENERAL_CHECK_BOXES.back().height <
             SettingLayout::GENERAL_RADIOS.front().y);
+    passOrFail("wheel shortcut help rows remain separated inside the settings canvas",
+        SettingLayout::helpWheelHintsAreSeparated());
+}
+
+void expectWheelInput() {
+    constexpr int panStep = 96;
+    passOrFail("ordinary wheel keeps the existing context-sensitive behavior",
+        WheelInput::resolve(0, 120, panStep).intent == WheelInput::Intent::Default &&
+        WheelInput::resolve(0, -120, panStep).intent == WheelInput::Intent::Default);
+    passOrFail("Shift wheel pans a tall image vertically in both directions",
+        WheelInput::resolve(WheelInput::SHIFT_FLAG, 120, panStep).intent == WheelInput::Intent::PanVertical &&
+        WheelInput::resolve(WheelInput::SHIFT_FLAG, 120, panStep).verticalDelta == panStep &&
+        WheelInput::resolve(WheelInput::SHIFT_FLAG, -120, panStep).verticalDelta == -panStep);
+    passOrFail("Ctrl wheel switches to previous or next image",
+        WheelInput::resolve(WheelInput::CONTROL_FLAG, 120, panStep).intent == WheelInput::Intent::PreviousImage &&
+        WheelInput::resolve(WheelInput::CONTROL_FLAG, -120, panStep).intent == WheelInput::Intent::NextImage);
+    passOrFail("Ctrl takes priority when Ctrl and Shift are both held",
+        WheelInput::resolve(WheelInput::CONTROL_FLAG | WheelInput::SHIFT_FLAG, 120, panStep).intent ==
+            WheelInput::Intent::PreviousImage);
+    passOrFail("zero wheel delta does not enqueue an action",
+        WheelInput::resolve(WheelInput::CONTROL_FLAG | WheelInput::SHIFT_FLAG, 0, panStep).intent ==
+            WheelInput::Intent::Default);
 }
 
 void expectDrawioTextFallback(std::string_view path) {
@@ -549,6 +587,7 @@ int main(int argc, char* argv[]) {
     expectMonitorPlacement();
     expectEscapeBehavior();
     expectSettingLayout();
+    expectWheelInput();
     expectRotationPersistence();
     if (argc >= 2) {
         expectRealHdrChannelOrder(argv[1]);
@@ -565,8 +604,8 @@ int main(int argc, char* argv[]) {
         failedTests += 4;
         std::cerr << "FAIL SVG regression fixture paths were not provided\n";
     }
-    if (argc >= 9) {
-        expectToolbarIcons({ argv[4], argv[5], argv[6], argv[7], argv[8] });
+    if (argc >= 10) {
+        expectToolbarIcons({ argv[4], argv[5], argv[6], argv[7], argv[8], argv[9] });
     }
     else {
         ++failedTests;

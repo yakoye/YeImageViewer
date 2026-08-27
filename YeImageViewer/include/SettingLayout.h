@@ -35,6 +35,15 @@ inline constexpr std::array<Rect, 4> GENERAL_RADIOS{
     Rect{ 50, 552, 480, 44 },
 };
 
+// The help artwork contains the original wheel rows. These rectangles cover
+// only their text, retaining the icons while allowing the live shortcut text
+// to describe modifier-wheel behavior in both languages and themes.
+inline constexpr std::array<Rect, 3> HELP_WHEEL_HINTS{
+    Rect{ 110, 298, 860, 36 },
+    Rect{ 110, 335, 860, 36 },
+    Rect{ 110, 409, 860, 36 },
+};
+
 constexpr bool overlaps(const Rect& left, const Rect& right) {
     return left.x < right.x + right.width && right.x < left.x + left.width &&
         left.y < right.y + right.height && right.y < left.y + left.height;
@@ -71,6 +80,19 @@ constexpr bool generalControlsAreSeparated() {
     return true;
 }
 
+constexpr bool helpWheelHintsAreSeparated() {
+    for (std::size_t i = 0; i < HELP_WHEEL_HINTS.size(); ++i) {
+        if (!isInsideCanvas(HELP_WHEEL_HINTS[i]))
+            return false;
+        for (std::size_t j = i + 1; j < HELP_WHEEL_HINTS.size(); ++j) {
+            if (overlaps(HELP_WHEEL_HINTS[i], HELP_WHEEL_HINTS[j]))
+                return false;
+        }
+    }
+    return true;
+}
+
 static_assert(generalControlsAreSeparated());
+static_assert(helpWheelHintsAreSeparated());
 
 }

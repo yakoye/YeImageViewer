@@ -9,6 +9,8 @@
 #include "RotationStore.h"
 #include "InitialWindowLayout.h"
 #include "PresentationLayout.h"
+#include "BackgroundPolicy.h"
+#include "WheelInput.h"
 
 #include "D3D11App.h"
 #include <ppl.h>
@@ -24,8 +26,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.7";
-constinit int appVersionCode = 13607; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.9";
+constinit int appVersionCode = 13609; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -198,9 +200,9 @@ struct CurImageParameter {
 
 class ExtraUIRes {
 public:
-    cv::Mat mainRes, leftArrow, rightArrow, leftRotate, rightRotate, setting, animationBarPlaying, animationBarPausing;
+    cv::Mat mainRes, leftArrow, rightArrow, leftRotate, rightRotate, setting, presentationClose, animationBarPlaying, animationBarPausing;
 
-    static cv::Mat loadSvgIcon(int resourceId) {
+    static cv::Mat loadSvgIcon(int resourceId, int size = OverlayLayout::ICON_SIZE) {
         const auto rc = jarkUtils::GetResource(resourceId, L"SVG");
         if (!rc.ptr || rc.size == 0)
             return {};
@@ -208,7 +210,7 @@ public:
             static_cast<const uint8_t*>(rc.ptr), rc.size));
         if (!renderer)
             return {};
-        auto bitmap = renderer->renderToBitmap(OverlayLayout::ICON_SIZE, OverlayLayout::ICON_SIZE);
+        auto bitmap = renderer->renderToBitmap(size, size);
         if (bitmap.empty())
             return {};
         return cv::Mat(bitmap.height, bitmap.width, CV_8UC4, bitmap.bgra.data()).clone();
@@ -225,6 +227,7 @@ public:
         leftRotate = loadSvgIcon(IDR_SVG_ROTATE_LEFT_ICON);
         rightRotate = loadSvgIcon(IDR_SVG_ROTATE_RIGHT_ICON);
         setting = loadSvgIcon(IDR_SVG_SETTINGS_ICON);
+        presentationClose = loadSvgIcon(IDR_SVG_CLOSE_ICON, OverlayLayout::PRESENTATION_CLOSE_SIZE);
 
         animationBarPlaying = mainRes({ 0, 100, 200, 50 });
         animationBarPausing = mainRes({ 0, 150, 200, 50 });
@@ -444,6 +447,8 @@ public:
         framedWindowAnchored = true;
         presentationClickCandidate = false;
         mouseIsPressing = false;
+        cursorPosLast = cursorPos = CursorPos::centerArea;
+        extraUIFlag = ShowExtraUI::none;
         ReleaseCapture();
         SetPresentationBackdrop(false);
         SetWindowLongPtrW(m_hWnd, GWL_STYLE, presentationWindowedStyle);
@@ -476,6 +481,15 @@ public:
             windowed.initialSlideX,
             windowed.initialSlideY,
         };
+        cv::Mat srcImg;
+        if (curPar.imageAssetPtr->format == ImageFormat::None || curPar.imageAssetPtr->format == ImageFormat::Still)
+            srcImg = curPar.imageAssetPtr->primaryFrame;
+        else
+            srcImg = curPar.imageAssetPtr->frames[curPar.curFrameIdx];
+        drawCanvas(srcImg, mainCanvas);
+        drawExifInfo(mainCanvas);
+        drawExtraUI(mainCanvas);
+        updateMainCanvas();
         operateQueue.push({ ActionENUM::refresh });
     }
 
@@ -624,6 +638,14 @@ public:
         switch ((uint64_t)btnState)
         {
         case WM_LBUTTONDOWN: {//左键
+            if (presentationMode &&
+                OverlayLayout::presentationCloseRect(winWidth, winHeight).contains(x, y)) {
+                presentationClickCandidate = false;
+                mouseIsPressing = false;
+                operateQueue.push({ ActionENUM::requestExit });
+                return;
+            }
+
             if (presentationMode && cursorPos == CursorPos::centerArea) {
                 const bool insideImage = isPointInsideCurrentImage(x, y);
                 presentationClickCandidate = !insideImage;
@@ -658,6 +680,8 @@ public:
                 operateQueue.push({ ActionENUM::rotateRight });
             else if (cursorPos == CursorPos::toolbarSetting)
                 operateQueue.push({ ActionENUM::setting, 0 });
+            else if (presentationMode && cursorPos == CursorPos::presentationClose)
+                operateQueue.push({ ActionENUM::requestExit });
             else if (cursorPos == CursorPos::centerTop) {
                 handleAnimationControl(x, y);
             }
@@ -777,6 +801,9 @@ public:
             case OverlayLayout::Hit::Toolbar:
                 cursorPos = CursorPos::toolbar;
                 break;
+            case OverlayLayout::Hit::PresentationClose:
+                cursorPos = presentationMode ? CursorPos::presentationClose : CursorPos::centerArea;
+                break;
             default:
                 cursorPos = CursorPos::centerArea;
                 break;
@@ -797,6 +824,7 @@ public:
                     ShowExtraUI::animationBar : ShowExtraUI::none;
                 break;
             case CursorPos::centerArea:
+            case CursorPos::presentationClose:
                 extraUIFlag = ShowExtraUI::none;
                 break;
             case CursorPos::rightEdge:
@@ -831,6 +859,22 @@ public:
     }
 
     void OnMouseWheel(UINT nFlags, short zDelta, int x, int y) override {
+        const int panStep = std::max(1, (winWidth + winHeight) / 16);
+        const auto modifiedWheel = WheelInput::resolve(nFlags, zDelta, panStep);
+        switch (modifiedWheel.intent) {
+        case WheelInput::Intent::PanVertical:
+            operateQueue.push({ ActionENUM::slide, 0, modifiedWheel.verticalDelta });
+            return;
+        case WheelInput::Intent::PreviousImage:
+            operateQueue.push({ ActionENUM::preImg });
+            return;
+        case WheelInput::Intent::NextImage:
+            operateQueue.push({ ActionENUM::nextImg });
+            return;
+        case WheelInput::Intent::Default:
+            break;
+        }
+
         switch (cursorPos)
         {
         case CursorPos::centerArea:
@@ -847,6 +891,7 @@ public:
         case CursorPos::toolbarSetting:
         case CursorPos::toolbar:
         case CursorPos::centerTop:
+        case CursorPos::presentationClose:
             break;
 
         case CursorPos::toolbarRotateLeft:
@@ -854,6 +899,14 @@ public:
             operateQueue.push({ zDelta < 0 ? ActionENUM::rotateRight : ActionENUM::rotateLeft });
             break;
         }
+    }
+
+    void OnMaximizeRequested() override {
+        enterPresentationMode();
+    }
+
+    void requestInitialPresentation() {
+        PostMessageW(m_hWnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0);
     }
 
     void handleEscapeKey() {
@@ -1249,7 +1302,8 @@ public:
 
     uint32_t backgroundPixelAt(int x, int y) const {
         if (presentationMode)
-            return 0x88000000u;
+            return BackgroundPolicy::presentationCanvasPixel(
+                IsFrostedGlassActive(), GlobalVar::currentTheme.BG);
         return BackgroundRenderer::canvasPixel(
             currentBackgroundMode(), IsFrostedGlassActive(), x, y,
             GlobalVar::currentTheme.BG,
@@ -1259,9 +1313,11 @@ public:
 
     void fillCanvasBackground(cv::Mat& canvas) const {
         if (presentationMode) {
+            const uint32_t presentationPixel = BackgroundPolicy::presentationCanvasPixel(
+                IsFrostedGlassActive(), GlobalVar::currentTheme.BG);
             for (int y = 0; y < canvas.rows; ++y) {
                 auto row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
-                std::fill(row, row + canvas.cols, 0x88000000u);
+                std::fill(row, row + canvas.cols, presentationPixel);
             }
             return;
         }
@@ -1362,7 +1418,8 @@ public:
 
     inline uint32_t compositeSrcPx4(intUnion srcPx, int mainX, int mainY) const {
         return BackgroundRenderer::compositeBgra(
-            srcPx.u32, currentBackgroundMode(), IsFrostedGlassActive(), mainX, mainY,
+            srcPx.u32, BackgroundPolicy::imageAreaMode(currentBackgroundMode()),
+            IsFrostedGlassActive(), mainX, mainY,
             GlobalVar::currentTheme.BG,
             GlobalVar::currentTheme.BLACK_GRID,
             GlobalVar::currentTheme.WHITE_GRID);
@@ -2011,7 +2068,7 @@ public:
         int canvasWidth = canvas.cols;
 
         //窗口尺寸太小则直接退出
-        if (canvasWidth < 100 || canvasHeight < 100 || extraUIFlag == ShowExtraUI::none)
+        if (canvasWidth < 100 || canvasHeight < 100)
             return;
 
         switch (extraUIFlag)
@@ -2045,6 +2102,13 @@ public:
             auto& img = curPar.isAnimationPause ? extraUIRes.animationBarPausing : extraUIRes.animationBarPlaying;
             jarkUtils::overlayImg(canvas, img, (canvasWidth - img.cols)/2, 0);
         } break;
+        case ShowExtraUI::none:
+            break;
+        }
+
+        if (presentationMode && !extraUIRes.presentationClose.empty()) {
+            const auto close = OverlayLayout::presentationCloseRect(canvasWidth, canvasHeight);
+            jarkUtils::overlayImg(canvas, extraUIRes.presentationClose, close.x, close.y);
         }
     }
 
@@ -2619,8 +2683,12 @@ int WINAPI wWinMain(
     YeImageViewerApp app;
     if (SUCCEEDED(app.InitWindow(hInstance))) {
         app.initOpenFile(filePath);
-        app.enterPresentationMode();
         app.ShowInitialWindow();
+        app.DrawScene();
+        DwmFlush();
+        // Use the exact same in-loop window-message path as a user clicking
+        // maximize, after startup sizing and DWM visibility messages settle.
+        app.requestInitialPresentation();
         app.Run();
     }
     else {
