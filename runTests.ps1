@@ -29,6 +29,12 @@ $toolbarIcons = @(
     (Join-Path $repoRoot "YeImageViewer\file\icons\settings.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\close.svg")
 )
+$appIcons = @(
+    (Join-Path $repoRoot "ico.ico"),
+    (Join-Path $repoRoot "YeImageViewer\YeImageViewer.ico"),
+    (Join-Path $repoRoot "YeImageViewer\small.ico")
+)
+$appIconPreview = Join-Path $repoRoot "ico.png"
 
 if (-not $SkipBuild) {
     $shell = Join-Path $PSHOME "pwsh.exe"
@@ -42,18 +48,55 @@ if (-not $SkipBuild) {
     }
 }
 
-foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sharpSvgFixture, $textSvgFixture, $jaggedFixture) + $toolbarIcons + $currentRestoreFixtures) {
+foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sharpSvgFixture, $textSvgFixture, $jaggedFixture, $appIconPreview) + $toolbarIcons + $appIcons + $currentRestoreFixtures) {
     if (-not (Test-Path -LiteralPath $requiredFile)) {
         throw "Required regression-test file is missing: $requiredFile"
     }
 }
 
-$expectedFileVersion = "1.36.14.0"
+$expectedFileVersion = "1.36.15.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
 }
 Write-Host "PASS viewer file version is $expectedFileVersion."
+
+$embeddedIcon = [Drawing.Icon]::ExtractAssociatedIcon($viewer)
+if ($null -eq $embeddedIcon) {
+    throw "Viewer executable does not expose an embedded application icon."
+}
+try {
+    $embeddedIconBitmap = $embeddedIcon.ToBitmap()
+    try {
+        $visibleIconPixels = 0
+        $warmIconPixels = 0
+        $greenIconPixels = 0
+        for ($iconY = 0; $iconY -lt $embeddedIconBitmap.Height; $iconY++) {
+            for ($iconX = 0; $iconX -lt $embeddedIconBitmap.Width; $iconX++) {
+                $iconPixel = $embeddedIconBitmap.GetPixel($iconX, $iconY)
+                if ($iconPixel.A -gt 16) {
+                    $visibleIconPixels++
+                    if ($iconPixel.R -gt 180 -and $iconPixel.G -gt 90 -and $iconPixel.B -lt 120) {
+                        $warmIconPixels++
+                    }
+                    if ($iconPixel.G -gt $iconPixel.R -and $iconPixel.G -gt $iconPixel.B) {
+                        $greenIconPixels++
+                    }
+                }
+            }
+        }
+        if ($visibleIconPixels -lt 100 -or $warmIconPixels -lt 15 -or $greenIconPixels -lt 15) {
+            throw "Viewer embedded icon does not contain the expected transparent flower-frame artwork."
+        }
+    }
+    finally {
+        $embeddedIconBitmap.Dispose()
+    }
+}
+finally {
+    $embeddedIcon.Dispose()
+}
+Write-Host "PASS viewer embeds the new transparent flower-frame application icon."
 
 $expectedCommitId = (& git -C $repoRoot rev-parse --short=12 HEAD).Trim()
 $viewerAscii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($viewer))
@@ -87,7 +130,21 @@ if ($actualJaggedHash -ne $expectedJaggedHash) {
     throw "Jagged-image regression fixture hash mismatch: expected $expectedJaggedHash, got $actualJaggedHash."
 }
 
-& $unitTests $hdrFixture $sharpSvgFixture $textSvgFixture @toolbarIcons
+$expectedAppIconPreviewHash = "303A1B987DD5B41628F0A4747C6F381F089FDF79E6CD212F52D539A06B73871F"
+$actualAppIconPreviewHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $appIconPreview).Hash
+if ($actualAppIconPreviewHash -ne $expectedAppIconPreviewHash) {
+    throw "Application icon preview hash mismatch: expected $expectedAppIconPreviewHash, got $actualAppIconPreviewHash."
+}
+
+$expectedAppIconHash = "5F34314E4902D2972588F75823AFE26D244A4CE816E48A00BA40C8B9ED460E43"
+foreach ($appIcon in $appIcons) {
+    $actualAppIconHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $appIcon).Hash
+    if ($actualAppIconHash -ne $expectedAppIconHash) {
+        throw "Application icon hash mismatch for ${appIcon}: expected $expectedAppIconHash, got $actualAppIconHash."
+    }
+}
+
+& $unitTests $hdrFixture $sharpSvgFixture $textSvgFixture @toolbarIcons @appIcons
 if ($LASTEXITCODE -ne 0) {
     throw "Unit regression tests failed with exit code $LASTEXITCODE."
 }

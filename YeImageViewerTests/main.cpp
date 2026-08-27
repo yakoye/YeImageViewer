@@ -436,6 +436,46 @@ void expectToolbarIcons(const std::vector<std::string>& paths) {
     passOrFail("all six IconPark overlay SVG resources render correctly", allValid);
 }
 
+uint16_t readLittleEndian16(const std::vector<uint8_t>& bytes, std::size_t offset) {
+    if (offset + 2 > bytes.size())
+        return 0;
+    return static_cast<uint16_t>(bytes[offset] | bytes[offset + 1] << 8);
+}
+
+uint32_t readLittleEndian32(const std::vector<uint8_t>& bytes, std::size_t offset) {
+    if (offset + 4 > bytes.size())
+        return 0;
+    return static_cast<uint32_t>(bytes[offset]) |
+        static_cast<uint32_t>(bytes[offset + 1]) << 8 |
+        static_cast<uint32_t>(bytes[offset + 2]) << 16 |
+        static_cast<uint32_t>(bytes[offset + 3]) << 24;
+}
+
+void expectApplicationIcons(const std::vector<std::string>& paths) {
+    constexpr std::array expectedSizes{ 16, 24, 32, 36, 48, 64, 96, 128, 256 };
+    bool allValid = paths.size() == 3;
+    std::vector<uint8_t> reference;
+    for (const auto& path : paths) {
+        const auto bytes = readFile(path);
+        if (reference.empty())
+            reference = bytes;
+        allValid = allValid && bytes == reference && bytes.size() > 6 + expectedSizes.size() * 16 &&
+            readLittleEndian16(bytes, 0) == 0 && readLittleEndian16(bytes, 2) == 1 &&
+            readLittleEndian16(bytes, 4) == expectedSizes.size();
+        for (std::size_t index = 0; allValid && index < expectedSizes.size(); ++index) {
+            const std::size_t entry = 6 + index * 16;
+            const int width = bytes[entry] == 0 ? 256 : bytes[entry];
+            const int height = bytes[entry + 1] == 0 ? 256 : bytes[entry + 1];
+            const uint32_t dataSize = readLittleEndian32(bytes, entry + 8);
+            const uint32_t dataOffset = readLittleEndian32(bytes, entry + 12);
+            allValid = allValid && width == expectedSizes[index] && height == expectedSizes[index] &&
+                dataSize > 0 && dataOffset >= 6 + expectedSizes.size() * 16 &&
+                static_cast<std::size_t>(dataOffset) + dataSize <= bytes.size();
+        }
+    }
+    passOrFail("application icon resources share all nine transparent Windows sizes", allValid);
+}
+
 void expectRotationPersistence() {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto databasePath = std::filesystem::temp_directory_path() /
@@ -707,6 +747,13 @@ int main(int argc, char* argv[]) {
     else {
         ++failedTests;
         std::cerr << "FAIL toolbar icon paths were not provided\n";
+    }
+    if (argc >= 13) {
+        expectApplicationIcons({ argv[10], argv[11], argv[12] });
+    }
+    else {
+        ++failedTests;
+        std::cerr << "FAIL application icon paths were not provided\n";
     }
 
     std::cout << passedTests << " passed, " << failedTests << " failed\n";
