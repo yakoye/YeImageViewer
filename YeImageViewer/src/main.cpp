@@ -10,6 +10,7 @@
 #include "InitialWindowLayout.h"
 #include "PresentationLayout.h"
 #include "BackgroundPolicy.h"
+#include "ImageInfoPresentation.h"
 #include "WheelInput.h"
 
 #include "D3D11App.h"
@@ -26,8 +27,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.13";
-constinit int appVersionCode = 13613; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.14";
+constinit int appVersionCode = 13614; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -263,6 +264,9 @@ public:
     vector<wstring> imgFileList; // 工作目录下所有图像文件路径
 
     TextDrawer textDrawer;       // 给Mat绘制文字
+    const ImageAsset* imageInfoAssetCache = nullptr;
+    uint32_t imageInfoLanguageCache = UINT32_MAX;
+    ImageInfoPresentation::Model imageInfoModelCache;
     CurImageParameter curPar;
     ExtraUIRes extraUIRes;
     std::chrono::steady_clock::time_point lastClickTimestamp{}, lastWinResizeTimestamp{};
@@ -2009,41 +2013,137 @@ public:
         }
     }
 
-    void drawExifInfo(cv::Mat& canvas) {
-        if (showExif) {
-            const int padding = 10;
-            const int areaWidth = (canvas.cols - 2 * padding) / 4;
-            cv::Rect rect{ padding, padding, std::max(areaWidth, 400), canvas.rows - 2 * padding };
-            rect &= cv::Rect{ 0, 0, canvas.cols, canvas.rows };
-            if (rect.empty())
-                return;
-
-            const UINT dpi = m_hWnd ? GetDpiForWindow(m_hWnd) : 96;
-            const bool readableFramedExif = TextRenderingPolicy::usesReadableFramedExif(
-                presentationMode);
-            const int fontSize = readableFramedExif ?
-                TextRenderingPolicy::scaledPixelSize(TextRenderingPolicy::LOGICAL_FONT_SIZE, dpi) :
-                TextRenderingPolicy::legacyImmersiveExifPixelSize(dpi);
-            if (textDrawer.getSize() != fontSize)
-                textDrawer.setSize(fontSize);
-
-            if (!readableFramedExif) {
-                textDrawer.putAlignLeft(canvas, rect, curPar.imageAssetPtr->exifInfo.c_str(),
-                    GlobalVar::currentTheme.FG, true, false);
-                return;
-            }
-
-            const cv::Rect shadowRect{
-                rect.x + TextRenderingPolicy::EXIF_SHADOW_OFFSET,
-                rect.y + TextRenderingPolicy::EXIF_SHADOW_OFFSET,
-                rect.width,
-                rect.height,
-            };
-            textDrawer.putAlignLeft(canvas, shadowRect, curPar.imageAssetPtr->exifInfo.c_str(),
-                TextRenderingPolicy::EXIF_SHADOW_COLOR, false);
-            textDrawer.putAlignLeft(canvas, rect, curPar.imageAssetPtr->exifInfo.c_str(),
-                TextRenderingPolicy::EXIF_TEXT_COLOR, false);
+    static void blendInfoPanel(cv::Mat& canvas, cv::Rect rect, uint32_t color) {
+        rect &= cv::Rect{ 0, 0, canvas.cols, canvas.rows };
+        for (int y = rect.y; y < rect.y + rect.height; ++y) {
+            auto* row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
+            for (int x = rect.x; x < rect.x + rect.width; ++x)
+                row[x] = ImageInfoPresentation::blendBgra(row[x], color);
         }
+    }
+
+    const ImageInfoPresentation::Model& currentImageInfoModel() {
+        const ImageAsset* asset = curPar.imageAssetPtr.get();
+        const uint32_t language = GlobalVar::settingParameter.UI_LANG;
+        if (asset != imageInfoAssetCache || language != imageInfoLanguageCache) {
+            imageInfoAssetCache = asset;
+            imageInfoLanguageCache = language;
+            imageInfoModelCache = ImageInfoPresentation::build(
+                asset ? asset->exifInfo : std::string_view{}, language == 0);
+        }
+        return imageInfoModelCache;
+    }
+
+    void drawFramedImageInfoCard(cv::Mat& canvas) {
+        if (canvas.cols < 160 || canvas.rows < 160)
+            return;
+
+        const auto& model = currentImageInfoModel();
+        const UINT dpi = m_hWnd ? GetDpiForWindow(m_hWnd) : 96;
+        const auto scaled = [dpi](int logical) {
+            return TextRenderingPolicy::scaledPixelSize(logical, dpi);
+            };
+        const int margin = scaled(12);
+        const int fontSize = scaled(ImageInfoPresentation::LOGICAL_FONT_SIZE);
+        const int headerHeight = scaled(ImageInfoPresentation::LOGICAL_HEADER_HEIGHT);
+        const int sectionHeight = scaled(ImageInfoPresentation::LOGICAL_SECTION_HEIGHT);
+        const int rowHeight = scaled(ImageInfoPresentation::LOGICAL_ROW_HEIGHT);
+        const int footerHeight = scaled(ImageInfoPresentation::LOGICAL_FOOTER_HEIGHT);
+        const int panelWidth = std::min(scaled(ImageInfoPresentation::LOGICAL_PANEL_WIDTH),
+            canvas.cols - margin * 2);
+        const int basicHeight = headerHeight + sectionHeight +
+            static_cast<int>(model.basic.size()) * rowHeight + footerHeight + scaled(16);
+        const int availableHeight = canvas.rows - margin * 2;
+        int detailRows = 0;
+        if (!model.details.empty() && availableHeight > basicHeight + sectionHeight + rowHeight)
+            detailRows = std::min(static_cast<int>(model.details.size()),
+                (availableHeight - basicHeight - sectionHeight - 1) / rowHeight);
+        const int panelHeight = std::min(availableHeight, basicHeight +
+            (detailRows > 0 ? 1 + sectionHeight + detailRows * rowHeight : 0));
+        const cv::Rect panel{ margin, margin, panelWidth, panelHeight };
+
+        blendInfoPanel(canvas, panel, ImageInfoPresentation::PANEL_BACKGROUND);
+        cv::rectangle(canvas, panel,
+            jarkUtils::to_cv_scalar(ImageInfoPresentation::PANEL_BORDER), 1);
+        cv::rectangle(canvas, { panel.x, panel.y, panel.width, scaled(3) },
+            jarkUtils::to_cv_scalar(ImageInfoPresentation::PANEL_ACCENT), -1);
+
+        textDrawer.setSize(fontSize);
+        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        textDrawer.putAlignLeft(canvas,
+            { panel.x + scaled(16), panel.y, panel.width / 2, headerHeight },
+            chinese ? "图像信息" : "Image information",
+            ImageInfoPresentation::TEXT_PRIMARY);
+        const std::string position = std::format("{} / {}", curFileIdx + 1, imgFileList.size());
+        textDrawer.putAlignCenter(canvas,
+            { panel.x + panel.width - scaled(96), panel.y, scaled(80), headerHeight },
+            position.c_str(), ImageInfoPresentation::TEXT_MUTED);
+
+        int y = panel.y + headerHeight;
+        const int labelWidth = scaled(94);
+        const int contentX = panel.x + scaled(16);
+        const int contentWidth = panel.width - scaled(32);
+        const auto drawSection = [&](const char* title,
+            const std::vector<ImageInfoPresentation::Row>& rows, int rowLimit, int& sectionY) {
+                textDrawer.putAlignLeft(canvas,
+                    { contentX, sectionY, contentWidth, sectionHeight }, title,
+                    ImageInfoPresentation::TEXT_MUTED);
+                sectionY += sectionHeight;
+                for (int index = 0; index < rowLimit; ++index) {
+                    const auto& row = rows[index];
+                    textDrawer.putAlignLeft(canvas,
+                        { contentX, sectionY, labelWidth, rowHeight }, row.label.c_str(),
+                        ImageInfoPresentation::TEXT_MUTED);
+                    textDrawer.putAlignLeft(canvas,
+                        { contentX + labelWidth, sectionY, contentWidth - labelWidth, rowHeight },
+                        row.value.c_str(), ImageInfoPresentation::TEXT_SECONDARY);
+                    sectionY += rowHeight;
+                }
+            };
+
+        drawSection(chinese ? "基本信息" : "BASIC",
+            model.basic, static_cast<int>(model.basic.size()), y);
+        if (detailRows > 0) {
+            cv::line(canvas, { contentX, y }, { contentX + contentWidth, y },
+                jarkUtils::to_cv_scalar(ImageInfoPresentation::PANEL_BORDER), 1);
+            ++y;
+            drawSection(chinese ? "拍摄信息" : "CAPTURE", model.details, detailRows, y);
+        }
+
+        const int footerY = panel.y + panel.height - footerHeight;
+        cv::line(canvas, { panel.x, footerY }, { panel.x + panel.width, footerY },
+            jarkUtils::to_cv_scalar(ImageInfoPresentation::PANEL_BORDER), 1);
+        const cv::Rect keyRect{ contentX, footerY + scaled(7), scaled(28), footerHeight - scaled(14) };
+        cv::rectangle(canvas, keyRect,
+            jarkUtils::to_cv_scalar(ImageInfoPresentation::PANEL_BORDER), 1);
+        textDrawer.putAlignCenter(canvas, keyRect, "C", ImageInfoPresentation::TEXT_SECONDARY);
+        textDrawer.putAlignLeft(canvas,
+            { keyRect.x + keyRect.width + scaled(8), footerY, contentWidth - keyRect.width, footerHeight },
+            chinese ? "复制全部信息" : "Copy all information",
+            ImageInfoPresentation::TEXT_MUTED);
+    }
+
+    void drawExifInfo(cv::Mat& canvas) {
+        if (!showExif)
+            return;
+
+        if (!presentationMode) {
+            drawFramedImageInfoCard(canvas);
+            return;
+        }
+
+        const int padding = 10;
+        const int areaWidth = (canvas.cols - 2 * padding) / 4;
+        cv::Rect rect{ padding, padding, std::max(areaWidth, 400), canvas.rows - 2 * padding };
+        rect &= cv::Rect{ 0, 0, canvas.cols, canvas.rows };
+        if (rect.empty())
+            return;
+        const UINT dpi = m_hWnd ? GetDpiForWindow(m_hWnd) : 96;
+        const int fontSize = TextRenderingPolicy::legacyImmersiveExifPixelSize(dpi);
+        if (textDrawer.getSize() != fontSize)
+            textDrawer.setSize(fontSize);
+        textDrawer.putAlignLeft(canvas, rect, curPar.imageAssetPtr->exifInfo.c_str(),
+            GlobalVar::currentTheme.FG, true, false);
     }
 
     void drawExtraUI(cv::Mat& canvas) {

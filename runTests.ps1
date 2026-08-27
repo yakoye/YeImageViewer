@@ -48,7 +48,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.13.0"
+$expectedFileVersion = "1.36.14.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -379,14 +379,31 @@ try {
     $settingRect = New-Object YeImageViewerTestNativeV1365+RECT
     [void][YeImageViewerTestNativeV1365]::GetClientRect($settingWindow, [ref]$settingRect)
     $settingDpi = [YeImageViewerTestNativeV1365]::GetDpiForWindow($settingWindow)
-    $expectedSettingWidth = [int][Math]::Round(1000 * 96.0 / $settingDpi)
-    $expectedSettingHeight = [int][Math]::Round(700 * 96.0 / $settingDpi)
+    $expectedSettingWidth = [int][Math]::Round(620 * 96.0 / $settingDpi)
+    $expectedSettingHeight = [int][Math]::Round(620 * 96.0 / $settingDpi)
     if (($settingRect.Right - $settingRect.Left) -ne $expectedSettingWidth -or
         ($settingRect.Bottom - $settingRect.Top) -ne $expectedSettingHeight -or
         -not [YeImageViewerTestNativeV1365]::IsWindowEnabled($settingWindow)) {
         throw "Settings-layout regression failed: Settings canvas dimensions or interaction state changed."
     }
-    Write-Host "PASS Settings opens with the tested compact 1000x700 layout."
+    $initialSettingWidth = $settingRect.Right - $settingRect.Left
+    $initialSettingHeight = $settingRect.Bottom - $settingRect.Top
+    foreach ($tabStep in 1..4) {
+        [void][YeImageViewerTestNativeV1365]::SendMessage($settingWindow, 0x0100, [UIntPtr]0x09, [IntPtr]::Zero)
+        [void][YeImageViewerTestNativeV1365]::SendMessage($settingWindow, 0x0101, [UIntPtr]0x09, [IntPtr]::Zero)
+        if ($tabStep -eq 2) {
+            [void][YeImageViewerTestNativeV1365]::SendMessage(
+                $settingWindow, 0x020A, [UIntPtr][uint64]4287102976, [IntPtr]::Zero)
+        }
+        Start-Sleep -Milliseconds 100
+        [void][YeImageViewerTestNativeV1365]::GetClientRect($settingWindow, [ref]$settingRect)
+        if (($settingRect.Right - $settingRect.Left) -ne $initialSettingWidth -or
+            ($settingRect.Bottom - $settingRect.Top) -ne $initialSettingHeight -or
+            -not [YeImageViewerTestNativeV1365]::IsWindowEnabled($settingWindow)) {
+            throw "Settings-layout regression failed: switching tabs changed the fixed client size or interaction state."
+        }
+    }
+    Write-Host "PASS Settings keeps a fixed 620x620 client area across all tabs and scrolls Help content."
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0112, [UIntPtr]0xF060, [IntPtr]::Zero)
     if (-not $freshProcess.WaitForExit(3000)) {

@@ -145,6 +145,7 @@ protected:
     virtual void onMouseMove(WPARAM keyState) {}
     virtual void onMouseWheel(int delta) {}
     virtual void onKeyDown(WPARAM key) {}
+    virtual void onChar(WPARAM character) {}
     virtual void onClose() {
         if (m_hwnd)
             DestroyWindow(m_hwnd);
@@ -179,10 +180,14 @@ protected:
         }
 
         case WM_LBUTTONDOWN:
+            m_x = GET_X_LPARAM(lParam);
+            m_y = GET_Y_LPARAM(lParam);
             onLButtonDown();
             return 0;
 
         case WM_LBUTTONUP:
+            m_x = GET_X_LPARAM(lParam);
+            m_y = GET_Y_LPARAM(lParam);
             onLButtonUp();
             return 0;
 
@@ -202,6 +207,10 @@ protected:
 
         case WM_KEYDOWN:
             onKeyDown(wParam);
+            return 0;
+
+        case WM_CHAR:
+            onChar(wParam);
             return 0;
 
         case WM_CLOSE:

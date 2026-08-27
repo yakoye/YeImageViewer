@@ -4,10 +4,7 @@
 
 namespace TextRenderingPolicy {
 
-inline constexpr int LOGICAL_FONT_SIZE = 18;
-inline constexpr int EXIF_SHADOW_OFFSET = 2;
-inline constexpr uint32_t EXIF_SHADOW_COLOR = 0xD9000000u;
-inline constexpr uint32_t EXIF_TEXT_COLOR = 0xFFF6F8FEu;
+inline constexpr int LOGICAL_FONT_SIZE = 16;
 
 constexpr int scaledPixelSize(int logicalSize, uint32_t dpi) {
     if (logicalSize <= 0)
@@ -23,8 +20,8 @@ constexpr int legacyImmersiveExifPixelSize(uint32_t dpi) {
     return dpi < 168 ? 24 : 32;
 }
 
-constexpr bool usesReadableFramedExif(bool presentationMode) {
-    return !presentationMode;
+constexpr bool usesNativeClearType(bool adaptiveForeground, bool enhanceGlyphCoverage) {
+    return !adaptiveForeground && enhanceGlyphCoverage;
 }
 
 constexpr uint8_t enhanceCoverage(uint8_t coverage) {

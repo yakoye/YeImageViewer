@@ -5,6 +5,7 @@
 #include "EscapeBehavior.h"
 #include "ImageInterpolation.h"
 #include "InitialWindowLayout.h"
+#include "ImageInfoPresentation.h"
 #include "PresentationLayout.h"
 #include "OverlayLayout.h"
 #include "RotationStore.h"
@@ -487,28 +488,42 @@ void expectEscapeBehavior() {
 }
 
 void expectSettingLayout() {
-    passOrFail("settings use a compact readable font",
-        SettingLayout::FONT_SIZE == 18 &&
+    passOrFail("settings use the native Windows menu-sized font",
+        SettingLayout::FONT_SIZE == 16 &&
+        TextRenderingPolicy::LOGICAL_FONT_SIZE == SettingLayout::FONT_SIZE &&
         SettingLayout::ABOUT_TITLE_FONT_SIZE == SettingLayout::FONT_SIZE &&
         SettingLayout::FONT_SIZE * 2 <= SettingLayout::GENERAL_CHECK_BOXES.front().height);
-    passOrFail("four settings tabs evenly fill the full canvas width",
+    passOrFail("settings keep the fixed 620 by 620 client size on every tab",
+        SettingLayout::CANVAS_WIDTH == 620 &&
+        SettingLayout::CANVAS_HEIGHT == 620 &&
         SettingLayout::TAB_WIDTH * 4 == SettingLayout::CANVAS_WIDTH);
     passOrFail("settings controls remain separated inside the fixed canvas",
         SettingLayout::generalControlsAreSeparated());
-    passOrFail("general settings use paired two-column rows",
+    passOrFail("general settings pair switches and keep segmented rows full width",
         SettingLayout::GENERAL_CHECK_BOXES[0].y == SettingLayout::GENERAL_CHECK_BOXES[1].y &&
         SettingLayout::GENERAL_CHECK_BOXES[0].x < SettingLayout::GENERAL_CHECK_BOXES[1].x &&
-        SettingLayout::GENERAL_RADIOS[0].y == SettingLayout::GENERAL_RADIOS[1].y &&
-        SettingLayout::GENERAL_RADIOS[2].y == SettingLayout::GENERAL_RADIOS[3].y);
+        SettingLayout::GENERAL_RADIOS[0].x == SettingLayout::GENERAL_RADIOS[1].x &&
+        SettingLayout::GENERAL_RADIOS[0].width == SettingLayout::GENERAL_RADIOS[1].width &&
+        SettingLayout::GENERAL_RADIOS[0].y < SettingLayout::GENERAL_RADIOS[1].y);
     passOrFail("remember-monitor and animation controls have a visible vertical gap",
         SettingLayout::GENERAL_CHECK_BOXES.back().y +
             SettingLayout::GENERAL_CHECK_BOXES.back().height <
             SettingLayout::GENERAL_RADIOS.front().y);
-    passOrFail("help shortcuts use twelve separated two-column cards",
+    passOrFail("help shortcuts use twelve separated table rows",
         SettingLayout::HELP_ITEMS.size() == 12 &&
-        SettingLayout::HELP_ITEMS[0].y == SettingLayout::HELP_ITEMS[1].y &&
-        SettingLayout::HELP_ITEMS[10].y == SettingLayout::HELP_ITEMS[11].y &&
+        SettingLayout::HELP_ITEMS.front().y < SettingLayout::HELP_ITEMS.back().y &&
         SettingLayout::helpItemsAreSeparated());
+    passOrFail("only overflowing settings pages enable a compact scrollbar",
+        SettingLayout::maxScrollOffset(SettingLayout::GENERAL_CONTENT_HEIGHT) == 0 &&
+        SettingLayout::maxScrollOffset(SettingLayout::ABOUT_CONTENT_HEIGHT) == 0 &&
+        SettingLayout::maxScrollOffset(SettingLayout::HELP_CONTENT_HEIGHT) > 0 &&
+        SettingLayout::scrollbarThumbHeight(SettingLayout::HELP_CONTENT_HEIGHT) >= 32 &&
+        SettingLayout::scrollbarThumbHeight(SettingLayout::HELP_CONTENT_HEIGHT) <
+            SettingLayout::CONTENT_VIEW_HEIGHT);
+    passOrFail("settings scroll offsets are clamped to the content bounds",
+        SettingLayout::clampScrollOffset(SettingLayout::HELP_CONTENT_HEIGHT, -10) == 0 &&
+        SettingLayout::clampScrollOffset(SettingLayout::HELP_CONTENT_HEIGHT, 10000) ==
+            SettingLayout::maxScrollOffset(SettingLayout::HELP_CONTENT_HEIGHT));
 }
 
 void expectTextRendering() {
@@ -520,19 +535,50 @@ void expectTextRendering() {
     passOrFail("immersive EXIF keeps its legacy size and rendering strategy",
         TextRenderingPolicy::legacyImmersiveExifPixelSize(96) == 16 &&
         TextRenderingPolicy::legacyImmersiveExifPixelSize(144) == 24 &&
-        TextRenderingPolicy::legacyImmersiveExifPixelSize(192) == 32 &&
-        !TextRenderingPolicy::usesReadableFramedExif(true));
-    passOrFail("only framed EXIF opts into the clearer text strategy",
-        TextRenderingPolicy::usesReadableFramedExif(false));
+        TextRenderingPolicy::legacyImmersiveExifPixelSize(192) == 32);
+    passOrFail("non-adaptive interface text uses native Windows ClearType",
+        TextRenderingPolicy::usesNativeClearType(false, true) &&
+        !TextRenderingPolicy::usesNativeClearType(true, true) &&
+        !TextRenderingPolicy::usesNativeClearType(false, false));
     passOrFail("glyph antialiasing keeps endpoints and strengthens intermediate coverage",
         TextRenderingPolicy::enhanceCoverage(0) == 0 &&
         TextRenderingPolicy::enhanceCoverage(64) > 64 &&
         TextRenderingPolicy::enhanceCoverage(128) > 128 &&
         TextRenderingPolicy::enhanceCoverage(255) == 255);
-    passOrFail("EXIF text uses a compact dark shadow without covering the image",
-        TextRenderingPolicy::EXIF_SHADOW_OFFSET == 2 &&
-        TextRenderingPolicy::EXIF_SHADOW_COLOR == 0xD9000000u &&
-        TextRenderingPolicy::EXIF_TEXT_COLOR == 0xFFF6F8FEu);
+}
+
+void expectImageInfoPresentation() {
+    constexpr std::string_view rawInfo =
+        "路径: C:\\Pictures\\sample.png\n"
+        "大小: 103.0 KiB\n"
+        "分辨率: 671x477\n"
+        "原始日期时间: 2026-08-28 10:20:30\n"
+        "型号: Sample Camera\n"
+        "制造商: Sample Maker\n"
+        "镜头型号: 24-70mm\n"
+        "曝光时间: 1/125 s\n"
+        "光圈值: F2.8\n"
+        "ISO感光度: 200\n"
+        "Xmp.xmp.CreatorTool: noisy raw metadata\n"
+        "Exif.Photo.MakerNote: private binary payload\n";
+    const auto model = ImageInfoPresentation::build(rawInfo, true);
+
+    passOrFail("image information keeps four immediately useful basic fields",
+        model.basic.size() == 4 &&
+        model.basic[0].label == "文件名" && model.basic[0].value == "sample.png" &&
+        model.basic[1].value == "PNG" && model.basic[2].value == "103.0 KiB" &&
+        model.basic[3].value == "671 × 477 px");
+    passOrFail("image information caps details and omits raw XMP and MakerNote noise",
+        model.details.size() == ImageInfoPresentation::MAX_DETAIL_ROWS &&
+        std::ranges::none_of(model.details, [](const ImageInfoPresentation::Row& row) {
+            return row.label.contains("Xmp") || row.value.contains("Xmp") ||
+                row.label.contains("MakerNote") || row.value.contains("MakerNote") ||
+                row.value.contains("CreatorTool");
+            }));
+    passOrFail("image information uses a compact sixty-percent black card",
+        ImageInfoPresentation::blendBgra(0xFFFFFFFFu,
+            ImageInfoPresentation::PANEL_BACKGROUND) == 0xFF666666u &&
+        ImageInfoPresentation::logicalPanelHeight(model) <= 460);
 }
 
 void expectWheelInput() {
@@ -637,6 +683,7 @@ int main(int argc, char* argv[]) {
     expectEscapeBehavior();
     expectSettingLayout();
     expectTextRendering();
+    expectImageInfoPresentation();
     expectWheelInput();
     expectRotationPersistence();
     if (argc >= 2) {

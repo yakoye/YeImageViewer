@@ -1,20 +1,19 @@
 #pragma once
 
-#include "MatWindow.h"
-#include "TextDrawer.h"
-#include "FileAssociationManager.h"
-#include "SettingLayout.h"
 #include "BuildInfo.h"
+#include "FileAssociationManager.h"
+#include "MatWindow.h"
+#include "SettingLayout.h"
+#include "TextDrawer.h"
+
+#include <array>
+#include <cctype>
 
 // TODO: 为 YeImageViewer 增加独立的更新检查。
 
 extern std::wstring_view appVersion;
 extern std::wstring_view RepositoryLink;
 
-struct labelBox {
-    cv::Rect rect{};
-    string_view text;
-};
 struct generalTabCheckBox {
     cv::Rect rect{};
     int stringID = 0;
@@ -29,36 +28,77 @@ struct generalTabRadio {
 
 class Setting : public MatWindow {
 private:
-    static const int winWidth = SettingLayout::CANVAS_WIDTH;
-    static const int winHeight = SettingLayout::CANVAS_HEIGHT; // 固定UI尺寸适应任意分辨率和DPI，最大700为了照顾1366*768的屏幕
-    static const int tabHeight = SettingLayout::TAB_HEIGHT;
-    static const int tabWidth = SettingLayout::TAB_WIDTH;
-
-    static const int DEBUG_COLOR = 0xFFFF8080;
-
-    static inline const cv::Rect repositoryBtnRect{ 250, 410, 500, 70 };
-
+    static constexpr int winWidth = SettingLayout::CANVAS_WIDTH;
+    static constexpr int winHeight = SettingLayout::CANVAS_HEIGHT;
+    static constexpr int tabHeight = SettingLayout::TAB_HEIGHT;
+    static constexpr int tabWidth = SettingLayout::TAB_WIDTH;
     static inline const wchar_t* windowsClassName = L"YeImageViewerSettingWnd";
+    static inline constexpr std::wstring_view upstreamRepository =
+        L"https://github.com/jark006/JarkViewer";
 
     static inline std::vector<string> allSupportExt;
     static inline std::set<string> checkedExt;
     static inline std::vector<generalTabCheckBox> generalTabCheckBoxList;
     static inline std::vector<generalTabRadio> generalTabRadioList;
-    static inline std::vector<labelBox> labelList;
 
     TextDrawer textDrawer;
     cv::Mat winCanvas;
+    std::array<int, 4> scrollOffsets{};
+    std::string associationFilter;
+    bool associationSearchActive = false;
+
+    uint32_t primaryText() const {
+        return GlobalVar::isCurrentUIDarkMode ?
+            GlobalVar::currentTheme.FG : GlobalVar::currentTheme.FG_DEEP;
+    }
+
+    uint32_t secondaryText() const {
+        return GlobalVar::currentTheme.FG;
+    }
+
+    static cv::Rect toCvRect(const SettingLayout::Rect& rect) {
+        return { rect.x, rect.y, rect.width, rect.height };
+    }
+
+    static void fillRoundedRect(cv::Mat& canvas, const cv::Rect& rect,
+        uint32_t color, int radius = 10) {
+        const cv::Scalar scalar = jarkUtils::to_cv_scalar(color);
+        radius = std::clamp(radius, 0, std::min(rect.width, rect.height) / 2);
+        if (radius == 0) {
+            cv::rectangle(canvas, rect, scalar, -1);
+            return;
+        }
+        cv::rectangle(canvas,
+            { rect.x + radius, rect.y, rect.width - radius * 2, rect.height }, scalar, -1);
+        cv::rectangle(canvas,
+            { rect.x, rect.y + radius, rect.width, rect.height - radius * 2 }, scalar, -1);
+        cv::circle(canvas, { rect.x + radius, rect.y + radius }, radius, scalar, -1);
+        cv::circle(canvas, { rect.x + rect.width - radius - 1, rect.y + radius }, radius, scalar, -1);
+        cv::circle(canvas, { rect.x + radius, rect.y + rect.height - radius - 1 }, radius, scalar, -1);
+        cv::circle(canvas,
+            { rect.x + rect.width - radius - 1, rect.y + rect.height - radius - 1 }, radius, scalar, -1);
+    }
+
+    void drawCard(cv::Mat& canvas, const cv::Rect& rect) {
+        fillRoundedRect(canvas, rect, GlobalVar::currentTheme.BG, 10);
+        cv::rectangle(canvas, rect, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+    }
+
+    void drawSectionTitle(cv::Mat& canvas, const cv::Rect& card, const char* title) {
+        textDrawer.putAlignLeft(canvas,
+            { card.x + 18, card.y + 10, 180, 28 }, title, GlobalVar::currentTheme.CHECK);
+        cv::line(canvas, { card.x + 150, card.y + 25 },
+            { card.x + card.width - 18, card.y + 25 },
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+    }
 
     void Init(int tabIdx = 0) {
         textDrawer.setSize(SettingLayout::FONT_SIZE);
-        winCanvas = cv::Mat(winHeight, winWidth, CV_8UC4, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG));
-        curTabIdx = tabIdx;
+        winCanvas = cv::Mat(winHeight, winWidth, CV_8UC4,
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_DEEP));
+        curTabIdx = std::clamp(tabIdx, 0, 3);
 
-        // GeneralTab
         if (generalTabCheckBoxList.empty()) {
-            const auto toCvRect = [](const SettingLayout::Rect& rect) {
-                return cv::Rect{ rect.x, rect.y, rect.width, rect.height };
-            };
             generalTabCheckBoxList = {
                 { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[0]), 12, &GlobalVar::settingParameter.isAllowRotateAnimation },
                 { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[1]), 13, &GlobalVar::settingParameter.isAllowZoomAnimation },
@@ -76,7 +116,6 @@ private:
             };
         }
 
-        // AssociateTab
         if (allSupportExt.empty()) {
             std::set<wstring> allSupportExtW;
             allSupportExtW.insert(ImageDatabase::supportExt.begin(), ImageDatabase::supportExt.end());
@@ -85,202 +124,482 @@ private:
                 allSupportExt.emplace_back(jarkUtils::wstringToUtf8(ext));
         }
 
-        auto checkedExtVec = jarkUtils::splitString(GlobalVar::settingParameter.extCheckedListStr, ",");
-        auto filtered = checkedExtVec | std::views::filter([](const std::string& s) { return !s.empty(); });
+        const auto checkedExtVec = jarkUtils::splitString(
+            GlobalVar::settingParameter.extCheckedListStr, ",");
         checkedExt.clear();
-        if (!filtered.empty())
-            checkedExt.insert(filtered.begin(), filtered.end());
-    }
-
-public:
-    static inline volatile bool isWorking = false;
-    static inline volatile HWND hwnd = nullptr;
-    static inline volatile int curTabIdx = 0; // 0:常规  1:文件关联  2:帮助  3:关于
-
-    Setting(int tabIdx = 0) {
-        requestExitFlag = false;
-        isWorking = true;
-
-        Init(tabIdx);
-        windowsMainLoop();
-
-        requestExitFlag = false;
-        isWorking = false;
-        hwnd = nullptr;
-    }
-
-    ~Setting() {}
-
-    static void requestExit() {
-        if (hwnd)
-            PostMessageW(hwnd, WM_CLOSE, 0, 0);
-    }
-
-    void refreshGeneralTab() {
-        cv::rectangle(winCanvas, { 0, tabHeight, winWidth, winHeight - tabHeight }, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
-
-        for (auto& cbox : generalTabCheckBoxList) {
-#ifndef NDEBUG
-            cv::rectangle(winCanvas, cbox.rect, jarkUtils::to_cv_scalar(DEBUG_COLOR), 1);
-#endif
-            cv::Rect rect({ cbox.rect.x + 8, cbox.rect.y + 8, cbox.rect.height - 16, cbox.rect.height - 16 }); //方形
-            cv::rectangle(winCanvas, rect, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.FG_DEEP), 3);
-            if (*cbox.valuePtr) {
-                rect = { cbox.rect.x + 14, cbox.rect.y + 14, cbox.rect.height - 28, cbox.rect.height - 28 }; //小方形
-                cv::rectangle(winCanvas, rect, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.CHECK), -1);
-            }
-
-            rect = { cbox.rect.x + cbox.rect.height, cbox.rect.y, cbox.rect.width - cbox.rect.height, cbox.rect.height };
-            textDrawer.putAlignLeft(winCanvas, rect, getUIString(cbox.stringID), GlobalVar::currentTheme.FG);
-        }
-
-        for (auto& radio : generalTabRadioList) {
-            int idx = *radio.valuePtr;
-            if (idx >= radio.stringIDs.size())
-                idx = 0;
-#ifndef NDEBUG
-            cv::rectangle(winCanvas, radio.rect, jarkUtils::to_cv_scalar(DEBUG_COLOR), 1);
-#endif
-            int itemWidth = radio.rect.width / (int)radio.stringIDs.size();
-            cv::Rect rect1 = { radio.rect.x + itemWidth * (1 + idx) , radio.rect.y + 4, itemWidth, radio.rect.height - 6 }; // 当前项背景框
-            cv::rectangle(winCanvas, rect1, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.CHECK), -1);
-
-            cv::Rect rect2 = { radio.rect.x + itemWidth , radio.rect.y + 4, radio.rect.width - itemWidth, radio.rect.height - 6 }; //大框
-            cv::rectangle(winCanvas, rect2, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.FG_DEEP), 2);
-
-            for (int i = 0; i < radio.stringIDs.size(); i++) {
-                cv::Rect rect3 = { radio.rect.x + itemWidth * (i), radio.rect.y , itemWidth, radio.rect.height };
-                textDrawer.putAlignCenter(winCanvas, rect3, getUIString(radio.stringIDs[i]), GlobalVar::currentTheme.FG);
-            }
-        }
-
-        for (auto& labelBox : labelList) {
-            cv::Rect rect = {
-                labelBox.rect.x + labelBox.rect.height,
-                labelBox.rect.y,
-                labelBox.rect.width - labelBox.rect.height,
-                labelBox.rect.height };
-            textDrawer.putAlignCenter(winCanvas, rect, labelBox.text.data(), GlobalVar::currentTheme.FG);
+        for (const auto& ext : checkedExtVec) {
+            if (!ext.empty())
+                checkedExt.insert(ext);
         }
     }
 
-    void refreshAssociateTab() {
-        cv::rectangle(winCanvas, { 0, tabHeight, winWidth, winHeight - tabHeight }, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
-
-        // 需和 handleAssociateTab 参数保持一致
-        const int xOffset = 20, yOffset = 70;
-        const int gridWidth = 80, gridHeight = 40;
-        const int gridNumPerLine = 12;
-        const int btnWidth = 200;
-        const int btnHeight = 60;
-        const cv::Rect btnRectList[4] = {
-            { winWidth - btnWidth * 4, winHeight - btnHeight, btnWidth, btnHeight }, // defaultCheck
-            { winWidth - btnWidth * 3, winHeight - btnHeight, btnWidth, btnHeight }, // allCheckBtnRect
-            { winWidth - btnWidth * 2, winHeight - btnHeight, btnWidth, btnHeight }, // allClearBtnRect
-            { winWidth - btnWidth, winHeight - btnHeight, btnWidth, btnHeight }, // confirmBtnRect
-        };
-
-        const int btnTextList[4] = { 7, 8, 9, 10 };
-
-        int idx = 0;
+    std::vector<std::string_view> filteredExtensions() const {
+        std::vector<std::string_view> result;
         for (const auto& ext : allSupportExt) {
-            int y = idx / gridNumPerLine;
-            int x = idx % gridNumPerLine;
-            cv::Rect rect({ xOffset + gridWidth * x, yOffset + gridHeight * y, gridWidth, gridHeight });
-            if (checkedExt.contains(ext)) {
-                cv::Rect rect2{ rect.x + 2, rect.y + 4, rect.width - 4, rect.height - 4 };
-                cv::rectangle(winCanvas, rect2, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.CHECK), -1);
-            }
-            textDrawer.putAlignCenter(winCanvas, rect, ext.c_str(), GlobalVar::currentTheme.FG);
-            idx++;
+            if (associationFilter.empty() || ext.find(associationFilter) != string::npos)
+                result.emplace_back(ext);
         }
-
-        for (int i = 0; i < 4; i++) {
-            const cv::Rect& rect = btnRectList[i];
-            cv::Rect rect2{ rect.x + 4, rect.y + 8, rect.width - 8, rect.height - 12 };
-            cv::rectangle(winCanvas, rect2, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_BTN), -1);
-            textDrawer.putAlignCenter(winCanvas, rect, getUIString(btnTextList[i]), GlobalVar::currentTheme.FG);
-        }
-
-        textDrawer.putAlignLeft(winCanvas, { 20, winHeight - 200, winWidth - 20, winHeight }, getUIString(11), GlobalVar::currentTheme.FG);
+        return result;
     }
 
-    void refreshHelpTab() {
-        cv::rectangle(winCanvas, { 0, tabHeight, winWidth, winHeight - tabHeight },
-            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
+    int associationGridRows() const {
+        const int count = static_cast<int>(filteredExtensions().size());
+        return std::max(1, (count + SettingLayout::ASSOCIATION_GRID_COLUMNS - 1) /
+            SettingLayout::ASSOCIATION_GRID_COLUMNS);
+    }
 
-        static constexpr std::array<const char*, 12> helpItemsZH{
-            "切换图片  Ctrl+滚轮 / 左右键 / 两侧边缘",
-            "缩放图片  滚轮 / 上下键",
-            "旋转图片  Q / E / 左上角 / 右上角",
-            "平移图片  Shift+滚轮 / 拖动 / W A S D",
-            "图像信息  单击滚轮 / Tab / I",
-            "全屏显示  双击 / F / F11",
-            "复制图像  Ctrl+C",
-            "打印图像  Ctrl+P",
-            "逐帧浏览  J / K / L",
-            "播放暂停  空格键",
-            "分解动图  Ctrl+S",
-            "退出沉浸  Esc / 单击图片外背景",
+    int associationDescriptionY() const {
+        return SettingLayout::ASSOCIATION_GRID_Y + associationGridRows() *
+            (SettingLayout::ASSOCIATION_TAG_HEIGHT + SettingLayout::ASSOCIATION_TAG_GAP_Y) + 12;
+    }
+
+    int associationButtonsY() const {
+        return associationDescriptionY() + 76;
+    }
+
+    int associationContentHeight() const {
+        return associationButtonsY() + SettingLayout::ASSOCIATION_BUTTON_HEIGHT + 20;
+    }
+
+    int contentHeightForTab(int tab) const {
+        switch (tab) {
+        case 0: return SettingLayout::GENERAL_CONTENT_HEIGHT;
+        case 1: return associationContentHeight();
+        case 2: return SettingLayout::HELP_CONTENT_HEIGHT;
+        default: return SettingLayout::ABOUT_CONTENT_HEIGHT;
+        }
+    }
+
+    std::array<cv::Rect, 4> associationButtonRects() const {
+        constexpr int gap = 8;
+        constexpr int width = (SettingLayout::CARD_WIDTH - gap * 3) / 4;
+        std::array<cv::Rect, 4> result{};
+        for (int i = 0; i < 4; ++i) {
+            result[i] = {
+                SettingLayout::PAGE_PADDING + i * (width + gap), associationButtonsY(),
+                width, SettingLayout::ASSOCIATION_BUTTON_HEIGHT };
+        }
+        return result;
+    }
+
+    void drawToggle(cv::Mat& canvas, const generalTabCheckBox& toggle) {
+        const cv::Rect track{ toggle.rect.x, toggle.rect.y + 6, 40, 20 };
+        fillRoundedRect(canvas, track,
+            *toggle.valuePtr ? GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG, 10);
+        const int knobX = *toggle.valuePtr ? track.x + 22 : track.x + 2;
+        cv::circle(canvas, { knobX + 8, track.y + 10 }, 8,
+            jarkUtils::to_cv_scalar(*toggle.valuePtr ? 0xFFFFFFFFu : GlobalVar::currentTheme.FG), -1);
+        textDrawer.putAlignLeft(canvas,
+            { toggle.rect.x + 52, toggle.rect.y, toggle.rect.width - 52, toggle.rect.height },
+            getUIString(toggle.stringID),
+            *toggle.valuePtr ? primaryText() : secondaryText());
+    }
+
+    void drawSegment(cv::Mat& canvas, const generalTabRadio& radio) {
+        const int selected = std::min<int>(*radio.valuePtr,
+            static_cast<int>(radio.stringIDs.size()) - 2);
+        constexpr int labelWidth = 138;
+        const cv::Rect segments{ radio.rect.x + labelWidth, radio.rect.y + 5,
+            radio.rect.width - labelWidth, radio.rect.height - 10 };
+        textDrawer.putAlignLeft(canvas,
+            { radio.rect.x, radio.rect.y, labelWidth - 10, radio.rect.height },
+            getUIString(radio.stringIDs.front()), secondaryText());
+        fillRoundedRect(canvas, segments, GlobalVar::currentTheme.BG_DEEP, 7);
+        cv::rectangle(canvas, segments,
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+        const int optionCount = static_cast<int>(radio.stringIDs.size()) - 1;
+        const int itemWidth = segments.width / optionCount;
+        const cv::Rect selectedRect{ segments.x + selected * itemWidth + 2,
+            segments.y + 2, itemWidth - 4, segments.height - 4 };
+        fillRoundedRect(canvas, selectedRect, GlobalVar::currentTheme.CHECK, 5);
+        for (int index = 0; index < optionCount; ++index) {
+            textDrawer.putAlignCenter(canvas,
+                { segments.x + index * itemWidth, segments.y, itemWidth, segments.height },
+                getUIString(radio.stringIDs[index + 1]),
+                index == selected ? 0xFFFFFFFFu : primaryText());
+        }
+    }
+
+    void refreshGeneralTab(cv::Mat& page) {
+        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        drawCard(page, toCvRect(SettingLayout::GENERAL_BEHAVIOR_CARD));
+        drawSectionTitle(page, toCvRect(SettingLayout::GENERAL_BEHAVIOR_CARD),
+            chinese ? "行为" : "BEHAVIOR");
+        for (const auto& item : generalTabCheckBoxList)
+            drawToggle(page, item);
+
+        drawCard(page, toCvRect(SettingLayout::GENERAL_DISPLAY_CARD));
+        drawSectionTitle(page, toCvRect(SettingLayout::GENERAL_DISPLAY_CARD),
+            chinese ? "显示与交互" : "DISPLAY & INPUT");
+        for (const auto& radio : generalTabRadioList)
+            drawSegment(page, radio);
+    }
+
+    void refreshAssociateTab(cv::Mat& page) {
+        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        const cv::Rect search = toCvRect(SettingLayout::ASSOCIATION_SEARCH);
+        drawCard(page, search);
+        cv::circle(page, { search.x + 20, search.y + search.height / 2 - 2 }, 6,
+            jarkUtils::to_cv_scalar(secondaryText()), 2);
+        cv::line(page, { search.x + 25, search.y + search.height / 2 + 3 },
+            { search.x + 31, search.y + search.height / 2 + 9 },
+            jarkUtils::to_cv_scalar(secondaryText()), 2);
+        const std::string searchText = associationFilter.empty() ?
+            (associationSearchActive ? "|" : (chinese ? "搜索格式..." : "Search formats...")) :
+            associationFilter + (associationSearchActive ? "|" : "");
+        textDrawer.putAlignLeft(page,
+            { search.x + 42, search.y, search.width - 170, search.height },
+            searchText.c_str(), associationFilter.empty() ?
+            secondaryText() : primaryText());
+        const std::string countText = std::format("{} / {}", checkedExt.size(), allSupportExt.size());
+        textDrawer.putAlignCenter(page,
+            { search.x + search.width - 120, search.y, 100, search.height },
+            countText.c_str(), secondaryText());
+
+        const auto visible = filteredExtensions();
+        for (int index = 0; index < static_cast<int>(visible.size()); ++index) {
+            const int column = index % SettingLayout::ASSOCIATION_GRID_COLUMNS;
+            const int row = index / SettingLayout::ASSOCIATION_GRID_COLUMNS;
+            const cv::Rect rect{
+                SettingLayout::ASSOCIATION_GRID_X + column *
+                    (SettingLayout::ASSOCIATION_TAG_WIDTH + SettingLayout::ASSOCIATION_TAG_GAP_X),
+                SettingLayout::ASSOCIATION_GRID_Y + row *
+                    (SettingLayout::ASSOCIATION_TAG_HEIGHT + SettingLayout::ASSOCIATION_TAG_GAP_Y),
+                SettingLayout::ASSOCIATION_TAG_WIDTH,
+                SettingLayout::ASSOCIATION_TAG_HEIGHT };
+            const bool active = checkedExt.contains(std::string(visible[index]));
+            fillRoundedRect(page, rect,
+                active ? GlobalVar::currentTheme.BG_TAG : GlobalVar::currentTheme.BG, 5);
+            cv::rectangle(page, rect,
+                jarkUtils::to_cv_scalar(active ? GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG), 1);
+            textDrawer.putAlignCenter(page, rect, visible[index].data(),
+                active ? primaryText() : secondaryText());
+        }
+
+        textDrawer.putAlignLeft(page,
+            { 24, associationDescriptionY(), winWidth - 48, 62 }, getUIString(11),
+            secondaryText());
+        const auto buttons = associationButtonRects();
+        constexpr std::array<int, 4> textIDs{ 7, 8, 9, 10 };
+        for (int index = 0; index < 4; ++index) {
+            fillRoundedRect(page, buttons[index],
+                index == 3 ? GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG, 7);
+            textDrawer.putAlignCenter(page, buttons[index], getUIString(textIDs[index]),
+                index == 3 ? 0xFFFFFFFFu : primaryText());
+        }
+    }
+
+    struct HelpItem {
+        const char* actionZH;
+        const char* actionEN;
+        const char* descriptionZH;
+        const char* descriptionEN;
+        const char* keysZH;
+        const char* keysEN;
+    };
+
+    void refreshHelpTab(cv::Mat& page) {
+        static constexpr std::array<HelpItem, 12> items{
+            HelpItem{ "切换图片", "Switch", "上一张或下一张", "Previous or next image", "Ctrl+滚轮  左右键", "Ctrl+wheel  arrows" },
+            HelpItem{ "缩放图片", "Zoom", "放大或缩小", "Zoom image", "滚轮  上下键", "Wheel  Up/Down" },
+            HelpItem{ "旋转图片", "Rotate", "向左或向右旋转", "Rotate left or right", "Q  E", "Q  E" },
+            HelpItem{ "平移图片", "Pan", "拖动查看区域", "Move viewport", "Shift+滚轮  拖动", "Shift+wheel  drag" },
+            HelpItem{ "全屏显示", "Fullscreen", "进入或退出全屏", "Toggle fullscreen", "F  F11  双击", "F  F11  double click" },
+            HelpItem{ "退出沉浸", "Leave immersive", "恢复普通窗口", "Restore framed window", "Esc  点击背景", "Esc  click background" },
+            HelpItem{ "图像信息", "Image info", "显示精简信息卡", "Toggle information card", "Tab  I  中键", "Tab  I  middle click" },
+            HelpItem{ "复制图像", "Copy image", "复制到剪贴板", "Copy to clipboard", "Ctrl+C", "Ctrl+C" },
+            HelpItem{ "打印图像", "Print", "打印当前图片", "Print current image", "Ctrl+P", "Ctrl+P" },
+            HelpItem{ "分解动图", "Split animation", "导出所有帧", "Export all frames", "Ctrl+S", "Ctrl+S" },
+            HelpItem{ "逐帧浏览", "Browse frames", "向后、暂停、向前", "Back, pause, forward", "J  K  L", "J  K  L" },
+            HelpItem{ "播放暂停", "Play or pause", "切换动画播放", "Toggle animation", "空格键", "Space" },
         };
-        static constexpr std::array<const char*, 12> helpItemsEN{
-            "Switch  Ctrl+wheel / Left-Right / window edges",
-            "Zoom  Wheel / Up-Down",
-            "Rotate  Q / E / upper corners",
-            "Pan  Shift+wheel / drag / W A S D",
-            "Image info  Wheel click / Tab / I",
-            "Fullscreen  Double-click / F / F11",
-            "Copy image  Ctrl+C",
-            "Print image  Ctrl+P",
-            "Browse frames  J / K / L",
-            "Play or pause  Space",
-            "Split animation  Ctrl+S",
-            "Leave immersive  Esc / click outside image",
-        };
-        const auto& helpItems = GlobalVar::settingParameter.UI_LANG == 0 ? helpItemsZH : helpItemsEN;
-        textDrawer.setSize(SettingLayout::FONT_SIZE);
-        for (std::size_t i = 0; i < SettingLayout::HELP_ITEMS.size(); ++i) {
-            const auto& rect = SettingLayout::HELP_ITEMS[i];
-            const cv::Rect cardRect{ rect.x, rect.y, rect.width, rect.height };
-            cv::rectangle(winCanvas, cardRect,
-                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), -1);
-            cv::rectangle(winCanvas, { rect.x, rect.y, 4, rect.height },
+        static constexpr std::array<const char*, 4> groupsZH{
+            "图片浏览", "界面控制", "编辑与操作", "动画播放" };
+        static constexpr std::array<const char*, 4> groupsEN{
+            "IMAGE BROWSING", "INTERFACE", "EDIT & ACTIONS", "ANIMATION" };
+        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+
+        drawCard(page, { 20, 20, 580, SettingLayout::HELP_CONTENT_HEIGHT - 40 });
+        const cv::Rect header = toCvRect(SettingLayout::HELP_HEADER);
+        cv::rectangle(page, header, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), -1);
+            textDrawer.putAlignLeft(page, { 36, header.y, 100, header.height },
+            chinese ? "功能" : "ACTION", secondaryText());
+        textDrawer.putAlignLeft(page, { 154, header.y, 210, header.height },
+            chinese ? "说明" : "DESCRIPTION", secondaryText());
+        textDrawer.putAlignLeft(page, { 374, header.y, 210, header.height },
+            chinese ? "快捷键" : "SHORTCUTS", secondaryText());
+
+        constexpr std::array<int, 4> groupStarts{ 0, 4, 7, 10 };
+        for (int group = 0; group < 4; ++group) {
+            const cv::Rect groupRect = toCvRect(SettingLayout::HELP_GROUP_HEADERS[group]);
+            cv::rectangle(page, groupRect,
+                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_DEEP), -1);
+            cv::circle(page, { groupRect.x + 16, groupRect.y + groupRect.height / 2 }, 3,
                 jarkUtils::to_cv_scalar(GlobalVar::currentTheme.CHECK), -1);
-            textDrawer.putAlignLeft(winCanvas,
-                { rect.x + 16, rect.y, rect.width - 24, rect.height },
-                helpItems[i], GlobalVar::currentTheme.FG);
+            textDrawer.putAlignLeft(page,
+                { groupRect.x + 28, groupRect.y, groupRect.width - 30, groupRect.height },
+                chinese ? groupsZH[group] : groupsEN[group], GlobalVar::currentTheme.CHECK);
+        }
+
+        for (int index = 0; index < static_cast<int>(items.size()); ++index) {
+            const cv::Rect row = toCvRect(SettingLayout::HELP_ITEMS[index]);
+            cv::line(page, { row.x, row.y }, { row.x + row.width, row.y },
+                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+            textDrawer.putAlignLeft(page, { row.x + 16, row.y, 112, row.height },
+                chinese ? items[index].actionZH : items[index].actionEN,
+                primaryText());
+            textDrawer.putAlignLeft(page, { row.x + 134, row.y, 214, row.height },
+                chinese ? items[index].descriptionZH : items[index].descriptionEN,
+                secondaryText());
+            const cv::Rect keyRect{ row.x + 354, row.y + 8, 208, row.height - 16 };
+            fillRoundedRect(page, keyRect, GlobalVar::currentTheme.BG_DEEP, 5);
+            textDrawer.putAlignCenter(page, keyRect,
+                chinese ? items[index].keysZH : items[index].keysEN,
+                secondaryText());
         }
     }
 
-    void refreshAboutTab() {
-        const bool isChinese = GlobalVar::settingParameter.UI_LANG == 0;
-        cv::rectangle(winCanvas, { 0, tabHeight, winWidth, winHeight - tabHeight },
-            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
+    void refreshAboutTab(cv::Mat& page) {
+        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        const cv::Rect hero = toCvRect(SettingLayout::ABOUT_HERO_CARD);
+        drawCard(page, hero);
+        const cv::Rect icon{ hero.x + hero.width / 2 - 32, hero.y + 34, 64, 64 };
+        fillRoundedRect(page, icon, GlobalVar::currentTheme.CHECK, 14);
+        textDrawer.putAlignCenter(page, icon, "Y", 0xFFFFFFFFu);
+        textDrawer.putAlignCenter(page, { hero.x + 40, hero.y + 112, hero.width - 80, 42 },
+            "YeImageViewer", primaryText());
+        const cv::Rect versionRect{ hero.x + hero.width / 2 - 72, hero.y + 160, 144, 34 };
+        fillRoundedRect(page, versionRect, GlobalVar::currentTheme.BG_TAG, 17);
+        textDrawer.putAlignCenter(page, versionRect,
+            jarkUtils::wstringToUtf8(appVersion).c_str(), GlobalVar::currentTheme.CHECK);
+        textDrawer.putAlignCenter(page, { hero.x + 30, hero.y + 208, hero.width - 60, 36 },
+            chinese ? "基于 JarkViewer 开发  ·  GNU GPL v3" :
+                "Based on JarkViewer  ·  GNU GPL v3",
+            secondaryText());
+        textDrawer.putAlignCenter(page, { hero.x + 30, hero.y + 254, hero.width - 60, 34 },
+            chinese ? "作者  yakoye" : "Author  yakoye", secondaryText());
 
-        textDrawer.setSize(SettingLayout::ABOUT_TITLE_FONT_SIZE);
-        textDrawer.putAlignCenter(winCanvas, { 100, 100, 800, 80 }, "YeImageViewer", GlobalVar::currentTheme.FG);
-        textDrawer.setSize(SettingLayout::FONT_SIZE);
-        textDrawer.putAlignCenter(winCanvas, { 100, 190, 800, 45 },
-            jarkUtils::wstringToUtf8(appVersion).c_str(), GlobalVar::currentTheme.VER);
-        textDrawer.putAlignCenter(winCanvas, { 100, 250, 800, 45 },
-            isChinese ? "基于 JarkViewer 开发" : "Based on JarkViewer", GlobalVar::currentTheme.FG);
-        textDrawer.putAlignCenter(winCanvas, { 100, 300, 800, 45 },
-            isChinese ? "遵循 GNU GPL v3 开源许可证" : "Licensed under GNU GPL v3", GlobalVar::currentTheme.FG);
+        const auto projectButton = toCvRect(SettingLayout::ABOUT_PROJECT_BUTTON);
+        const auto upstreamButton = toCvRect(SettingLayout::ABOUT_UPSTREAM_BUTTON);
+        fillRoundedRect(page, projectButton, GlobalVar::currentTheme.CHECK, 8);
+        fillRoundedRect(page, upstreamButton, GlobalVar::currentTheme.BG_TAG, 8);
+        textDrawer.putAlignCenter(page, projectButton,
+            chinese ? "访问本项目" : "Open this project", 0xFFFFFFFFu);
+        textDrawer.putAlignCenter(page, upstreamButton,
+            chinese ? "访问上游项目" : "Open upstream", primaryText());
 
-        cv::rectangle(winCanvas, repositoryBtnRect,
-            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_BTN), -1);
-        textDrawer.putAlignCenter(winCanvas, repositoryBtnRect,
-            isChinese ? "访问上游 JarkViewer 项目" : "Open upstream JarkViewer project",
-            GlobalVar::currentTheme.FG);
-
-        const auto buildTimeText = std::format("{}: {}", getUIString(19), jarkUtils::COMPILE_DATE_TIME);
+        const cv::Rect build = toCvRect(SettingLayout::ABOUT_BUILD_CARD);
+        drawCard(page, build);
+        const auto buildTimeText = std::format("{}: {}", getUIString(19),
+            jarkUtils::COMPILE_DATE_TIME);
         const auto commitText = std::format("Commit ID: {}", BuildInfo::GIT_COMMIT_ID);
-        textDrawer.putAlignCenter(winCanvas, { 100, 535, 800, 35 }, buildTimeText.c_str(), GlobalVar::currentTheme.VER);
-        textDrawer.putAlignCenter(winCanvas, { 100, 575, 800, 35 }, commitText.c_str(), GlobalVar::currentTheme.VER);
+        textDrawer.putAlignLeft(page, { build.x + 18, build.y + 14, build.width - 36, 36 },
+            buildTimeText.c_str(), secondaryText());
+        textDrawer.putAlignLeft(page, { build.x + 18, build.y + 58, build.width - 36, 36 },
+            commitText.c_str(), secondaryText());
+    }
 
-#ifndef NDEBUG
-        cv::rectangle(winCanvas, repositoryBtnRect, jarkUtils::to_cv_scalar(DEBUG_COLOR), 1);
-#endif
+    void drawTabs() {
+        cv::rectangle(winCanvas, { 0, 0, winWidth, tabHeight },
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
+        cv::line(winCanvas, { 0, tabHeight - 1 }, { winWidth, tabHeight - 1 },
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+        for (int index = 0; index < 4; ++index) {
+            textDrawer.putAlignCenter(winCanvas,
+                { index * tabWidth, 0, tabWidth, tabHeight }, getUIString(2 + index),
+                index == curTabIdx ? primaryText() : secondaryText());
+        }
+        cv::rectangle(winCanvas,
+            { curTabIdx * tabWidth + 18, tabHeight - 3, tabWidth - 36, 3 },
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.CHECK), -1);
+    }
+
+    void drawScrollbar(int contentHeight) {
+        const int thumbHeight = SettingLayout::scrollbarThumbHeight(contentHeight);
+        if (thumbHeight == 0)
+            return;
+        const int x = winWidth - SettingLayout::SCROLLBAR_RIGHT_MARGIN -
+            SettingLayout::SCROLLBAR_WIDTH;
+        const cv::Rect track{ x, tabHeight + 6, SettingLayout::SCROLLBAR_WIDTH,
+            SettingLayout::CONTENT_VIEW_HEIGHT - 12 };
+        fillRoundedRect(winCanvas, track, GlobalVar::currentTheme.BG_TAG, 2);
+        const cv::Rect thumb{ x, SettingLayout::scrollbarThumbY(
+            contentHeight, scrollOffsets[curTabIdx]), SettingLayout::SCROLLBAR_WIDTH, thumbHeight };
+        fillRoundedRect(winCanvas, thumb, GlobalVar::currentTheme.CHECK, 2);
+    }
+
+    void drawingUI() override {
+        textDrawer.setSize(SettingLayout::FONT_SIZE);
+        const int tab = std::clamp(static_cast<int>(curTabIdx), 0, 3);
+        const int contentHeight = contentHeightForTab(tab);
+        scrollOffsets[tab] = SettingLayout::clampScrollOffset(contentHeight, scrollOffsets[tab]);
+        cv::Mat page(contentHeight, winWidth, CV_8UC4,
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_DEEP));
+        switch (tab) {
+        case 0: refreshGeneralTab(page); break;
+        case 1: refreshAssociateTab(page); break;
+        case 2: refreshHelpTab(page); break;
+        default: refreshAboutTab(page); break;
+        }
+
+        winCanvas.setTo(jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_DEEP));
+        drawTabs();
+        const int visibleHeight = std::min(SettingLayout::CONTENT_VIEW_HEIGHT,
+            contentHeight - scrollOffsets[tab]);
+        page(cv::Rect{ 0, scrollOffsets[tab], winWidth, visibleHeight }).copyTo(
+            winCanvas(cv::Rect{ 0, tabHeight, winWidth, visibleHeight }));
+        drawScrollbar(contentHeight);
+    }
+
+    bool isInside(int x, int y, const cv::Rect& rect) const {
+        return rect.x <= x && x < rect.x + rect.width &&
+            rect.y <= y && y < rect.y + rect.height;
+    }
+
+    void updateWindowAttribute() {
+        if (!hwnd)
+            return;
+        BOOL themeMode = GlobalVar::isCurrentUIDarkMode;
+        DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE::DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &themeMode, sizeof(BOOL));
+    }
+
+    void handleGeneralTab(int x, int y) {
+        for (auto& toggle : generalTabCheckBoxList) {
+            if (!isInside(x, y, toggle.rect))
+                continue;
+            *toggle.valuePtr = !*toggle.valuePtr;
+            if (toggle.valuePtr == &GlobalVar::settingParameter.enableColorManagement)
+                GlobalVar::isNeedReloadImageCache = true;
+            isNeedRefreshUI = true;
+            return;
+        }
+
+        constexpr int labelWidth = 138;
+        for (auto& radio : generalTabRadioList) {
+            const cv::Rect segments{ radio.rect.x + labelWidth, radio.rect.y + 5,
+                radio.rect.width - labelWidth, radio.rect.height - 10 };
+            if (!isInside(x, y, segments))
+                continue;
+            const int optionCount = static_cast<int>(radio.stringIDs.size()) - 1;
+            const int itemWidth = segments.width / optionCount;
+            const int selected = std::clamp((x - segments.x) / itemWidth, 0, optionCount - 1);
+            *radio.valuePtr = selected;
+            if (radio.stringIDs.front() == 24) {
+                GlobalVar::isCurrentUIDarkMode = GlobalVar::settingParameter.UI_Mode == 0 ?
+                    GlobalVar::isSystemDarkMode : GlobalVar::settingParameter.UI_Mode == 2;
+                GlobalVar::currentTheme = GlobalVar::isCurrentUIDarkMode ? deepTheme : lightTheme;
+                updateWindowAttribute();
+                GlobalVar::isNeedUpdateTheme = true;
+            }
+            isNeedRefreshUI = true;
+            return;
+        }
+    }
+
+    template<typename T>
+    void toggle(std::set<T>& values, const T& value) {
+        if (!values.insert(value).second)
+            values.erase(value);
+    }
+
+    FileAssociationResult SetupFileAssociations(const std::vector<std::wstring>& extChecked,
+        const std::vector<std::wstring>& extUnchecked) {
+        FileAssociationManager manager;
+        return manager.ManageFileAssociations(extChecked, extUnchecked);
+    }
+
+    void handleAssociateTab(int x, int y) {
+        const cv::Rect search = toCvRect(SettingLayout::ASSOCIATION_SEARCH);
+        if (isInside(x, y, search)) {
+            associationSearchActive = true;
+            isNeedRefreshUI = true;
+            return;
+        }
+        associationSearchActive = false;
+
+        const auto visible = filteredExtensions();
+        for (int index = 0; index < static_cast<int>(visible.size()); ++index) {
+            const int column = index % SettingLayout::ASSOCIATION_GRID_COLUMNS;
+            const int row = index / SettingLayout::ASSOCIATION_GRID_COLUMNS;
+            const cv::Rect rect{
+                SettingLayout::ASSOCIATION_GRID_X + column *
+                    (SettingLayout::ASSOCIATION_TAG_WIDTH + SettingLayout::ASSOCIATION_TAG_GAP_X),
+                SettingLayout::ASSOCIATION_GRID_Y + row *
+                    (SettingLayout::ASSOCIATION_TAG_HEIGHT + SettingLayout::ASSOCIATION_TAG_GAP_Y),
+                SettingLayout::ASSOCIATION_TAG_WIDTH,
+                SettingLayout::ASSOCIATION_TAG_HEIGHT };
+            if (isInside(x, y, rect)) {
+                toggle(checkedExt, std::string(visible[index]));
+                isNeedRefreshUI = true;
+                return;
+            }
+        }
+
+        const auto buttons = associationButtonRects();
+        if (isInside(x, y, buttons[0])) {
+            const auto defaults = jarkUtils::splitString(SettingParameter::defaultExtList, ",");
+            checkedExt.clear();
+            for (const auto& ext : defaults) {
+                if (!ext.empty())
+                    checkedExt.insert(ext);
+            }
+            isNeedRefreshUI = true;
+        }
+        else if (isInside(x, y, buttons[1])) {
+            checkedExt.insert(allSupportExt.begin(), allSupportExt.end());
+            isNeedRefreshUI = true;
+        }
+        else if (isInside(x, y, buttons[2])) {
+            checkedExt.clear();
+            isNeedRefreshUI = true;
+        }
+        else if (isInside(x, y, buttons[3])) {
+            std::vector<std::wstring> checkedExtW, uncheckedExtW;
+            for (const auto& ext : allSupportExt) {
+                (checkedExt.contains(ext) ? checkedExtW : uncheckedExtW).emplace_back(
+                    jarkUtils::utf8ToWstring(ext));
+            }
+            const auto result = SetupFileAssociations(checkedExtW, uncheckedExtW);
+            if (!result.associationSucceeded)
+                MessageBoxW(nullptr, getUIStringW(3), getUIStringW(1), MB_OK | MB_ICONERROR);
+            else if (result.thumbnailOperationFailed)
+                MessageBoxW(nullptr, getUIStringW(41), getUIStringW(1), MB_OK | MB_ICONWARNING);
+            else
+                MessageBoxW(nullptr, getUIStringW(2), getUIStringW(1), MB_OK | MB_ICONINFORMATION);
+        }
+    }
+
+    void finishAssociateTab() {
+        std::string checkedList;
+        for (const auto& ext : checkedExt) {
+            if (!checkedList.empty())
+                checkedList += ',';
+            checkedList += ext;
+        }
+        const std::size_t capacity = sizeof(GlobalVar::settingParameter.extCheckedListStr);
+        memset(GlobalVar::settingParameter.extCheckedListStr, 0, capacity);
+        if (!checkedList.empty()) {
+            memcpy(GlobalVar::settingParameter.extCheckedListStr, checkedList.data(),
+                std::min(checkedList.size(), capacity - 1));
+        }
+    }
+
+    void handleAboutTab(int x, int y) {
+        if (isInside(x, y, toCvRect(SettingLayout::ABOUT_PROJECT_BUTTON)))
+            jarkUtils::openUrl(RepositoryLink.data());
+        else if (isInside(x, y, toCvRect(SettingLayout::ABOUT_UPSTREAM_BUTTON)))
+            jarkUtils::openUrl(upstreamRepository.data());
+    }
+
+    void setScrollFromTrack(int y) {
+        const int contentHeight = contentHeightForTab(curTabIdx);
+        const int maximum = SettingLayout::maxScrollOffset(contentHeight);
+        if (maximum == 0)
+            return;
+        const int relative = std::clamp(y - tabHeight, 0, SettingLayout::CONTENT_VIEW_HEIGHT);
+        scrollOffsets[curTabIdx] = maximum * relative / SettingLayout::CONTENT_VIEW_HEIGHT;
+        isNeedRefreshUI = true;
     }
 
     void onPaint(HDC hdc) override {
@@ -289,32 +608,39 @@ public:
     }
 
     void onLButtonUp() override {
-        // 标签栏点击
-        if (m_y < 50) {
-            int newTabIdx = m_x / tabWidth;
-            if (newTabIdx <= 3 && newTabIdx != curTabIdx) {
-                switch (curTabIdx) {
-                case 0: finishGeneralTab(); break;
-                case 1: finishAssociateTab(); break;
-                }
-                curTabIdx = newTabIdx;
+        if (m_y < tabHeight) {
+            const int newTab = std::clamp(m_x / tabWidth, 0, 3);
+            if (newTab != curTabIdx) {
+                if (curTabIdx == 1)
+                    finishAssociateTab();
+                curTabIdx = newTab;
+                associationSearchActive = false;
                 isNeedRefreshUI = true;
             }
             return;
         }
 
-        // 各 Tab 点击处理
+        if (m_x >= winWidth - 16) {
+            setScrollFromTrack(m_y);
+            return;
+        }
+
+        const int contentX = m_x;
+        const int contentY = m_y - tabHeight + scrollOffsets[curTabIdx];
         switch (curTabIdx) {
-        case 0: handleGeneralTab(cv::EVENT_LBUTTONUP, m_x, m_y, 0); break;
-        case 1: handleAssociateTab(cv::EVENT_LBUTTONUP, m_x, m_y, 0); break;
-        case 3: handleAboutTab(cv::EVENT_LBUTTONUP, m_x, m_y, 0); break;
+        case 0: handleGeneralTab(contentX, contentY); break;
+        case 1: handleAssociateTab(contentX, contentY); break;
+        case 3: handleAboutTab(contentX, contentY); break;
         }
     }
 
-    void onRButtonUp() override {
-        if (GlobalVar::settingParameter.rightClickAction == 1) {
-            PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
-        }
+    void onMouseWheel(int delta) override {
+        const int contentHeight = contentHeightForTab(curTabIdx);
+        if (SettingLayout::maxScrollOffset(contentHeight) == 0)
+            return;
+        scrollOffsets[curTabIdx] = SettingLayout::clampScrollOffset(contentHeight,
+            scrollOffsets[curTabIdx] - (delta > 0 ? 72 : -72));
+        isNeedRefreshUI = true;
     }
 
     void onKeyDown(WPARAM key) override {
@@ -322,213 +648,64 @@ public:
             PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
         }
         else if (key == VK_TAB) {
+            if (curTabIdx == 1)
+                finishAssociateTab();
             curTabIdx = (curTabIdx + 1) % 4;
+            associationSearchActive = false;
             isNeedRefreshUI = true;
         }
     }
 
-    void drawingUI() override {
-        textDrawer.setSize(SettingLayout::FONT_SIZE);
-        // 绘制标签栏
-        cv::rectangle(winCanvas, { 0, 0, winWidth, tabHeight }, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), -1);
-        cv::rectangle(winCanvas, { curTabIdx * tabWidth, 0, tabWidth, tabHeight }, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
-        for (int tabIndex = 0; tabIndex < 4; ++tabIndex) {
-            textDrawer.putAlignCenter(winCanvas,
-                { tabIndex * tabWidth, 0, tabWidth, tabHeight },
-                getUIString(2 + tabIndex), GlobalVar::currentTheme.FG);
+    void onChar(WPARAM character) override {
+        if (curTabIdx != 1 || !associationSearchActive)
+            return;
+        if (character == 8) {
+            if (!associationFilter.empty())
+                associationFilter.pop_back();
         }
-
-        switch (curTabIdx) {
-        case 0:refreshGeneralTab(); break;
-        case 1:refreshAssociateTab(); break;
-        case 2:refreshHelpTab(); break;
-        default:refreshAboutTab(); break;
+        else if (character < 128 && (std::isalnum(static_cast<unsigned char>(character)) ||
+            character == '.')) {
+            associationFilter.push_back(static_cast<char>(
+                std::tolower(static_cast<unsigned char>(character))));
         }
+        else {
+            return;
+        }
+        scrollOffsets[1] = 0;
+        isNeedRefreshUI = true;
     }
 
-    void handleGeneralTab(int event, int x, int y, int flags) {
-        if (event == cv::EVENT_LBUTTONUP) {
-            for (auto& cbox : generalTabCheckBoxList) {
-                if (isInside(x, y, cbox.rect)) {
-                    *cbox.valuePtr = !(*cbox.valuePtr);
-                    if (cbox.valuePtr == &GlobalVar::settingParameter.enableColorManagement)
-                        GlobalVar::isNeedReloadImageCache = true;
-                    isNeedRefreshUI = true;
-                }
-            }
-
-            for (auto& radio : generalTabRadioList) {
-                if (isInside(x, y, radio.rect)) {
-                    int itemWidth = radio.rect.width / (int)radio.stringIDs.size();
-                    int clickIdx = (x - radio.rect.x) / itemWidth - 1;
-                    if (0 <= clickIdx && clickIdx < radio.stringIDs.size() - 1) {
-                        *radio.valuePtr = clickIdx;
-
-                        if (radio.stringIDs.front() == 24) { // UI_Mode 颜色主题改变
-                            GlobalVar::isCurrentUIDarkMode = GlobalVar::settingParameter.UI_Mode == 0 ?
-                                GlobalVar::isSystemDarkMode : (GlobalVar::settingParameter.UI_Mode == 2);
-                            GlobalVar::currentTheme = GlobalVar::isCurrentUIDarkMode ? deepTheme : lightTheme;
-                            updateWindowAttribute();
-                            GlobalVar::isNeedUpdateTheme = true;
-                        }
-                        isNeedRefreshUI = true;
-                    }
-                }
-            }
-        }
-    }
-
-    void finishGeneralTab() {
-
-    }
-
-    void updateWindowAttribute() {
-        if (hwnd) {
-            BOOL themeMode = GlobalVar::isCurrentUIDarkMode;
-            DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE::DWMWA_USE_IMMERSIVE_DARK_MODE, &themeMode, sizeof(BOOL));
-        }
-    }
-
-    int getGridIndex(int x, int y, int xOffset = 50, int yOffset = 200,
-        int gridW = 20, int gridH = 10, int colsPerRow = 10, int idxMax = -1) {  // 默认不检查 idxMax
-        int relativeX = x - xOffset;
-        int relativeY = y - yOffset;
-        if (relativeX < 0 || relativeY < 0) {
-            return -1; // 无效坐标
-        }
-        int col = relativeX / gridW;
-        int row = relativeY / gridH;
-        if (col >= colsPerRow) {
-            return -1; // 超出列范围
-        }
-        int index = row * colsPerRow + col;
-        if (idxMax >= 0 && index >= idxMax) {  // 如果 idxMax 有效，并且 index 超出
-            return -1;
-        }
-        return index;
-    }
-
-    template<typename T>
-    void toggle(std::set<T>& s, const T& value) {
-        if (!s.insert(value).second) {
-            s.erase(value);
-        }
-    }
-
-    FileAssociationResult SetupFileAssociations(const std::vector<std::wstring>& extChecked,
-        const std::vector<std::wstring>& extUnchecked) {
-
-        FileAssociationManager manager;
-        return manager.ManageFileAssociations(extChecked, extUnchecked);
-    }
-
-    void handleAssociateTab(int event, int x, int y, int flags) {
-
-        // 需和 refreshAssociateTab 参数保持一致
-        const int xOffset = 20, yOffset = 70;
-        const int gridWidth = 80, gridHeight = 40;
-        const int gridNumPerLine = 12;
-        const int btnWidth = 200;
-        const int btnHeight = 60;
-        const cv::Rect btnRectList[4] = {
-            { winWidth - btnWidth * 4, winHeight - btnHeight, btnWidth, btnHeight }, // defaultCheck
-            { winWidth - btnWidth * 3, winHeight - btnHeight, btnWidth, btnHeight }, // allCheckBtnRect
-            { winWidth - btnWidth * 2, winHeight - btnHeight, btnWidth, btnHeight }, // allClearBtnRect
-            { winWidth - btnWidth, winHeight - btnHeight, btnWidth, btnHeight }, // confirmBtnRect
-        };
-
-        if (event == cv::EVENT_LBUTTONUP) {
-            int gridIdx = getGridIndex(x, y, xOffset, yOffset, gridWidth, gridHeight, gridNumPerLine, (int)allSupportExt.size());
-            if (gridIdx >= 0) {
-                const auto& targetExt = (allSupportExt)[gridIdx];
-                toggle(checkedExt, targetExt);
-                isNeedRefreshUI = true;
-            }
-            else if (isInside(x, y, btnRectList[0])) { // 恢复默认勾选
-                memcpy(GlobalVar::settingParameter.extCheckedListStr,
-                    SettingParameter::defaultExtList.data(),
-                    SettingParameter::defaultExtList.length() + 1);
-
-                auto checkedExtVec = jarkUtils::splitString(GlobalVar::settingParameter.extCheckedListStr, ",");
-                auto filtered = checkedExtVec | std::views::filter([](const std::string& s) { return !s.empty(); });
-                checkedExt.clear();
-                if (!filtered.empty())
-                    checkedExt.insert(filtered.begin(), filtered.end());
-
-                isNeedRefreshUI = true;
-            }
-            else if (isInside(x, y, btnRectList[1])) { // 全选
-                checkedExt.insert(allSupportExt.begin(), allSupportExt.end());
-                isNeedRefreshUI = true;
-            }
-            else if (isInside(x, y, btnRectList[2])) { // 全不选
-                checkedExt.clear();
-                isNeedRefreshUI = true;
-            }
-            else if (isInside(x, y, btnRectList[3])) { // 立即关联
-                std::vector<std::wstring> checkedExtW, unCheckedExtW;
-
-                checkedExtW.reserve(checkedExt.size());
-                unCheckedExtW.reserve(allSupportExt.size() - checkedExt.size());
-
-                for (const auto& ext : checkedExt) {
-                    checkedExtW.emplace_back(jarkUtils::utf8ToWstring(ext));
-                }
-                for (const auto& ext : allSupportExt) {
-                    if (!checkedExt.contains(ext))
-                        unCheckedExtW.emplace_back(jarkUtils::utf8ToWstring(ext));
-                }
-
-                const auto associationResult = SetupFileAssociations(checkedExtW, unCheckedExtW);
-                if (!associationResult.associationSucceeded) {
-                    MessageBoxW(nullptr, getUIStringW(3), getUIStringW(1), MB_OK | MB_ICONERROR);
-                }
-                else if (associationResult.thumbnailOperationFailed) {
-                    MessageBoxW(nullptr, getUIStringW(41), getUIStringW(1), MB_OK | MB_ICONWARNING);
-                }
-                else {
-                    MessageBoxW(nullptr, getUIStringW(2), getUIStringW(1), MB_OK | MB_ICONINFORMATION);
-                }
-            }
-        }
-
-    }
-
-    void finishAssociateTab() {
-        std::string checkedList;
-        for (const auto& ext : checkedExt) {
-            checkedList += ext;
-            checkedList += ',';
-        }
-        if (checkedList.back() == ',')
-            checkedList.pop_back();
-        if (checkedList.empty())
-            memset(GlobalVar::settingParameter.extCheckedListStr, 0, 4);
-        else
-            memcpy(GlobalVar::settingParameter.extCheckedListStr, checkedList.data(), checkedList.length() + 1);
-    }
-
-    bool isInside(int x, int y, const cv::Rect& rect) {
-        return rect.x < x && x < (rect.x + rect.width) && rect.y < y && y < (rect.y + rect.height);
-    }
-
-    void handleAboutTab(int event, int x, int y, int flags) {
-        if (event == cv::EVENT_LBUTTONUP && isInside(x, y, repositoryBtnRect)) {
-            jarkUtils::openUrl(RepositoryLink.data());
-        }
+    void onRButtonUp() override {
+        if (GlobalVar::settingParameter.rightClickAction == 1)
+            PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
     }
 
     void windowsMainLoop() {
         if (!createWindow(winWidth, winHeight, windowsClassName, getUIStringW(39)))
             return;
-
         hwnd = m_hwnd;
         runMessageLoop();
+        if (curTabIdx == 1)
+            finishAssociateTab();
+    }
 
-        // 退出时保存当前 Tab 状态
-        switch (curTabIdx) {
-        case 0: finishGeneralTab(); break;
-        case 1: finishAssociateTab(); break;
-        }
+public:
+    static inline volatile bool isWorking = false;
+    static inline volatile HWND hwnd = nullptr;
+    static inline volatile int curTabIdx = 0;
+
+    explicit Setting(int tabIdx = 0) {
+        requestExitFlag = false;
+        isWorking = true;
+        Init(tabIdx);
+        windowsMainLoop();
+        requestExitFlag = false;
+        isWorking = false;
+        hwnd = nullptr;
+    }
+
+    static void requestExit() {
+        if (hwnd)
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
     }
 };

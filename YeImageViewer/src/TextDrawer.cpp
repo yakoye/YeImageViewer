@@ -24,6 +24,12 @@ void TextDrawer::setSize(int newSize) {
 // str : UTF-8
 void TextDrawer::putText(cv::Mat& img, const int x, const int y, const char* str, intUnion color,
     bool isAdaptiveFG, bool enhanceGlyphCoverage) {
+    if (TextRenderingPolicy::usesNativeClearType(isAdaptiveFG, enhanceGlyphCoverage)) {
+        drawNativeText(img, { x, y, img.cols - x, img.rows - y }, str, color,
+            DT_LEFT | DT_TOP | DT_NOPREFIX);
+        return;
+    }
+
     if (!hasInit) {
         Init(IDR_TTF_DEFAULT, L"TTF");
         hasInit = true;
@@ -72,6 +78,12 @@ void TextDrawer::putText(cv::Mat& img, const int x, const int y, const char* str
 //Rect {x, y, width, height}
 void TextDrawer::putAlignCenter(cv::Mat& img, cv::Rect rect, const char* str, intUnion color,
     bool isAdaptiveFG, bool enhanceGlyphCoverage) {
+    if (TextRenderingPolicy::usesNativeClearType(isAdaptiveFG, enhanceGlyphCoverage)) {
+        drawNativeText(img, rect, str, color,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        return;
+    }
+
     int codePoint = '?';
     int H = 1, W = 0, W_cnt = 0;
     const auto len = strlen(str);
@@ -126,6 +138,14 @@ void TextDrawer::putAlignCenter(cv::Mat& img, cv::Rect rect, const char* str, in
 //Rect {x, y, width, height}
 void TextDrawer::putAlignLeft(cv::Mat& img, cv::Rect rect, const char* str, intUnion color,
     bool isAdaptiveFG, bool enhanceGlyphCoverage) {
+    if (TextRenderingPolicy::usesNativeClearType(isAdaptiveFG, enhanceGlyphCoverage)) {
+        const bool multiline = strchr(str, '\n') != nullptr;
+        drawNativeText(img, rect, str, color, multiline ?
+            (DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX) :
+            (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX));
+        return;
+    }
+
     if (!hasInit) {
         Init(IDR_TTF_DEFAULT, L"TTF");
         hasInit = true;
@@ -178,6 +198,64 @@ void TextDrawer::putAlignLeft(cv::Mat& img, cv::Rect rect, const char* str, intU
         xOffset += putWord(img, xOffset, yOffset, codePoint, color,
             isAdaptiveFG, enhanceGlyphCoverage);
     }
+}
+
+void TextDrawer::drawNativeText(cv::Mat& img, cv::Rect rect, const char* str,
+    intUnion color, UINT format) {
+    rect &= cv::Rect{ 0, 0, img.cols, img.rows };
+    if (rect.empty() || !str || !*str)
+        return;
+
+    BITMAPINFO bitmapInfo{};
+    bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmapInfo.bmiHeader.biWidth = rect.width;
+    bitmapInfo.bmiHeader.biHeight = -rect.height;
+    bitmapInfo.bmiHeader.biPlanes = 1;
+    bitmapInfo.bmiHeader.biBitCount = 32;
+    bitmapInfo.bmiHeader.biCompression = BI_RGB;
+
+    void* bitmapBits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(nullptr, &bitmapInfo, DIB_RGB_COLORS,
+        &bitmapBits, nullptr, 0);
+    HDC memoryDc = CreateCompatibleDC(nullptr);
+    if (!bitmap || !memoryDc || !bitmapBits) {
+        if (memoryDc)
+            DeleteDC(memoryDc);
+        if (bitmap)
+            DeleteObject(bitmap);
+        return;
+    }
+
+    HGDIOBJ oldBitmap = SelectObject(memoryDc, bitmap);
+    const std::size_t rowBytes = static_cast<std::size_t>(rect.width) * 4;
+    for (int row = 0; row < rect.height; ++row) {
+        memcpy(static_cast<uint8_t*>(bitmapBits) + row * rowBytes,
+            img.ptr(rect.y + row) + rect.x * 4, rowBytes);
+    }
+
+    HFONT font = CreateFontW(-fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_NATURAL_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HGDIOBJ oldFont = SelectObject(memoryDc, font);
+    SetBkMode(memoryDc, TRANSPARENT);
+    SetTextColor(memoryDc, RGB(color[2], color[1], color[0]));
+    const std::wstring text = jarkUtils::utf8ToWstring(str);
+    RECT nativeRect{ 0, 0, rect.width, rect.height };
+    DrawTextW(memoryDc, text.c_str(), static_cast<int>(text.size()), &nativeRect, format);
+
+    for (int row = 0; row < rect.height; ++row) {
+        auto* source = reinterpret_cast<uint32_t*>(
+            static_cast<uint8_t*>(bitmapBits) + row * rowBytes);
+        auto* destination = reinterpret_cast<uint32_t*>(img.ptr(rect.y + row)) + rect.x;
+        for (int column = 0; column < rect.width; ++column)
+            destination[column] = source[column] | 0xFF000000u;
+    }
+
+    SelectObject(memoryDc, oldFont);
+    SelectObject(memoryDc, oldBitmap);
+    DeleteObject(font);
+    DeleteObject(bitmap);
+    DeleteDC(memoryDc);
 }
 
 void TextDrawer::Init(unsigned int idi, const wchar_t* type) {

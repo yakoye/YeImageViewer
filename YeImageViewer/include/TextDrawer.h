@@ -45,6 +45,8 @@ private:
     rcFileInfo rc;
 
     void Init(unsigned int idi, const wchar_t* type);
+    void drawNativeText(cv::Mat& img, cv::Rect rect, const char* str,
+        intUnion color, UINT format);
     int putWord(cv::Mat& img, int x, int y, const int codePoint, intUnion color,
         bool isAdaptiveFG, bool enhanceGlyphCoverage);
 };
