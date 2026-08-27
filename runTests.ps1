@@ -10,6 +10,7 @@ $releaseDir = Join-Path $repoRoot "x64\Release"
 $viewer = Join-Path $releaseDir "YeImageViewer.exe"
 $unitTests = Join-Path $releaseDir "YeImageViewerTests.exe"
 $crashFixture = Join-Path $repoRoot "test\Image crash\dji_export_photo_20260809221510044.jpg"
+$hdrFixture = Join-Path $repoRoot "test\HDR color error\HDR.hdr"
 
 if (-not $SkipBuild) {
     $shell = Join-Path $PSHOME "pwsh.exe"
@@ -23,14 +24,20 @@ if (-not $SkipBuild) {
     }
 }
 
-foreach ($requiredFile in @($viewer, $unitTests, $crashFixture)) {
+foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture)) {
     if (-not (Test-Path -LiteralPath $requiredFile)) {
         throw "Required regression-test file is missing: $requiredFile"
     }
 }
 
 Write-Host "Running MotionPhoto parser tests..."
-& $unitTests
+$expectedHdrHash = "1A1A661E0A22BECBE019B6C095004315351F28600D9BD7600BD933BEB351E5D5"
+$actualHdrHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $hdrFixture).Hash
+if ($actualHdrHash -ne $expectedHdrHash) {
+    throw "HDR regression fixture hash mismatch: expected $expectedHdrHash, got $actualHdrHash."
+}
+
+& $unitTests $hdrFixture
 if ($LASTEXITCODE -ne 0) {
     throw "MotionPhoto parser tests failed with exit code $LASTEXITCODE."
 }

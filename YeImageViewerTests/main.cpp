@@ -1,6 +1,7 @@
 #include "MotionPhotoUtils.h"
 #include "StbImageDecoder.h"
 
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -47,9 +48,57 @@ void expectHdrChannelOrder() {
     std::cerr << "FAIL Radiance HDR RGB to BGRA channel order\n";
 }
 
+void expectRealHdrChannelOrder(std::string_view path) {
+    std::ifstream file(std::string(path), std::ios::binary | std::ios::ate);
+    if (!file) {
+        ++failedTests;
+        std::cerr << "FAIL real HDR fixture could not be opened\n";
+        return;
+    }
+
+    const std::streamsize fileSize = file.tellg();
+    if (fileSize <= 0) {
+        ++failedTests;
+        std::cerr << "FAIL real HDR fixture is empty\n";
+        return;
+    }
+
+    std::vector<uint8_t> buffer(static_cast<size_t>(fileSize));
+    file.seekg(0);
+    if (!file.read(reinterpret_cast<char*>(buffer.data()), fileSize)) {
+        ++failedTests;
+        std::cerr << "FAIL real HDR fixture could not be read\n";
+        return;
+    }
+
+    const auto image = StbImageDecoder::decode(buffer);
+    if (image.width != 2560 || image.height != 1600 || image.bgra.size() != 2560ULL * 1600ULL * 4ULL) {
+        ++failedTests;
+        std::cerr << "FAIL real HDR fixture dimensions or decoded buffer size\n";
+        return;
+    }
+
+    uint64_t blueSum = 0;
+    uint64_t redSum = 0;
+    for (size_t i = 0; i < image.bgra.size(); i += 4) {
+        blueSum += image.bgra[i];
+        redSum += image.bgra[i + 2];
+    }
+
+    const uint64_t pixelCount = static_cast<uint64_t>(image.width) * image.height;
+    if (redSum > blueSum + pixelCount * 10) {
+        ++passedTests;
+        std::cout << "PASS real HDR fixture preserves red and blue channels\n";
+        return;
+    }
+
+    ++failedTests;
+    std::cerr << "FAIL real HDR fixture red and blue channels are swapped\n";
 }
 
-int main() {
+}
+
+int main(int argc, char* argv[]) {
     expectVideoSize("no motion-photo metadata", "Exif.Image.Make: DJI", 0);
     expectVideoSize("legacy offset followed by metadata", "Xmp.GCamera.MicroVideoOffset: 12345\nExif.Image.Make: DJI", 12345);
     expectVideoSize("legacy offset at end", "Xmp.GCamera.MicroVideoOffset: 12345", 12345);
@@ -60,6 +109,13 @@ int main() {
     expectVideoSize("non-numeric length", "Item:Semantic: MotionPhoto\nItem:Length: unknown", 0);
     expectVideoSize("overflowing length", "Item:Semantic: MotionPhoto\nItem:Length: 999999999999999999999999999999", 0);
     expectHdrChannelOrder();
+    if (argc == 2) {
+        expectRealHdrChannelOrder(argv[1]);
+    }
+    else {
+        ++failedTests;
+        std::cerr << "FAIL real HDR fixture path was not provided\n";
+    }
 
     std::cout << passedTests << " passed, " << failedTests << " failed\n";
     return failedTests == 0 ? 0 : 1;
