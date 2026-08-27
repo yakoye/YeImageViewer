@@ -271,7 +271,8 @@ void D3D11App::ApplyWindowBackgroundMode() {
     }
 
     const auto mode = BackgroundRenderer::normalizeMode(GlobalVar::settingParameter.backgroundMode);
-    const bool requestFrostedGlass = mode == BackgroundMode::FrostedGlass;
+    const bool requestFrostedGlass = mode == BackgroundMode::FrostedGlass ||
+        m_presentationBackdropRequested;
     const BOOL useAlpha = requestFrostedGlass ? TRUE : FALSE;
     const DWM_SYSTEMBACKDROP_TYPE backdrop = requestFrostedGlass ?
         DWMSBT_TRANSIENTWINDOW : DWMSBT_NONE;
@@ -289,6 +290,13 @@ void D3D11App::ApplyWindowBackgroundMode() {
         DwmSetWindowAttribute(m_hWnd, DWMWA_REDIRECTIONBITMAP_ALPHA, &disableAlpha, sizeof(disableAlpha));
         DwmSetWindowAttribute(m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &noBackdrop, sizeof(noBackdrop));
     }
+}
+
+void D3D11App::SetPresentationBackdrop(bool enabled) {
+    if (m_presentationBackdropRequested == enabled)
+        return;
+    m_presentationBackdropRequested = enabled;
+    ApplyWindowBackgroundMode();
 }
 
 HRESULT D3D11App::CreateDeviceResources() {

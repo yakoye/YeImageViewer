@@ -40,7 +40,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.5.0"
+$expectedFileVersion = "1.36.6.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -124,26 +124,6 @@ public static class YeImageViewerTestNativeV1365
 "@
 }
 
-function Get-ExpectedFixedClientSize {
-    param(
-        [int]$WorkWidth,
-        [int]$WorkHeight
-    )
-
-    $maximumWidth = [Math]::Max(1, [int][Math]::Floor($WorkWidth * 0.9))
-    $height = [Math]::Max(1, [int][Math]::Floor($WorkHeight * 0.9))
-    $width = [int][Math]::Floor($height * 4.0 / 3.0)
-    if ($width -gt $maximumWidth) {
-        $width = $maximumWidth
-        $height = [int][Math]::Floor($width * 3.0 / 4.0)
-    }
-
-    return [PSCustomObject]@{
-        Width = $width
-        Height = $height
-    }
-}
-
 Write-Host "Checking fresh-install window defaults..."
 $freshDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Fresh-" + [Guid]::NewGuid().ToString("N"))
 $freshViewer = Join-Path $freshDirectory "YeImageViewer.exe"
@@ -171,14 +151,62 @@ try {
     $freshMonitorInfo = New-Object YeImageViewerTestNativeV1365+MONITORINFO
     $freshMonitorInfo.Size = [Runtime.InteropServices.Marshal]::SizeOf($freshMonitorInfo)
     [void][YeImageViewerTestNativeV1365]::GetMonitorInfo($freshMonitor, [ref]$freshMonitorInfo)
-    $expectedFreshSize = Get-ExpectedFixedClientSize `
-        ($freshMonitorInfo.Work.Right - $freshMonitorInfo.Work.Left) `
-        ($freshMonitorInfo.Work.Bottom - $freshMonitorInfo.Work.Top)
-    if ([Math]::Abs(($freshClientRect.Right - $freshClientRect.Left) - $expectedFreshSize.Width) -gt 1 -or
-        [Math]::Abs(($freshClientRect.Bottom - $freshClientRect.Top) - $expectedFreshSize.Height) -gt 1) {
-        throw "Fresh-install regression failed: expected a $($expectedFreshSize.Width)x$($expectedFreshSize.Height) 4:3 client, got $(($freshClientRect.Right - $freshClientRect.Left))x$(($freshClientRect.Bottom - $freshClientRect.Top))."
+    $freshWorkWidth = $freshMonitorInfo.Work.Right - $freshMonitorInfo.Work.Left
+    $freshWorkHeight = $freshMonitorInfo.Work.Bottom - $freshMonitorInfo.Work.Top
+    $freshStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($freshWindow, -16).ToInt64()
+    if (($freshStyle -band 0x00C00000) -ne 0 -or
+        [Math]::Abs(($freshClientRect.Right - $freshClientRect.Left) - $freshWorkWidth) -gt 1 -or
+        [Math]::Abs(($freshClientRect.Bottom - $freshClientRect.Top) - $freshWorkHeight) -gt 1) {
+        throw "Fresh-install regression failed: image did not open in the borderless monitor work area."
     }
-    Write-Host "PASS fresh install opens the fixed 4:3 monitor-relative window."
+    Write-Host "PASS fresh install opens in the borderless immersive work area."
+    Start-Sleep -Milliseconds 300
+    $freshInitialTitle = New-Object Text.StringBuilder 2048
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $freshWindow, $freshInitialTitle, $freshInitialTitle.Capacity)
+    $freshInitialZoomMatch = [regex]::Match($freshInitialTitle.ToString(), '(\d+)%')
+    if (-not $freshInitialZoomMatch.Success) {
+        throw "Fresh-install regression failed: presentation title did not report its zoom percentage."
+    }
+
+    $freshCenterX = [int](($freshClientRect.Right - $freshClientRect.Left) / 2)
+    $freshCenterY = [int](($freshClientRect.Bottom - $freshClientRect.Top) / 2)
+    $freshCenterPosition = [IntPtr](($freshCenterY -shl 16) -bor ($freshCenterX -band 0xFFFF))
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0200, [UIntPtr]::Zero, $freshCenterPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0201, [UIntPtr]1, $freshCenterPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0202, [UIntPtr]0, $freshCenterPosition)
+    Start-Sleep -Milliseconds 500
+    $freshFramedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($freshWindow, -16).ToInt64()
+    $freshFramedRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($freshWindow, [ref]$freshFramedRect)
+    $freshFramedWidth = $freshFramedRect.Right - $freshFramedRect.Left
+    $freshFramedHeight = $freshFramedRect.Bottom - $freshFramedRect.Top
+    if (($freshFramedStyle -band 0x00C00000) -eq 0 -or
+        $freshFramedWidth -ge $freshWorkWidth -or $freshFramedHeight -ge $freshWorkHeight) {
+        throw "Fresh-install regression failed: clicking the image did not return to an image-sized framed window."
+    }
+
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0100, [UIntPtr]0x27, [IntPtr]::Zero)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0101, [UIntPtr]0x27, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 700
+    $freshSwitchedRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($freshWindow, [ref]$freshSwitchedRect)
+    if (($freshSwitchedRect.Right - $freshSwitchedRect.Left) -ne $freshFramedWidth -or
+        ($freshSwitchedRect.Bottom - $freshSwitchedRect.Top) -ne $freshFramedHeight) {
+        throw "Fresh-install regression failed: browsing images changed the anchored framed window size."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0100, [UIntPtr]0x25, [IntPtr]::Zero)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0101, [UIntPtr]0x25, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 700
+    $freshReturnedTitle = New-Object Text.StringBuilder 2048
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $freshWindow, $freshReturnedTitle, $freshReturnedTitle.Capacity)
+    $freshReturnedZoomMatch = [regex]::Match($freshReturnedTitle.ToString(), '(\d+)%')
+    if (-not $freshReturnedZoomMatch.Success -or
+        $freshReturnedZoomMatch.Groups[1].Value -ne $freshInitialZoomMatch.Groups[1].Value) {
+        throw "Fresh-install regression failed: returning to the first image changed its immersive zoom percentage."
+    }
+    Write-Host "PASS image click anchors the frame while browsing preserves per-image zoom."
 
     [void]$freshProcess.CloseMainWindow()
     if (-not $freshProcess.WaitForExit(3000)) {
@@ -289,8 +317,17 @@ try {
     Write-Host "PASS SVG background modes switch without exiting or hanging."
 
     $window = [IntPtr]$viewerProcess.MainWindowHandle
-    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0112, [UIntPtr]0xF120, [IntPtr]::Zero)
+    $presentationStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64()
+    if (($presentationStyle -band 0x00C00000) -ne 0) {
+        throw "Escape regression failed: SVG did not begin in borderless presentation mode."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 250
+    $presentationRestoredStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64()
+    if (($presentationRestoredStyle -band 0x00C00000) -eq 0) {
+        throw "Escape regression failed: Escape did not leave presentation mode."
+    }
+    Write-Host "PASS Escape leaves the initial immersive presentation."
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0100, [UIntPtr]0x46, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 250
@@ -331,18 +368,6 @@ try {
     $clientWidth = $clientRect.Right - $clientRect.Left
     $clientHeight = $clientRect.Bottom - $clientRect.Top
     $windowDpi = [YeImageViewerTestNativeV1365]::GetDpiForWindow($window)
-    $windowMonitor = [YeImageViewerTestNativeV1365]::MonitorFromWindow($window, 2)
-    $windowMonitorInfo = New-Object YeImageViewerTestNativeV1365+MONITORINFO
-    $windowMonitorInfo.Size = [Runtime.InteropServices.Marshal]::SizeOf($windowMonitorInfo)
-    [void][YeImageViewerTestNativeV1365]::GetMonitorInfo($windowMonitor, [ref]$windowMonitorInfo)
-    $expectedClientSize = Get-ExpectedFixedClientSize `
-        ($windowMonitorInfo.Work.Right - $windowMonitorInfo.Work.Left) `
-        ($windowMonitorInfo.Work.Bottom - $windowMonitorInfo.Work.Top)
-    if ([Math]::Abs($clientWidth - $expectedClientSize.Width) -gt 1 -or
-        [Math]::Abs($clientHeight - $expectedClientSize.Height) -gt 1) {
-        throw "Initial-size regression failed: expected a $($expectedClientSize.Width)x$($expectedClientSize.Height) 4:3 client, got ${clientWidth}x${clientHeight}."
-    }
-
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0100, [UIntPtr]0x27, [IntPtr]::Zero)
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0101, [UIntPtr]0x27, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 700
@@ -352,7 +377,7 @@ try {
         ($switchedClientRect.Bottom - $switchedClientRect.Top) -ne $clientHeight) {
         throw "Initial-size regression failed: switching to another image changed the fixed client size."
     }
-    Write-Host "PASS image changes keep the fixed 4:3 monitor-relative window size."
+    Write-Host "PASS image changes keep the first framed window size."
 
     $targetClientWidth = [int][Math]::Round($clientWidth * $windowDpi / 96.0)
     $targetClientHeight = [int][Math]::Round($clientHeight * $windowDpi / 96.0)

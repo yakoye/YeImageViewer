@@ -42,6 +42,9 @@
     <ClInclude Include="include\OverlayLayout.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\PresentationLayout.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\MonitorPlacement.h">
       <Filter>include</Filter>
     </ClInclude>

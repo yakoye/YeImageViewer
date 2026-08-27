@@ -36,6 +36,7 @@ protected:
     void CreateWindowSizeDependentResources();
     void DiscardDeviceResources();
     void ApplyWindowBackgroundMode();
+    void SetPresentationBackdrop(bool enabled);
     bool IsFrostedGlassActive() const { return m_isFrostedGlassActive; }
 
     // CPU 画布数据呈现到屏幕
@@ -70,5 +71,6 @@ protected:
     int winHeight = 600;
     bool hasInitWinSize = false;
     bool m_isFrostedGlassActive = false;
+    bool m_presentationBackdropRequested = false;
     cv::Mat mainCanvas;
 };

@@ -4,6 +4,7 @@
 #include "EscapeBehavior.h"
 #include "ImageInterpolation.h"
 #include "InitialWindowLayout.h"
+#include "PresentationLayout.h"
 #include "OverlayLayout.h"
 #include "RotationStore.h"
 #include "StbImageDecoder.h"
@@ -281,36 +282,74 @@ void expectOverlayLayout() {
 
 void expectInitialWindowLayout() {
     const auto small = InitialWindowLayout::calculate(640, 480, 1920, 1080);
-    passOrFail("small images open at 100 percent",
+    passOrFail("the hidden startup seed keeps small source dimensions intact",
         small.scale == 1.0 && small.renderedImageWidth == 640 && small.renderedImageHeight == 480 &&
         small.clientWidth == 1296 && small.clientHeight == 972);
 
     const auto tiny = InitialWindowLayout::calculate(100, 50, 1920, 1080);
-    passOrFail("tiny images stay at 100 percent inside the fixed window",
+    passOrFail("the hidden startup seed keeps tiny source dimensions intact",
         tiny.scale == 1.0 && tiny.renderedImageWidth == 100 && tiny.renderedImageHeight == 50 &&
         tiny.clientWidth == 1296 && tiny.clientHeight == 972);
 
     const auto large = InitialWindowLayout::calculate(3000, 2000, 1920, 1080);
-    passOrFail("the initial window is fixed at 90 percent height with a 4:3 ratio",
+    passOrFail("the hidden startup seed uses the fallback 4:3 ratio",
         std::abs(large.scale - 1296.0 / 3000.0) < 0.000001 &&
         large.renderedImageWidth == 1296 && large.renderedImageHeight == 864 &&
         large.clientWidth == 1296 && large.clientHeight == 972);
 
     const auto portrait = InitialWindowLayout::calculate(2000, 3000, 1920, 1080);
-    passOrFail("portrait images fit inside the same fixed landscape window",
+    passOrFail("the hidden startup seed can fit a portrait image",
         std::abs(portrait.scale - 972.0 / 3000.0) < 0.000001 &&
         portrait.renderedImageWidth == 648 && portrait.renderedImageHeight == 972 &&
         portrait.clientWidth == 1296 && portrait.clientHeight == 972);
 
     const auto square = InitialWindowLayout::calculate(2000, 2000, 1920, 1080);
-    passOrFail("square images fit inside the same fixed landscape window",
+    passOrFail("the hidden startup seed can fit a square image",
         square.renderedImageWidth == 972 && square.renderedImageHeight == 972 &&
         square.clientWidth == 1296 && square.clientHeight == 972);
 
     const auto portraitMonitor = InitialWindowLayout::calculate(1000, 1000, 1080, 1920);
-    passOrFail("a portrait monitor caps width and preserves the 4:3 window ratio",
+    passOrFail("the hidden seed caps its 4:3 ratio on a portrait monitor",
         portraitMonitor.clientWidth == 972 && portraitMonitor.clientHeight == 729 &&
         portraitMonitor.renderedImageWidth == 729 && portraitMonitor.renderedImageHeight == 729);
+}
+
+void expectPresentationLayout() {
+    const auto small = PresentationLayout::calculate(671, 477, 1920, 1020, 120);
+    passOrFail("Picasa-sized small images use logical 100 percent at monitor DPI",
+        std::abs(small.scale - 1.25) < 0.000001 &&
+        small.renderedWidth == 839 && small.renderedHeight == 596 &&
+        small.imageLeft == 540 && small.imageTop == 192 &&
+        small.bottomReservedPixels == 40 && !small.portrait);
+
+    const auto wide = PresentationLayout::calculate(1514, 857, 1920, 1020, 120);
+    passOrFail("large landscape images fit the measured Picasa preview height",
+        wide.renderedWidth == 1486 && wide.renderedHeight == 841 &&
+        wide.imageLeft == 217 && wide.imageTop == 69 &&
+        !wide.portrait && !wide.extendsBelowViewport);
+
+    const auto tall = PresentationLayout::calculate(723, 1130, 1920, 1020, 120);
+    passOrFail("portrait images preserve readable logical 100 percent and may overflow vertically",
+        std::abs(tall.scale - 1.25) < 0.000001 &&
+        tall.renderedWidth == 904 && tall.renderedHeight == 1413 &&
+        tall.imageLeft == 508 && tall.imageTop == -216 &&
+        tall.portrait && tall.extendsBelowViewport);
+
+    const auto veryWidePortrait = PresentationLayout::calculate(2000, 3000, 1920, 1020, 120);
+    passOrFail("portrait images shrink only when their width exceeds the preview limit",
+        std::abs(veryWidePortrait.scale - 1728.0 / 2000.0) < 0.000001 &&
+        veryWidePortrait.renderedWidth == 1728 &&
+        veryWidePortrait.renderedHeight == 2592);
+
+    const auto smallWindow = PresentationLayout::calculateWindowed(small, 1920, 1020);
+    const auto wideWindow = PresentationLayout::calculateWindowed(wide, 1920, 1020);
+    const auto tallWindow = PresentationLayout::calculateWindowed(tall, 1920, 1020);
+    passOrFail("leaving presentation mode wraps the window client around the displayed image",
+        smallWindow.clientWidth == 839 && smallWindow.clientHeight == 596 &&
+        wideWindow.clientWidth == 1486 && wideWindow.clientHeight == 841);
+    passOrFail("an overflowing portrait keeps its zoom and uses a centered scrollable viewport",
+        tallWindow.clientWidth == 904 && tallWindow.clientHeight == 918 &&
+        tallWindow.initialSlideY == 1);
 }
 
 void expectMonitorPlacement() {
@@ -493,6 +532,7 @@ int main(int argc, char* argv[]) {
     expectBackgroundRendering();
     expectOverlayLayout();
     expectInitialWindowLayout();
+    expectPresentationLayout();
     expectMonitorPlacement();
     expectEscapeBehavior();
     expectRotationPersistence();

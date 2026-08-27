@@ -8,6 +8,7 @@
 #include "Setting.h"
 #include "RotationStore.h"
 #include "InitialWindowLayout.h"
+#include "PresentationLayout.h"
 
 #include "D3D11App.h"
 #include <ppl.h>
@@ -23,8 +24,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.5";
-constinit int appVersionCode = 13605; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.6";
+constinit int appVersionCode = 13606; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -168,6 +169,21 @@ struct CurImageParameter {
         zoomIndex100percent = (it != zoomList.end()) ? (int)std::distance(zoomList.begin(), it) : zoomIndex;
     }
 
+    void setZoom(int64_t zoom) {
+        zoomTarget = zoomCur = std::max<int64_t>(1, zoom);
+        zoomList = std::vector<int64_t>(ZOOM_LIST.begin(), ZOOM_LIST.end());
+        if (!std::ranges::binary_search(ZOOM_LIST, zoomTarget))
+            zoomList.emplace_back(zoomTarget);
+        std::sort(zoomList.begin(), zoomList.end());
+
+        auto it = std::find(zoomList.begin(), zoomList.end(), zoomTarget);
+        zoomIndex = (it != zoomList.end()) ? (int)std::distance(zoomList.begin(), it) : 0;
+        zoomIndexFix = zoomIndex;
+        it = std::find(zoomList.begin(), zoomList.end(), ZOOM_BASE);
+        zoomIndex100percent = (it != zoomList.end()) ?
+            (int)std::distance(zoomList.begin(), it) : zoomIndex;
+    }
+
     void slideTargetRotateLeft() {
         slideTarget = { slideTarget.y, -slideTarget.x };
         slideCur = slideTarget;
@@ -232,6 +248,14 @@ public:
     Cood mousePos, mousePressPos;
     ImageDatabase imgDB;
     RotationStore rotationStore;
+    bool presentationMode = false;
+    bool framedWindowAnchored = false;
+    bool presentationClickCandidate = false;
+    DWORD presentationWindowedStyle = 0;
+    DWORD presentationWindowedExtendedStyle = 0;
+    Cood presentationPressPos;
+    PresentationLayout::Result presentationLayout;
+    PresentationLayout::Result presentationAnchorLayout;
 
     int curFileIdx = -1;         // 文件在路径列表的索引
     vector<wstring> imgFileList; // 工作目录下所有图像文件路径
@@ -268,6 +292,10 @@ public:
         const bool isRealImage = hasCurrentImagePath();
         const int savedRotation = isRealImage ? rotationStore.get(imgFileList[curFileIdx]) : 0;
         curPar.Init(winWidth, winHeight, savedRotation, isRealImage);
+        if (presentationMode)
+            applyPresentationImageLayout();
+        else if (framedWindowAnchored)
+            applyAnchoredWindowImageLayout();
     }
 
     void persistCurrentRotation() {
@@ -298,6 +326,150 @@ public:
         const int y = monitorInfo.rcWork.top + (workHeight - outerHeight) / 2;
         SetWindowPos(m_hWnd, nullptr, x, y, outerWidth, outerHeight,
             SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+
+    PresentationLayout::Result calculatePresentationLayout() const {
+        if (!hasCurrentImagePath() || curPar.width <= 0 || curPar.height <= 0)
+            return {};
+        return PresentationLayout::calculate(
+            curPar.width, curPar.height, winWidth, winHeight,
+            static_cast<int>(GetDpiForWindow(m_hWnd)),
+            curPar.rotation == 1 || curPar.rotation == 3);
+    }
+
+    void applyPresentationImageLayout() {
+        if (!presentationMode)
+            return;
+        presentationLayout = calculatePresentationLayout();
+        if (presentationLayout.renderedWidth <= 0 || presentationLayout.renderedHeight <= 0)
+            return;
+
+        curPar.setZoom(static_cast<int64_t>(std::lround(
+            presentationLayout.scale * curPar.ZOOM_BASE)));
+        curPar.slideCur = curPar.slideTarget = {
+            presentationLayout.initialSlideX,
+            presentationLayout.initialSlideY,
+        };
+    }
+
+    void applyAnchoredWindowImageLayout() {
+        if (!framedWindowAnchored || !hasCurrentImagePath())
+            return;
+
+        MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
+        if (!GetMonitorInfoW(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST), &monitorInfo))
+            return;
+        const auto layout = PresentationLayout::calculate(
+            curPar.width, curPar.height,
+            monitorInfo.rcWork.right - monitorInfo.rcWork.left,
+            monitorInfo.rcWork.bottom - monitorInfo.rcWork.top,
+            static_cast<int>(GetDpiForWindow(m_hWnd)),
+            curPar.rotation == 1 || curPar.rotation == 3);
+        if (layout.renderedWidth <= 0 || layout.renderedHeight <= 0)
+            return;
+
+        curPar.setZoom(static_cast<int64_t>(std::lround(
+            layout.scale * curPar.ZOOM_BASE)));
+        curPar.slideCur = curPar.slideTarget = { 0, 0 };
+    }
+
+    RECT currentImageRect() const {
+        if (curPar.width <= 0 || curPar.height <= 0)
+            return {};
+        const int displayWidth = (curPar.rotation == 0 || curPar.rotation == 2) ?
+            curPar.width : curPar.height;
+        const int displayHeight = (curPar.rotation == 0 || curPar.rotation == 2) ?
+            curPar.height : curPar.width;
+        const int renderedWidth = static_cast<int>(std::lround(
+            static_cast<double>(displayWidth) * curPar.zoomCur / curPar.ZOOM_BASE));
+        const int renderedHeight = static_cast<int>(std::lround(
+            static_cast<double>(displayHeight) * curPar.zoomCur / curPar.ZOOM_BASE));
+        const int left = curPar.slideCur.x + static_cast<int>(std::lround(
+            (winWidth - renderedWidth) / 2.0));
+        const int top = curPar.slideCur.y + static_cast<int>(std::lround(
+            (winHeight - renderedHeight) / 2.0));
+        return { left, top, left + renderedWidth, top + renderedHeight };
+    }
+
+    bool isPointInsideCurrentImage(int x, int y) const {
+        const auto rect = currentImageRect();
+        return rect.left <= x && x < rect.right && rect.top <= y && y < rect.bottom;
+    }
+
+    void enterPresentationMode() {
+        if (presentationMode || !hasCurrentImagePath())
+            return;
+
+        presentationWindowedStyle = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_STYLE));
+        presentationWindowedExtendedStyle = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_EXSTYLE));
+        framedWindowAnchored = false;
+        presentationMode = true;
+        SetPresentationBackdrop(true);
+
+        MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
+        if (!GetMonitorInfoW(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST), &monitorInfo)) {
+            presentationMode = false;
+            SetPresentationBackdrop(false);
+            return;
+        }
+
+        SetWindowLongPtrW(m_hWnd, GWL_STYLE,
+            presentationWindowedStyle & ~(WS_CAPTION | WS_THICKFRAME));
+        SetWindowLongPtrW(m_hWnd, GWL_EXSTYLE,
+            presentationWindowedExtendedStyle &
+            ~(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE));
+        SetWindowPos(m_hWnd, HWND_TOP,
+            monitorInfo.rcWork.left, monitorInfo.rcWork.top,
+            monitorInfo.rcWork.right - monitorInfo.rcWork.left,
+            monitorInfo.rcWork.bottom - monitorInfo.rcWork.top,
+            SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        applyPresentationImageLayout();
+        presentationAnchorLayout = presentationLayout;
+        operateQueue.push({ ActionENUM::refresh });
+    }
+
+    void exitPresentationMode() {
+        if (!presentationMode)
+            return;
+
+        MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
+        if (!GetMonitorInfoW(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST), &monitorInfo))
+            return;
+        const int workWidth = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
+        const int workHeight = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
+        const auto windowed = PresentationLayout::calculateWindowed(
+            presentationAnchorLayout, workWidth, workHeight);
+
+        presentationMode = false;
+        framedWindowAnchored = true;
+        presentationClickCandidate = false;
+        SetPresentationBackdrop(false);
+        SetWindowLongPtrW(m_hWnd, GWL_STYLE, presentationWindowedStyle);
+        SetWindowLongPtrW(m_hWnd, GWL_EXSTYLE, presentationWindowedExtendedStyle);
+
+        if (windowed.clientWidth <= 0 || windowed.clientHeight <= 0) {
+            applyDefaultWindowSize();
+            return;
+        }
+
+        RECT outerRect{ 0, 0, windowed.clientWidth, windowed.clientHeight };
+        if (!AdjustWindowRectExForDpi(&outerRect, presentationWindowedStyle, FALSE,
+            presentationWindowedExtendedStyle, GetDpiForWindow(m_hWnd))) {
+            AdjustWindowRectEx(&outerRect, presentationWindowedStyle, FALSE,
+                presentationWindowedExtendedStyle);
+        }
+        const int outerWidth = outerRect.right - outerRect.left;
+        const int outerHeight = outerRect.bottom - outerRect.top;
+        const int x = monitorInfo.rcWork.left + (workWidth - outerWidth) / 2;
+        const int y = monitorInfo.rcWork.top + (workHeight - outerHeight) / 2;
+        SetWindowPos(m_hWnd, HWND_TOP, x, y, outerWidth, outerHeight,
+            SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+        curPar.slideCur = curPar.slideTarget = {
+            windowed.initialSlideX,
+            windowed.initialSlideY,
+        };
+        operateQueue.push({ ActionENUM::refresh });
     }
 
     HRESULT InitWindow(HINSTANCE hInstance) {
@@ -445,6 +617,14 @@ public:
         switch ((uint64_t)btnState)
         {
         case WM_LBUTTONDOWN: {//左键
+            if (presentationMode && cursorPos == CursorPos::centerArea) {
+                presentationClickCandidate = isPointInsideCurrentImage(x, y);
+                presentationPressPos = { x, y };
+                mousePressPos = { x, y };
+                mouseIsPressing = presentationClickCandidate;
+                return;
+            }
+
             if (cursorPos == CursorPos::centerArea) {
                 auto now = std::chrono::steady_clock::now();
                 auto elapsed = duration_cast<std::chrono::milliseconds>(now - lastClickTimestamp).count();
@@ -506,6 +686,18 @@ public:
         switch ((uint64_t)btnState)
         {
         case WM_LBUTTONUP: {//左键
+            if (presentationMode && presentationClickCandidate) {
+                const int deltaX = x - presentationPressPos.x;
+                const int deltaY = y - presentationPressPos.y;
+                const bool isClick = deltaX * deltaX + deltaY * deltaY <= 25 &&
+                    isPointInsideCurrentImage(x, y);
+                presentationClickCandidate = false;
+                mouseIsPressing = false;
+                if (isClick) {
+                    exitPresentationMode();
+                    return;
+                }
+            }
             mouseIsPressing = false;
             operateQueue.push({ ActionENUM::refresh });
             return;
@@ -540,6 +732,13 @@ public:
 
     void OnMouseMove(WPARAM btnState, int x, int y) override {
         mousePos = { x, y };
+
+        if (presentationClickCandidate) {
+            const int deltaX = x - presentationPressPos.x;
+            const int deltaY = y - presentationPressPos.y;
+            if (deltaX * deltaX + deltaY * deltaY > 25)
+                presentationClickCandidate = false;
+        }
 
         if (mouseIsPressing) {
             cursorPos = CursorPos::centerArea;
@@ -650,6 +849,10 @@ public:
     }
 
     void handleEscapeKey() {
+        if (presentationMode) {
+            exitPresentationMode();
+            return;
+        }
         const auto action = EscapeBehavior::resolve(
             jarkUtils::IsFullScreen(m_hWnd), IsZoomed(m_hWnd),
             GlobalVar::settingParameter.escapeClosesImage);
@@ -776,7 +979,10 @@ public:
 
             case 'F':
             case VK_F11: {
-                jarkUtils::ToggleFullScreen(m_hWnd);
+                if (presentationMode)
+                    exitPresentationMode();
+                else
+                    jarkUtils::ToggleFullScreen(m_hWnd);
             }break;
 
             case 'Q': {
@@ -984,7 +1190,10 @@ public:
         }break;
 
         case ContextMenu::toggleFullScreen: {
-            jarkUtils::ToggleFullScreen(m_hWnd);
+            if (presentationMode)
+                exitPresentationMode();
+            else
+                jarkUtils::ToggleFullScreen(m_hWnd);
         }break;
 
         case ContextMenu::openSetting: {
@@ -1035,6 +1244,8 @@ public:
     }
 
     uint32_t backgroundPixelAt(int x, int y) const {
+        if (presentationMode)
+            return 0x88000000u;
         return BackgroundRenderer::canvasPixel(
             currentBackgroundMode(), IsFrostedGlassActive(), x, y,
             GlobalVar::currentTheme.BG,
@@ -1043,6 +1254,14 @@ public:
     }
 
     void fillCanvasBackground(cv::Mat& canvas) const {
+        if (presentationMode) {
+            for (int y = 0; y < canvas.rows; ++y) {
+                auto row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
+                std::fill(row, row + canvas.cols, 0x88000000u);
+            }
+            return;
+        }
+
         const auto mode = currentBackgroundMode();
         const bool frostedGlassActive = IsFrostedGlassActive();
         if (mode != BackgroundMode::Transparent) {
@@ -1086,7 +1305,12 @@ public:
         }
 
         if (hasInitWinSize) {
-            curPar.updateZoomList(winWidth, winHeight);
+            if (presentationMode)
+                applyPresentationImageLayout();
+            else if (framedWindowAnchored)
+                applyAnchoredWindowImageLayout();
+            else
+                curPar.updateZoomList(winWidth, winHeight);
 
             cv::Mat srcImg;
             if (curPar.imageAssetPtr->format == ImageFormat::None || curPar.imageAssetPtr->format == ImageFormat::Still)
@@ -2151,7 +2375,12 @@ public:
             }
             curPar.rotation = (curPar.rotation + 1) & 0b11;
             curPar.slideTargetRotateLeft();
-            curPar.updateZoomList(winWidth, winHeight);
+            if (presentationMode)
+                applyPresentationImageLayout();
+            else if (framedWindowAnchored)
+                applyAnchoredWindowImageLayout();
+            else
+                curPar.updateZoomList(winWidth, winHeight);
             persistCurrentRotation();
         } break;
 
@@ -2161,7 +2390,12 @@ public:
             }
             curPar.rotation = (curPar.rotation + 4 - 1) & 0b11;
             curPar.slideTargetRotateRight();
-            curPar.updateZoomList(winWidth, winHeight);
+            if (presentationMode)
+                applyPresentationImageLayout();
+            else if (framedWindowAnchored)
+                applyAnchoredWindowImageLayout();
+            else
+                curPar.updateZoomList(winWidth, winHeight);
             persistCurrentRotation();
         } break;
 
@@ -2381,6 +2615,7 @@ int WINAPI wWinMain(
     YeImageViewerApp app;
     if (SUCCEEDED(app.InitWindow(hInstance))) {
         app.initOpenFile(filePath);
+        app.enterPresentationMode();
         app.ShowInitialWindow();
         app.Run();
     }
