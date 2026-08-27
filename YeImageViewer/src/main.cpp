@@ -2,6 +2,7 @@
 
 #include "TextDrawer.h"
 #include "ImageDatabase.h"
+#include "SvgRenderer.h"
 #include "Printer.h"
 #include "Setting.h"
 
@@ -92,6 +93,10 @@ struct CurImageParameter {
             if (imageAssetPtr->format == ImageFormat::Animated) {
                 width = imageAssetPtr->frames[0].cols;
                 height = imageAssetPtr->frames[0].rows;
+            }
+            else if (imageAssetPtr->svgRenderer) {
+                width = std::max(1, (int)std::lround(imageAssetPtr->svgRenderer->width()));
+                height = std::max(1, (int)std::lround(imageAssetPtr->svgRenderer->height()));
             }
             else {
                 width = imageAssetPtr->primaryFrame.cols;
@@ -1062,7 +1067,86 @@ public:
             ((bgPx[0] * (255 - alpha) + srcPx[0] * alpha + 255) >> 8);
     }
 
+    void drawSvgCanvas(cv::Mat& canvas) const {
+        const auto& renderer = curPar.imageAssetPtr->svgRenderer;
+        const int canvasH = canvas.rows;
+        const int canvasW = canvas.cols;
+        const float scale = (float)curPar.zoomCur / curPar.ZOOM_BASE;
+        const float nativeW = renderer->width();
+        const float nativeH = renderer->height();
+
+        const bool isQuarterTurn = curPar.rotation == 1 || curPar.rotation == 3;
+        const double renderedW = (isQuarterTurn ? nativeH : nativeW) * scale;
+        const double renderedH = (isQuarterTurn ? nativeW : nativeH) * scale;
+        const int deltaW = curPar.slideCur.x + (int)std::round((canvasW - renderedW) / 2.0);
+        const int deltaH = curPar.slideCur.y + (int)std::round((canvasH - renderedH) / 2.0);
+
+        SvgTransform transform;
+        switch (curPar.rotation) {
+        case 1:
+            transform = { 0.0f, -scale, scale, 0.0f,
+                (float)deltaW, (float)deltaH + nativeW * scale };
+            break;
+        case 2:
+            transform = { -scale, 0.0f, 0.0f, -scale,
+                (float)deltaW + nativeW * scale, (float)deltaH + nativeH * scale };
+            break;
+        case 3:
+            transform = { 0.0f, scale, -scale, 0.0f,
+                (float)deltaW + nativeH * scale, (float)deltaH };
+            break;
+        default:
+            transform = { scale, 0.0f, 0.0f, scale, (float)deltaW, (float)deltaH };
+            break;
+        }
+
+        auto rendered = renderer->renderViewport(canvasW, canvasH, transform);
+        uint32_t* canvasBegin = (uint32_t*)canvas.ptr();
+        std::fill(canvasBegin, canvasBegin + (size_t)canvasW * canvasH, GlobalVar::currentTheme.BG);
+        if (rendered.empty()) {
+            return;
+        }
+
+        cv::Mat viewport(canvasH, canvasW, CV_8UC4, rendered.bgra.data());
+        const int xStart = std::clamp(deltaW, 0, canvasW);
+        const int yStart = std::clamp(deltaH, 0, canvasH);
+        const int xEnd = std::clamp((int)std::ceil(renderedW) + deltaW, 0, canvasW);
+        const int yEnd = std::clamp((int)std::ceil(renderedH) + deltaH, 0, canvasH);
+
+        isLowZoom = false;
+        concurrency::parallel_for(yStart, yEnd, [&](int y) {
+            auto destination = (uint32_t*)canvas.ptr() + (size_t)y * canvasW;
+            for (int x = xStart; x < xEnd; ++x) {
+                destination[x] = getSrcPx4(viewport, x, y, x, y);
+            }
+        });
+
+        const uint32_t lineColor = 0xFF808080;
+        if (0 < xStart && xStart < canvasW) {
+            for (int y = std::max(yStart - 1, 0); y < std::min(yEnd + 1, canvasH); ++y)
+                canvas.at<uint32_t>(y, xStart - 1) = lineColor;
+        }
+        if (0 < xEnd && xEnd < canvasW) {
+            for (int y = std::max(yStart - 1, 0); y < std::min(yEnd + 1, canvasH); ++y)
+                canvas.at<uint32_t>(y, xEnd) = lineColor;
+        }
+        if (0 < yStart && yStart < canvasH) {
+            for (int x = xStart; x < xEnd; ++x)
+                canvas.at<uint32_t>(yStart - 1, x) = lineColor;
+        }
+        if (0 < yEnd && yEnd < canvasH) {
+            for (int x = xStart; x < xEnd; ++x)
+                canvas.at<uint32_t>(yEnd, x) = lineColor;
+        }
+    }
+
     void drawCanvas(const cv::Mat& srcImg, cv::Mat& canvas) const {
+        if (curPar.imageAssetPtr && curPar.imageAssetPtr->svgRenderer &&
+            srcImg.data == curPar.imageAssetPtr->primaryFrame.data) {
+            drawSvgCanvas(canvas);
+            return;
+        }
+
         int srcH, srcW;
         if (curPar.rotation == 0 || curPar.rotation == 2) {
             srcH = srcImg.rows;
@@ -1905,7 +1989,7 @@ public:
                     computeZoomSlide(zoomNext);
                 }
                 curPar.zoomTarget = zoomNext;
-                smoothShift = true;
+                smoothShift = !curPar.imageAssetPtr->svgRenderer;
             }
         } break;
 
@@ -1922,7 +2006,7 @@ public:
                     computeZoomSlide(zoomNext);
                 }
                 curPar.zoomTarget = zoomNext;
-                smoothShift = true;
+                smoothShift = !curPar.imageAssetPtr->svgRenderer;
             }
         } break;
 
@@ -1937,7 +2021,7 @@ public:
                 computeZoomSlide(zoomNext);
             }
             curPar.zoomTarget = zoomNext;
-            smoothShift = true;
+            smoothShift = !curPar.imageAssetPtr->svgRenderer;
         } break;
 
         case ActionENUM::rotateLeft: {

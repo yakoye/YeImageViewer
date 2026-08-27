@@ -44,6 +44,7 @@
   <PropertyGroup>
     <OutDir>$(SolutionDir)x64\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)x64\$(Configuration)\$(ProjectName)\</IntDir>
+    <LibraryPath>$(ProjectDir)..\YeImageViewer\lib;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -80,6 +81,12 @@
   <ItemGroup>
     <ClCompile Include="..\YeImageViewer\src\StbImageDecoder.cpp">
       <Link>Production\StbImageDecoder.cpp</Link>
+    </ClCompile>
+    <ClCompile Include="..\YeImageViewer\src\SvgRenderer.cpp">
+      <Link>Production\SvgRenderer.cpp</Link>
+    </ClCompile>
+    <ClCompile Include="..\YeImageViewer\src\tinyxml2.cpp">
+      <Link>Production\tinyxml2.cpp</Link>
     </ClCompile>
     <ClCompile Include="main.cpp" />
   </ItemGroup>

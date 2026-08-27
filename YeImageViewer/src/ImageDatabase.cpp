@@ -1842,7 +1842,7 @@ cv::Mat ImageDatabase::loadSTB(wstring_view path, std::span<const uint8_t> buf) 
 }
 
 
-cv::Mat ImageDatabase::loadSVG(wstring_view path, std::span<const uint8_t> buf) {
+cv::Mat ImageDatabase::loadSVG(wstring_view path, std::span<const uint8_t> buf, std::shared_ptr<SvgRenderer>* rendererOut) {
     const int maxEdge = 4000;
     static bool isInitFont = false;
 
@@ -1858,24 +1858,14 @@ cv::Mat ImageDatabase::loadSVG(wstring_view path, std::span<const uint8_t> buf) 
         }
     }
 
-    SVGPreprocessor preprocessor;
-    auto SVGData = preprocessor.preprocessSVG((const char*)buf.data(), buf.size());
-
-    auto dataPtr = SVGData.empty() ? (const char*)buf.data() : SVGData.data();
-    size_t dataBytes = SVGData.empty() ? buf.size() : SVGData.length();
-
-    auto document = lunasvg::Document::loadFromData(dataPtr, dataBytes);
-    if (!document) {
+    auto renderer = SvgRenderer::create(buf);
+    if (!renderer) {
         JARK_LOG("Failed to load SVG data {}", jarkUtils::wstringToUtf8(path));
         return {};
     }
 
-    if (document->height() == 0 || document->width() == 0) {
-        JARK_LOG("Failed to load SVG: height/width == 0 {}", jarkUtils::wstringToUtf8(path));
-        return {};
-    }
     // 宽高比例
-    const float AspectRatio = document->width() / document->height();
+    const float AspectRatio = renderer->width() / renderer->height();
     int height, width;
 
     if (AspectRatio == 1) {
@@ -1890,13 +1880,16 @@ cv::Mat ImageDatabase::loadSVG(wstring_view path, std::span<const uint8_t> buf) 
         width = int(maxEdge * AspectRatio);
     }
 
-    auto bitmap = document->renderToBitmap(width, height);
-    if (bitmap.isNull()) {
+    auto bitmap = renderer->renderToBitmap(width, height);
+    if (bitmap.empty()) {
         JARK_LOG("Failed to render SVG to bitmap {}", jarkUtils::wstringToUtf8(path));
         return {};
     }
 
-    return cv::Mat(height, width, CV_8UC4, bitmap.data(), bitmap.stride()).clone();
+    if (rendererOut) {
+        *rendererOut = std::move(renderer);
+    }
+    return cv::Mat(height, width, CV_8UC4, bitmap.bgra.data()).clone();
 }
 
 
@@ -3214,6 +3207,7 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
 
     //以下是静态图
     cv::Mat img;
+    std::shared_ptr<SvgRenderer> svgRenderer;
     string exifInfo;
 
     if (ext == L"jxr") {
@@ -3224,8 +3218,10 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
         exifInfo = ExifParse::getSimpleInfo(path, img.cols, img.rows, fileBuf.data(), fileBuf.size());
     }
     else if (ext == L"svg") {
-        img = loadSVG(path, fileBuf);
-        exifInfo = ExifParse::getSimpleInfo(path, img.cols, img.rows, fileBuf.data(), fileBuf.size());
+        img = loadSVG(path, fileBuf, &svgRenderer);
+        const int svgWidth = svgRenderer ? std::max(1, (int)std::lround(svgRenderer->width())) : img.cols;
+        const int svgHeight = svgRenderer ? std::max(1, (int)std::lround(svgRenderer->height())) : img.rows;
+        exifInfo = ExifParse::getSimpleInfo(path, svgWidth, svgHeight, fileBuf.data(), fileBuf.size());
         if (img.empty()) {
             img = getErrorTipsMat();
         }
@@ -3298,7 +3294,9 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
     if (img.empty())
         img = getErrorTipsMat();
 
-    return { ImageFormat::Still, img, {}, {}, exifInfo };
+    ImageAsset imageAsset{ ImageFormat::Still, img, {}, {}, exifInfo };
+    imageAsset.svgRenderer = std::move(svgRenderer);
+    return imageAsset;
 }
 
 ImageAsset ImageDatabase::loader(const wstring& path) {

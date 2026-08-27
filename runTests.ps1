@@ -11,6 +11,8 @@ $viewer = Join-Path $releaseDir "YeImageViewer.exe"
 $unitTests = Join-Path $releaseDir "YeImageViewerTests.exe"
 $crashFixture = Join-Path $repoRoot "test\Image crash\dji_export_photo_20260809221510044.jpg"
 $hdrFixture = Join-Path $repoRoot "test\HDR color error\HDR.hdr"
+$sharpSvgFixture = Join-Path $repoRoot "test\SVG Blurring\SittingHuman.svg"
+$textSvgFixture = Join-Path $repoRoot "test\SVG Blurring\cache策略全景梳理.drawio.svg"
 
 if (-not $SkipBuild) {
     $shell = Join-Path $PSHOME "pwsh.exe"
@@ -24,7 +26,7 @@ if (-not $SkipBuild) {
     }
 }
 
-foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture)) {
+foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sharpSvgFixture, $textSvgFixture)) {
     if (-not (Test-Path -LiteralPath $requiredFile)) {
         throw "Required regression-test file is missing: $requiredFile"
     }
@@ -37,7 +39,19 @@ if ($actualHdrHash -ne $expectedHdrHash) {
     throw "HDR regression fixture hash mismatch: expected $expectedHdrHash, got $actualHdrHash."
 }
 
-& $unitTests $hdrFixture
+$expectedSharpSvgHash = "86F5955DB6C420148EE317189D40E394DAC9999F54BB038EF744F012BFFB3759"
+$actualSharpSvgHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sharpSvgFixture).Hash
+if ($actualSharpSvgHash -ne $expectedSharpSvgHash) {
+    throw "Sharp SVG regression fixture hash mismatch: expected $expectedSharpSvgHash, got $actualSharpSvgHash."
+}
+
+$expectedTextSvgHash = "52DFB4983923CA525D8B92A78122D3ADB75F72DBAFFBAA40DB2CCBD6B7E5FE08"
+$actualTextSvgHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $textSvgFixture).Hash
+if ($actualTextSvgHash -ne $expectedTextSvgHash) {
+    throw "Text SVG regression fixture hash mismatch: expected $expectedTextSvgHash, got $actualTextSvgHash."
+}
+
+& $unitTests $hdrFixture $sharpSvgFixture $textSvgFixture
 if ($LASTEXITCODE -ne 0) {
     throw "MotionPhoto parser tests failed with exit code $LASTEXITCODE."
 }

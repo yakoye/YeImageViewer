@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <string>
+#include <string_view>
 #include <tinyxml2.h>
 
 // 因lunaSVG不支持<switch>标签，需预处理SVG
@@ -14,6 +15,7 @@ public:
         }
 
         processSwitchElements(doc.RootElement(), language);
+        processUnsupportedCss(doc.RootElement());
 
         cv::tinyxml2::XMLPrinter printer;
         doc.Print(&printer);
@@ -21,6 +23,63 @@ public:
     }
 
 private:
+    static std::string trim(std::string value) {
+        const auto first = value.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) return {};
+        const auto last = value.find_last_not_of(" \t\r\n");
+        return value.substr(first, last - first + 1);
+    }
+
+    static std::string replaceLightDark(std::string value) {
+        constexpr std::string_view functionName = "light-dark(";
+        size_t functionStart = 0;
+        while ((functionStart = value.find(functionName, functionStart)) != std::string::npos) {
+            const size_t argumentsStart = functionStart + functionName.size();
+            size_t comma = std::string::npos;
+            size_t functionEnd = std::string::npos;
+            int depth = 1;
+
+            for (size_t i = argumentsStart; i < value.size(); ++i) {
+                if (value[i] == '(') {
+                    ++depth;
+                }
+                else if (value[i] == ')') {
+                    if (--depth == 0) {
+                        functionEnd = i;
+                        break;
+                    }
+                }
+                else if (value[i] == ',' && depth == 1 && comma == std::string::npos) {
+                    comma = i;
+                }
+            }
+
+            if (comma == std::string::npos || functionEnd == std::string::npos) {
+                break;
+            }
+
+            const auto lightColor = trim(value.substr(argumentsStart, comma - argumentsStart));
+            value.replace(functionStart, functionEnd - functionStart + 1, lightColor);
+            functionStart += lightColor.size();
+        }
+        return value;
+    }
+
+    void processUnsupportedCss(cv::tinyxml2::XMLElement* element) {
+        if (!element) return;
+
+        if (const char* style = element->Attribute("style")) {
+            auto compatibleStyle = replaceLightDark(style);
+            if (compatibleStyle != style) {
+                element->SetAttribute("style", compatibleStyle.c_str());
+            }
+        }
+
+        for (auto child = element->FirstChildElement(); child; child = child->NextSiblingElement()) {
+            processUnsupportedCss(child);
+        }
+    }
+
     void processSwitchElements(cv::tinyxml2::XMLElement* element, const std::string& language) {
         if (!element) return;
 
@@ -93,6 +152,12 @@ private:
     }
 
     bool shouldSelectElement(cv::tinyxml2::XMLElement* element, const std::string& language) {
+        // lunaSVG does not implement foreignObject. draw.io exports an image
+        // fallback after each foreignObject, so continue to that fallback.
+        if (std::string_view(element->Name()) == "foreignObject") {
+            return false;
+        }
+
         // 检查 systemLanguage 属性
         const char* systemLang = element->Attribute("systemLanguage");
         if (systemLang) {
@@ -105,9 +170,8 @@ private:
         // 检查 requiredFeatures 属性
         const char* requiredFeatures = element->Attribute("requiredFeatures");
         if (requiredFeatures) {
-            // 这里可以根据lunaSVG支持的特性进行判断
-            // 暂时返回true，表示支持所有特性
-            return true;
+            // Unknown required features must not be claimed as supported.
+            return false;
         }
 
         // 检查 requiredExtensions 属性

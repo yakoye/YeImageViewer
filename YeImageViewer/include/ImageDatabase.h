@@ -5,6 +5,7 @@
 
 #include "videoDecoder.h"
 #include "SVGPreprocessor.h"
+#include "SvgRenderer.h"
 
 
 // stb_image v2.30  https://github.com/nothings/stb
@@ -477,7 +478,7 @@ public:
     // https://github.com/MolecularMatters/psd_sdk
     cv::Mat loadPSD(wstring_view path, std::span<const uint8_t> buf);
     cv::Mat loadSTB(wstring_view path, std::span<const uint8_t> buf);
-    cv::Mat loadSVG(wstring_view path, std::span<const uint8_t> buf);
+    cv::Mat loadSVG(wstring_view path, std::span<const uint8_t> buf, std::shared_ptr<SvgRenderer>* rendererOut = nullptr);
     cv::Mat loadPFM(wstring_view path, std::span<const uint8_t> buf);
     cv::Mat loadQOI(wstring_view path, std::span<const uint8_t> buf);
     cv::Mat loadPCX(wstring_view path, std::span<const uint8_t> buf);

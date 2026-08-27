@@ -1,6 +1,10 @@
 #include "MotionPhotoUtils.h"
 #include "StbImageDecoder.h"
+#include "SvgRenderer.h"
 
+#include <algorithm>
+#include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -11,6 +15,36 @@ namespace {
 
 int failedTests = 0;
 int passedTests = 0;
+
+std::vector<uint8_t> readFile(std::string_view path) {
+    std::ifstream file(std::string(path), std::ios::binary | std::ios::ate);
+    if (!file) {
+        return {};
+    }
+
+    const auto fileSize = file.tellg();
+    if (fileSize <= 0) {
+        return {};
+    }
+
+    std::vector<uint8_t> buffer(static_cast<size_t>(fileSize));
+    file.seekg(0);
+    if (!file.read(reinterpret_cast<char*>(buffer.data()), fileSize)) {
+        return {};
+    }
+    return buffer;
+}
+
+void passOrFail(std::string_view name, bool passed) {
+    if (passed) {
+        ++passedTests;
+        std::cout << "PASS " << name << '\n';
+    }
+    else {
+        ++failedTests;
+        std::cerr << "FAIL " << name << '\n';
+    }
+}
 
 void expectVideoSize(std::string_view name, std::string_view metadata, size_t expected) {
     const size_t actual = MotionPhotoUtils::getVideoSize(metadata);
@@ -96,6 +130,85 @@ void expectRealHdrChannelOrder(std::string_view path) {
     std::cerr << "FAIL real HDR fixture red and blue channels are swapped\n";
 }
 
+void expectSvgRerendersAtDisplayResolution(std::string_view path) {
+    const auto source = readFile(path);
+    const auto renderer = SvgRenderer::create(source);
+    if (!renderer) {
+        passOrFail("SVG fixture loads for viewport rendering", false);
+        return;
+    }
+
+    const int nativeWidth = (int)std::lround(renderer->width());
+    const int nativeHeight = (int)std::lround(renderer->height());
+    const int scale = 4;
+    const auto native = renderer->renderToBitmap(nativeWidth, nativeHeight);
+    const auto enlarged = renderer->renderToBitmap(nativeWidth * scale, nativeHeight * scale);
+    const auto viewport = renderer->renderViewport(
+        nativeWidth * scale, nativeHeight * scale,
+        { (float)scale, 0.0f, 0.0f, (float)scale, 0.0f, 0.0f });
+
+    bool valid = nativeWidth == 280 && nativeHeight == 288 &&
+        !native.empty() && !enlarged.empty() && !viewport.empty() &&
+        enlarged.bgra.size() == viewport.bgra.size();
+    if (!valid) {
+        passOrFail("SVG fixture renders at the requested viewport resolution", false);
+        return;
+    }
+
+    size_t viewportDifference = 0;
+    size_t nearestDifference = 0;
+    for (int y = 0; y < enlarged.height; ++y) {
+        for (int x = 0; x < enlarged.width; ++x) {
+            const size_t highOffset = (static_cast<size_t>(y) * enlarged.width + x) * 4;
+            const size_t lowOffset = (static_cast<size_t>(y / scale) * native.width + x / scale) * 4;
+            for (int channel = 0; channel < 4; ++channel) {
+                viewportDifference += enlarged.bgra[highOffset + channel] != viewport.bgra[highOffset + channel];
+                nearestDifference += enlarged.bgra[highOffset + channel] != native.bgra[lowOffset + channel];
+            }
+        }
+    }
+
+    passOrFail("SVG viewport is rerendered instead of enlarging cached pixels",
+        viewportDifference < enlarged.bgra.size() / 100 &&
+        nearestDifference > enlarged.bgra.size() / 100);
+}
+
+void expectDrawioTextFallback(std::string_view path) {
+    const auto source = readFile(path);
+    const auto processed = SvgRenderer::preprocess(source);
+    const auto renderer = SvgRenderer::create(source);
+
+    const bool selectedFallback = !processed.empty() &&
+        processed.find("<foreignObject") == std::string::npos &&
+        processed.find("<switch") == std::string::npos &&
+        processed.find("light-dark(") == std::string::npos &&
+        std::count(processed.begin(), processed.end(), '<') > 37;
+    passOrFail("draw.io foreignObject labels select their image fallbacks", selectedFallback);
+
+    if (!renderer) {
+        passOrFail("draw.io SVG renders fallback label pixels", false);
+        return;
+    }
+
+    const auto bitmap = renderer->renderToBitmap(723, 1130);
+    size_t darkTitlePixels = 0;
+    if (!bitmap.empty()) {
+        for (int y = 10; y < 36; ++y) {
+            for (int x = 40; x < 645; ++x) {
+                const size_t offset = (static_cast<size_t>(y) * bitmap.width + x) * 4;
+                const int brightness = bitmap.bgra[offset] + bitmap.bgra[offset + 1] + bitmap.bgra[offset + 2];
+                if (bitmap.bgra[offset + 3] > 32 && brightness < 480) {
+                    ++darkTitlePixels;
+                }
+            }
+        }
+    }
+    const bool lightBackground = !bitmap.empty() &&
+        bitmap.bgra[0] > 240 && bitmap.bgra[1] > 240 && bitmap.bgra[2] > 240 && bitmap.bgra[3] > 240;
+    passOrFail("draw.io SVG renders fallback label pixels", darkTitlePixels > 100);
+    passOrFail("draw.io light-dark CSS uses its light fallback", lightBackground);
+}
+
 }
 
 int main(int argc, char* argv[]) {
@@ -109,12 +222,20 @@ int main(int argc, char* argv[]) {
     expectVideoSize("non-numeric length", "Item:Semantic: MotionPhoto\nItem:Length: unknown", 0);
     expectVideoSize("overflowing length", "Item:Semantic: MotionPhoto\nItem:Length: 999999999999999999999999999999", 0);
     expectHdrChannelOrder();
-    if (argc == 2) {
+    if (argc >= 2) {
         expectRealHdrChannelOrder(argv[1]);
     }
     else {
         ++failedTests;
         std::cerr << "FAIL real HDR fixture path was not provided\n";
+    }
+    if (argc >= 4) {
+        expectSvgRerendersAtDisplayResolution(argv[2]);
+        expectDrawioTextFallback(argv[3]);
+    }
+    else {
+        failedTests += 3;
+        std::cerr << "FAIL SVG regression fixture paths were not provided\n";
     }
 
     std::cout << passedTests << " passed, " << failedTests << " failed\n";
