@@ -35,9 +35,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "MotionPhoto parser tests failed with exit code $LASTEXITCODE."
 }
 
-$existingViewer = Get-Process -Name "YeImageViewer" -ErrorAction SilentlyContinue
+$existingViewer = Get-CimInstance Win32_Process -Filter "Name='YeImageViewer.exe'" |
+    Where-Object { $_.ExecutablePath -eq $viewer }
 if ($existingViewer) {
-    throw "Close all YeImageViewer windows before running the crash regression test."
+    throw "Close the YeImageViewer instance running from $viewer before starting the crash regression test."
 }
 
 Write-Host "Opening the DJI MotionPhoto crash fixture..."

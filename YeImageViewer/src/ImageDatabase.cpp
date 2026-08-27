@@ -1,10 +1,6 @@
 #include "ImageDatabase.h"
 #include "MotionPhotoUtils.h"
-
-#ifndef STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
-#endif
+#include "StbImageDecoder.h"
 
 #ifndef QOI_IMPLEMENTATION
 #define QOI_IMPLEMENTATION
@@ -1820,8 +1816,6 @@ cv::Mat ImageDatabase::loadPSD(wstring_view path, std::span<const uint8_t> buf) 
 
 
 cv::Mat ImageDatabase::loadSTB(wstring_view path, std::span<const uint8_t> buf) {
-    int width = 0, height = 0, originalChannels = 0;
-
     if (buf.empty()) {
         JARK_LOG("Empty image buffer: {}", jarkUtils::wstringToUtf8(path));
         return {};
@@ -1831,21 +1825,14 @@ cv::Mat ImageDatabase::loadSTB(wstring_view path, std::span<const uint8_t> buf) 
         return {};
     }
 
-    std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pxData{
-        stbi_load_from_memory(buf.data(), (int)buf.size(), &width, &height, &originalChannels, STBI_rgb_alpha),
-        stbi_image_free
-    };
-
-    if (!pxData) {
-        JARK_LOG("Failed to load image: {}, reason: {}", jarkUtils::wstringToUtf8(path), stbi_failure_reason());
+    auto decoded = StbImageDecoder::decode(buf);
+    if (decoded.bgra.empty()) {
+        JARK_LOG("Failed to load image: {}", jarkUtils::wstringToUtf8(path));
         return {};
     }
 
     try {
-        cv::Mat rgba(height, width, CV_8UC4, pxData.get(), width * 4ULL);
-        cv::Mat bgra;
-        cv::cvtColor(rgba, bgra, cv::COLOR_RGBA2BGRA);
-        return bgra;
+        return cv::Mat(decoded.height, decoded.width, CV_8UC4, decoded.bgra.data(), decoded.width * 4ULL).clone();
     }
     catch ([[maybe_unused]] const std::exception& e) {
         JARK_LOG("Exception while processing image {}: {}", jarkUtils::wstringToUtf8(path), e.what());
