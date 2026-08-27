@@ -1,0 +1,544 @@
+#include "D3D11App.h"
+
+namespace {
+
+enum class PreferredAppMode {
+    Default = 0,
+    AllowDark = 1,
+    ForceDark = 2,
+    ForceLight = 3,
+    Max = 4
+};
+
+using SetPreferredAppModeFn = PreferredAppMode(WINAPI*)(PreferredAppMode appMode);
+using FlushMenuThemesFn = void (WINAPI*)();
+
+struct MenuThemeApi {
+    SetPreferredAppModeFn setPreferredAppMode = nullptr;
+    FlushMenuThemesFn flushMenuThemes = nullptr;
+};
+
+const MenuThemeApi& GetMenuThemeApi() {
+    static const MenuThemeApi api = []() {
+        MenuThemeApi result;
+        HMODULE module = GetModuleHandleW(L"uxtheme.dll");
+        if (!module) {
+            module = LoadLibraryW(L"uxtheme.dll");
+        }
+        if (!module) {
+            return result;
+        }
+
+        result.setPreferredAppMode = reinterpret_cast<SetPreferredAppModeFn>(GetProcAddress(module, MAKEINTRESOURCEA(135)));
+        result.flushMenuThemes = reinterpret_cast<FlushMenuThemesFn>(GetProcAddress(module, MAKEINTRESOURCEA(136)));
+        return result;
+    }();
+    return api;
+}
+
+class PopupMenuThemeScope {
+public:
+    explicit PopupMenuThemeScope(bool useDarkTheme) {
+        const auto& api = GetMenuThemeApi();
+        if (!api.setPreferredAppMode || !api.flushMenuThemes) {
+            return;
+        }
+
+        setPreferredAppMode_ = api.setPreferredAppMode;
+        flushMenuThemes_ = api.flushMenuThemes;
+        previousMode_ = setPreferredAppMode_(useDarkTheme ? PreferredAppMode::ForceDark : PreferredAppMode::ForceLight);
+        flushMenuThemes_();
+        isActive_ = true;
+    }
+
+    ~PopupMenuThemeScope() {
+        if (!isActive_) {
+            return;
+        }
+
+        setPreferredAppMode_(previousMode_);
+        flushMenuThemes_();
+    }
+
+private:
+    bool isActive_ = false;
+    PreferredAppMode previousMode_ = PreferredAppMode::Default;
+    SetPreferredAppModeFn setPreferredAppMode_ = nullptr;
+    FlushMenuThemesFn flushMenuThemes_ = nullptr;
+};
+
+}
+
+D3D11App::D3D11App() {
+    loadSettings();
+
+    GlobalVar::isSystemDarkMode = jarkUtils::getSystemDarkMode();
+    GlobalVar::isCurrentUIDarkMode = GlobalVar::settingParameter.UI_Mode == 0 ? GlobalVar::isSystemDarkMode : (GlobalVar::settingParameter.UI_Mode == 2);
+    GlobalVar::currentTheme = GlobalVar::isCurrentUIDarkMode ? deepTheme : lightTheme;
+}
+
+D3D11App::~D3D11App() {
+    this->DiscardDeviceResources();
+}
+
+template<class Interface>
+void D3D11App::SafeRelease(Interface*& pInterfaceToRelease) {
+    if (pInterfaceToRelease == nullptr)
+        return;
+
+    pInterfaceToRelease->Release();
+    pInterfaceToRelease = nullptr;
+}
+
+void D3D11App::loadSettings() {
+    auto exePath = jarkUtils::getCurrentAppPath();
+    size_t lastSlash = exePath.find_last_of(L'\\');
+    if (lastSlash == std::wstring::npos) {
+        GlobalVar::settingPath = L"YeImageViewer.db";
+        return;
+    }
+
+    GlobalVar::settingPath = exePath.substr(0, lastSlash) + L"\\YeImageViewer.db";
+
+    PWSTR appDataPath = nullptr;
+    std::wstring oldSettingPath;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, NULL, &appDataPath))) {
+        oldSettingPath = std::wstring(appDataPath) + L"\\YeImageViewer.db";
+        CoTaskMemFree(appDataPath);
+        appDataPath = nullptr;
+    }
+
+    SettingParameter tmp;
+    bool loaded = false;
+
+    auto f = _wfopen(oldSettingPath.c_str(), L"rb");
+    if (f) {
+        auto readLen = fread(&tmp, 1, sizeof(SettingParameter), f);
+        fclose(f);
+
+        if (readLen == sizeof(SettingParameter) && !memcmp(GlobalVar::settingHeader.data(), tmp.header, GlobalVar::settingHeader.length())) {
+            GlobalVar::settingParameter = tmp;
+            loaded = true;
+            DeleteFileW(oldSettingPath.c_str());
+        }
+    }
+
+    if (!loaded) {
+        f = _wfopen(GlobalVar::settingPath.c_str(), L"rb");
+        if (f) {
+            auto readLen = fread(&tmp, 1, sizeof(SettingParameter), f);
+            fclose(f);
+
+            if (readLen == sizeof(SettingParameter) && !memcmp(GlobalVar::settingHeader.data(), tmp.header, GlobalVar::settingHeader.length()))
+                GlobalVar::settingParameter = tmp;
+        }
+    }
+
+    if (GlobalVar::settingParameter.showCmd == SW_NORMAL) {
+        int screenWidth = (::GetSystemMetrics(SM_CXFULLSCREEN));
+        int screenHeight = (::GetSystemMetrics(SM_CYFULLSCREEN));
+
+        if (GlobalVar::settingParameter.rect.left >= screenWidth || GlobalVar::settingParameter.rect.bottom >= screenHeight ||
+            (GlobalVar::settingParameter.rect.right - GlobalVar::settingParameter.rect.left) >= screenWidth ||
+            (GlobalVar::settingParameter.rect.bottom - GlobalVar::settingParameter.rect.top) >= screenHeight) {
+            GlobalVar::settingParameter.rect = { screenWidth / 4, screenHeight / 4, screenWidth * 3 / 4, 100 + screenHeight * 3 / 4 };
+        }
+    }
+}
+
+void D3D11App::saveSettings() const {
+    WINDOWPLACEMENT wp{ .length = sizeof(WINDOWPLACEMENT) };
+
+    if (GetWindowPlacement(m_hWnd, &wp) && wp.showCmd == SW_NORMAL) {
+        GlobalVar::settingParameter.showCmd = SW_NORMAL;
+        GlobalVar::settingParameter.rect = wp.rcNormalPosition;
+    }
+    else {
+        GlobalVar::settingParameter.showCmd = SW_MAXIMIZE;
+        GlobalVar::settingParameter.rect = {};
+    }
+
+    memcpy(GlobalVar::settingParameter.header, GlobalVar::settingHeader.data(), GlobalVar::settingHeader.length());
+
+    auto f = _wfopen(GlobalVar::settingPath.c_str(), L"wb");
+    if (f) {
+        fwrite(&GlobalVar::settingParameter, 1, sizeof(SettingParameter), f);
+        fclose(f);
+    }
+}
+
+HRESULT D3D11App::Initialize(HINSTANCE hInstance) {
+    HRESULT hr = E_FAIL;
+    WNDCLASSEX wcex = { sizeof(WNDCLASSEX) };
+    wcex.style = CS_HREDRAW | CS_VREDRAW;
+    wcex.lpfnWndProc = D3D11App::WndProc;
+    wcex.cbClsExtra = 0;
+    wcex.cbWndExtra = sizeof(void*);
+    wcex.hInstance = hInstance;
+    wcex.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wcex.hbrBackground = nullptr;
+    wcex.lpszMenuName = nullptr;
+    wcex.lpszClassName = L"D3D11WndClass";
+    wcex.hIcon = LoadIconW(GetModuleHandleW(NULL), MAKEINTRESOURCE(IDI_YEIMAGEVIEWER));
+    RegisterClassExW(&wcex);
+
+    RECT window_rect = GlobalVar::settingParameter.showCmd == SW_NORMAL ? GlobalVar::settingParameter.rect : RECT{ 0, 0, 800, 600 };
+    DWORD window_style = WS_OVERLAPPEDWINDOW;
+    m_hWnd = CreateWindowExW(0, L"D3D11WndClass", m_wndCaption.c_str(), window_style,
+        window_rect.left, window_rect.top, window_rect.right - window_rect.left, window_rect.bottom - window_rect.top,
+        0, 0, hInstance, this);
+    hr = m_hWnd ? S_OK : E_FAIL;
+
+    if (SUCCEEDED(hr)) {
+        CreateDeviceResources();
+
+        BOOL themeMode = GlobalVar::isCurrentUIDarkMode;
+        DwmSetWindowAttribute(m_hWnd, 20, &themeMode, sizeof(BOOL));
+        DragAcceptFiles(m_hWnd, TRUE);
+        ShowWindow(m_hWnd, GlobalVar::settingParameter.showCmd == SW_NORMAL ? SW_NORMAL : SW_MAXIMIZE);
+        UpdateWindow(m_hWnd);
+    }
+    return hr;
+}
+
+HRESULT D3D11App::CreateDeviceResources() {
+    HRESULT hr = S_OK;
+
+    // 创建 D3D11 设备
+    UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+#ifdef _DEBUG
+    creationFlags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+    D3D_FEATURE_LEVEL featureLevels[] = {
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_10_1,
+        D3D_FEATURE_LEVEL_10_0,
+        D3D_FEATURE_LEVEL_9_3,
+        D3D_FEATURE_LEVEL_9_2,
+        D3D_FEATURE_LEVEL_9_1
+    };
+    hr = D3D11CreateDevice(
+        nullptr,
+        D3D_DRIVER_TYPE_HARDWARE,
+        nullptr,
+        creationFlags,
+        featureLevels,
+        ARRAYSIZE(featureLevels),
+        D3D11_SDK_VERSION,
+        &m_pD3DDevice,
+        &m_featureLevel,
+        &m_pD3DDeviceContext);
+
+    // 获取 DXGI 工厂（通过设备链：Device → DXGIDevice → Adapter → Factory）
+    IDXGIDevice* pDxgiDevice = nullptr;
+    IDXGIAdapter* pDxgiAdapter = nullptr;
+    IDXGIFactory* pDxgiFactory = nullptr;
+
+    if (SUCCEEDED(hr))
+        hr = m_pD3DDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&pDxgiDevice);
+    if (SUCCEEDED(hr))
+        hr = pDxgiDevice->GetAdapter(&pDxgiAdapter);
+    if (SUCCEEDED(hr))
+        hr = pDxgiAdapter->GetParent(__uuidof(IDXGIFactory), (void**)&pDxgiFactory);
+
+    // 创建交换链（Win7 兼容：使用 IDXGIFactory::CreateSwapChain + DXGI_SWAP_EFFECT_DISCARD）
+    if (SUCCEEDED(hr)) {
+        RECT rect = { 0 };
+        GetClientRect(m_hWnd, &rect);
+
+        DXGI_SWAP_CHAIN_DESC swapChainDesc = {};
+        swapChainDesc.BufferDesc.Width = rect.right - rect.left;
+        swapChainDesc.BufferDesc.Height = rect.bottom - rect.top;
+        swapChainDesc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        swapChainDesc.BufferDesc.RefreshRate.Numerator = 0;
+        swapChainDesc.BufferDesc.RefreshRate.Denominator = 0;
+        swapChainDesc.SampleDesc.Count = 1;
+        swapChainDesc.SampleDesc.Quality = 0;
+        swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        swapChainDesc.BufferCount = 1;
+        swapChainDesc.OutputWindow = m_hWnd;
+        swapChainDesc.Windowed = TRUE;
+        swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+        swapChainDesc.Flags = 0;
+
+        hr = pDxgiFactory->CreateSwapChain(m_pD3DDevice, &swapChainDesc, &m_pSwapChain);
+    }
+
+    SafeRelease(pDxgiDevice);
+    SafeRelease(pDxgiAdapter);
+    SafeRelease(pDxgiFactory);
+
+    if (SUCCEEDED(hr))
+        CreateWindowSizeDependentResources();
+
+    return hr;
+}
+
+void D3D11App::CreateWindowSizeDependentResources() {
+    if (!m_pD3DDevice || !m_pSwapChain)
+        return;
+
+    // 释放旧暂存纹理
+    SafeRelease(m_pStagingTexture);
+    m_pD3DDeviceContext->Flush();
+
+    RECT rect = { 0 };
+    GetClientRect(m_hWnd, &rect);
+    UINT width = rect.right - rect.left;
+    UINT height = rect.bottom - rect.top;
+    if (width == 0 || height == 0)
+        return;
+
+    // 重设交换链缓冲区
+    HRESULT hr = m_pSwapChain->ResizeBuffers(
+        1,
+        width,
+        height,
+        DXGI_FORMAT_B8G8R8A8_UNORM,
+        0);
+    assert(hr == S_OK);
+
+    // 创建 CPU 可写暂存纹理
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = width;
+    texDesc.Height = height;
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.SampleDesc.Quality = 0;
+    texDesc.Usage = D3D11_USAGE_STAGING;
+    texDesc.BindFlags = 0;
+    texDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    texDesc.MiscFlags = 0;
+
+    hr = m_pD3DDevice->CreateTexture2D(&texDesc, nullptr, &m_pStagingTexture);
+    assert(hr == S_OK);
+
+    m_stagingWidth = width;
+    m_stagingHeight = height;
+}
+
+void D3D11App::PresentCanvas(const uint8_t* data, int width, int height, int stride) {
+    if (!m_pStagingTexture || !m_pSwapChain || !m_pD3DDeviceContext)
+        return;
+
+    // 尺寸不匹配时重建
+    if ((UINT)width != m_stagingWidth || (UINT)height != m_stagingHeight)
+        CreateWindowSizeDependentResources();
+
+    // Map 暂存纹理，写入 CPU 画布数据
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    HRESULT hr = m_pD3DDeviceContext->Map(m_pStagingTexture, 0, D3D11_MAP_WRITE, 0, &mapped);
+    if (SUCCEEDED(hr)) {
+        const int rowBytes = width * 4;
+        if ((int)mapped.RowPitch == stride) {
+            memcpy(mapped.pData, data, (size_t)rowBytes * height);
+        } else {
+            const uint8_t* src = data;
+            uint8_t* dst = (uint8_t*)mapped.pData;
+            for (int y = 0; y < height; y++) {
+                memcpy(dst, src, rowBytes);
+                src += stride;
+                dst += mapped.RowPitch;
+            }
+        }
+        m_pD3DDeviceContext->Unmap(m_pStagingTexture, 0);
+
+        // 将暂存纹理复制到交换链后缓冲
+        ID3D11Texture2D* pBackBuffer = nullptr;
+        hr = m_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pBackBuffer);
+        if (SUCCEEDED(hr)) {
+            m_pD3DDeviceContext->CopyResource(pBackBuffer, m_pStagingTexture);
+            pBackBuffer->Release();
+        }
+    }
+
+    m_pSwapChain->Present(0, 0);
+}
+
+void D3D11App::DiscardDeviceResources() {
+    SafeRelease(m_pStagingTexture);
+    SafeRelease(m_pSwapChain);
+    SafeRelease(m_pD3DDevice);
+    SafeRelease(m_pD3DDeviceContext);
+}
+
+void D3D11App::Run() {
+    while (m_fRunning) {
+        MSG msg;
+        if (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        else {
+            DrawScene();
+        }
+    }
+}
+
+void D3D11App::OnDestroy() {
+    saveSettings();
+    m_fRunning = FALSE;
+}
+
+
+LRESULT D3D11App::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_CREATE: {
+        LPCREATESTRUCT pcs = (LPCREATESTRUCT)lParam;
+        D3D11App* pApp = (D3D11App*)pcs->lpCreateParams;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)pApp);
+        return TRUE;
+    }
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+        mmi->ptMinTrackSize.x = 400;
+        mmi->ptMinTrackSize.y = 300;
+        return S_OK;
+    }
+    case WM_CONTEXTMENU: {
+        if (lParam == -1) {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int x = (rc.right - rc.left) / 2;
+            int y = (rc.bottom - rc.top) / 2;
+            ShowContextMenu(hwnd, x, y);
+        }
+        else {
+            ShowContextMenu(hwnd, LOWORD(lParam), HIWORD(lParam));
+        }
+        return S_OK;
+    }
+    }
+
+    static TRACKMOUSEEVENT tme = {
+        .cbSize = sizeof(TRACKMOUSEEVENT),
+        .dwFlags = TME_LEAVE,
+    };
+
+    D3D11App* pApp = reinterpret_cast<D3D11App*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (!pApp)
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+
+    switch (message)
+    {
+    case WM_LBUTTONDOWN:
+    case WM_MBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+    case WM_XBUTTONDOWN:
+        pApp->OnMouseDown(message, LOWORD(lParam), HIWORD(lParam), wParam);
+        return S_OK;
+
+    case WM_LBUTTONUP:
+    case WM_MBUTTONUP:
+    case WM_RBUTTONUP:
+    case WM_XBUTTONUP:
+        pApp->OnMouseUp(message, LOWORD(lParam), HIWORD(lParam), wParam);
+        return S_OK;
+
+    case WM_MOUSEMOVE:
+        if (!tme.hwndTrack) {
+            tme.hwndTrack = hwnd;
+            TrackMouseEvent(&tme);
+        }
+        pApp->OnMouseMove(message, LOWORD(lParam), HIWORD(lParam));
+        return S_OK;
+
+    case WM_MOUSELEAVE:
+        tme.hwndTrack = NULL;
+        pApp->OnMouseLeave();
+        break;
+
+    case WM_MOUSEWHEEL:
+        pApp->OnMouseWheel(LOWORD(wParam), HIWORD(wParam), LOWORD(lParam), HIWORD(lParam));
+        return S_OK;
+
+    case WM_KEYDOWN:
+        pApp->OnKeyDown(wParam);
+        return S_OK;
+
+    case WM_KEYUP:
+        pApp->OnKeyUp(wParam);
+        return S_OK;
+
+    case WM_DROPFILES:
+        pApp->OnDropFiles(wParam);
+        break;
+
+    case WM_COMMAND:
+        pApp->OnContextMenuCommand(wParam);
+        break;
+
+    case WM_SIZE:
+        pApp->OnResize(LOWORD(lParam), HIWORD(lParam));
+        break;
+
+    case WM_SETTINGCHANGE:
+        GlobalVar::isSystemDarkMode = jarkUtils::getSystemDarkMode();
+        GlobalVar::isCurrentUIDarkMode = GlobalVar::settingParameter.UI_Mode == 0 ? GlobalVar::isSystemDarkMode : (GlobalVar::settingParameter.UI_Mode == 2);
+        GlobalVar::isNeedUpdateTheme = true;
+        break;
+
+    case WM_DESTROY:
+    {
+        pApp->OnRequestExitOtherWindows();
+        pApp->OnDestroy();
+        PostQuitMessage(0);
+        return S_OK;
+    }
+    break;
+    }
+
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+
+HMENU D3D11App::CreateContextMenu(HWND hwnd) {
+    HMENU hMenu = CreatePopupMenu();
+    MENUINFO mi = { sizeof(MENUINFO) };
+    mi.fMask = MIM_STYLE | MIM_APPLYTOSUBMENUS;
+    mi.dwStyle = MNS_NOCHECK;
+    SetMenuInfo(hMenu, &mi);
+
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::openNewImage, getUIStringW(35));
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::copyImageInfo, getUIStringW(25));
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::copyImagePath, getUIStringW(26));
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::copyImageData, getUIStringW(27));
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::toggleExifDisplay, getUIStringW(28));
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::openContainerFloder, getUIStringW(29));
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::deleteImage, getUIStringW(30));
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::openFileProperties, getUIStringW(36));
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::printImage, getUIStringW(31));
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::toggleFullScreen, getUIStringW(38));
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::openSetting, getUIStringW(32));
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::openHelp, getUIStringW(37));
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::aboutSoftware, getUIStringW(33));
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::exitSoftware, getUIStringW(34));
+
+    return hMenu;
+}
+
+void D3D11App::ShowContextMenu(HWND hwnd, int x, int y) {
+    HMENU hMenu = CreateContextMenu(hwnd);
+    POINT pt = { x, y };
+    ClientToScreen(hwnd, &pt);
+
+    PopupMenuThemeScope popupMenuThemeScope(GlobalVar::isCurrentUIDarkMode);
+    UINT flags = TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY;
+    DWORD cmd = TrackPopupMenuEx(hMenu, flags, pt.x, pt.y, hwnd, NULL);
+
+    if (cmd)
+        PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
+
+    DestroyMenu(hMenu);
+}

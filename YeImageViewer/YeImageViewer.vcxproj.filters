@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="include">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="src">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="resources">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Resource.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\LRU.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\exifParse.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ImageDatabase.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\D3D11App.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\printer.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TextDrawer.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\jarkUtils.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Setting.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\FileAssociationNaming.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\FileAssociationManager.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\YeThumbnailProviderGuids.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ThumbnailRegistrar.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\tinyxml2.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\SVGPreprocessor.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stringRes.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\blpDecoder.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ColorManager.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\videoDecoder.h">
+      <Filter>include</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\D3D11App.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\exifParse.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ImageDatabase.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\jarkUtils.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\TextDrawer.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tinyxml2.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\stringRes.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\videoDecoder.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\blpDecoder.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ColorManager.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="YeImageViewer.rc">
+      <Filter>resources</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="small.ico">
+      <Filter>resources</Filter>
+    </Image>
+    <Image Include="YeImageViewer.ico">
+      <Filter>resources</Filter>
+    </Image>
+    <Image Include="file\tips.png">
+      <Filter>resources</Filter>
+    </Image>
+    <Image Include="file\home.png">
+      <Filter>resources</Filter>
+    </Image>
+    <Image Include="file\settingRes.png">
+      <Filter>resources</Filter>
+    </Image>
+    <Image Include="file\mainRes.png">
+      <Filter>resources</Filter>
+    </Image>
+    <Image Include="file\printerRes.png">
+      <Filter>resources</Filter>
+    </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <Font Include="file\MSYHMONO.ttf">
+      <Filter>resources</Filter>
+    </Font>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,70 @@
+#pragma once
+
+#include "jarkUtils.h"
+
+
+class D3D11App {
+public:
+    D3D11App();
+    virtual ~D3D11App();
+
+    virtual HRESULT Initialize(HINSTANCE hInstance);
+    virtual void DrawScene() = 0;
+
+    void Run();
+    static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static HMENU CreateContextMenu(HWND hwnd);
+    static void ShowContextMenu(HWND hwnd, int x, int y);
+
+    virtual void OnMouseDown(WPARAM btnState, int x, int y, WPARAM wParam) = 0;
+    virtual void OnMouseUp(WPARAM btnState, int x, int y, WPARAM wParam) = 0;
+    virtual void OnMouseMove(WPARAM btnState, int x, int y) = 0;
+    virtual void OnMouseLeave() = 0;
+    virtual void OnMouseWheel(UINT nFlags, short zDelta, int x, int y) = 0;
+    virtual void OnKeyDown(WPARAM keyValue) = 0;
+    virtual void OnKeyUp(WPARAM keyValue) = 0;
+    virtual void OnDropFiles(WPARAM wParam) = 0;
+    virtual void OnContextMenuCommand(WPARAM wParam) = 0;
+
+    virtual void OnResize(UINT width, UINT height) = 0;
+    virtual void OnRequestExitOtherWindows() = 0;
+    virtual void OnDestroy();
+
+protected:
+    HRESULT CreateDeviceResources();
+    void CreateWindowSizeDependentResources();
+    void DiscardDeviceResources();
+
+    // CPU 画布数据呈现到屏幕
+    void PresentCanvas(const uint8_t* data, int width, int height, int stride);
+
+    template<class Interface>
+    void SafeRelease(Interface*& pInterfaceToRelease);
+
+    void loadSettings();
+    void saveSettings() const;
+
+protected:
+    HINSTANCE m_hAppInst = nullptr;
+    HWND m_hWnd = nullptr;
+    std::wstring m_wndCaption = L"D3D11App";
+    BOOL m_fRunning = TRUE;
+
+    // D3D11 设备
+    ID3D11Device* m_pD3DDevice = nullptr;
+    ID3D11DeviceContext* m_pD3DDeviceContext = nullptr;
+    // DXGI 交换链 (Win7 兼容)
+    IDXGISwapChain* m_pSwapChain = nullptr;
+    // CPU 可写暂存纹理，用于 CPU→GPU 数据传输
+    ID3D11Texture2D* m_pStagingTexture = nullptr;
+    // 暂存纹理尺寸
+    UINT m_stagingWidth = 0;
+    UINT m_stagingHeight = 0;
+    // 所创设备特性等级
+    D3D_FEATURE_LEVEL m_featureLevel;
+
+    int winWidth = 800;
+    int winHeight = 600;
+    bool hasInitWinSize = false;
+    cv::Mat mainCanvas;
+};
