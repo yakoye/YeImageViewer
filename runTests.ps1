@@ -26,7 +26,17 @@ $toolbarIcons = @(
     (Join-Path $repoRoot "YeImageViewer\file\icons\next.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\rotate-left.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\rotate-right.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\flip-horizontal.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\flip-vertical.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\fit-window.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\actual-size.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\fullscreen.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\favorite.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\copy.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\delete.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\settings.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\zoom-out.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\zoom-in.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\close.svg")
 )
 $appIcons = @(
@@ -54,7 +64,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.15.0"
+$expectedFileVersion = "1.36.16.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -739,8 +749,11 @@ try {
 
     $targetClientWidth = [int][Math]::Round($clientWidth * $windowDpi / 96.0)
     $targetClientHeight = [int][Math]::Round($clientHeight * $windowDpi / 96.0)
-    $toolbarX = $targetClientWidth - 95
-    $toolbarY = $targetClientHeight - 20
+    $toolbarWidth = [Math]::Min(595, [Math]::Max([int][Math]::Round(595 * 0.4), $clientWidth - 16))
+    $toolbarHeight = [int][Math]::Round(50 * $toolbarWidth / 595.0)
+    $toolbarBottom = [int][Math]::Round(20 * $toolbarWidth / 595.0)
+    $toolbarX = [int]($clientWidth / 2)
+    $toolbarY = $clientHeight - $toolbarBottom - [int]($toolbarHeight / 2)
     $mousePosition = [IntPtr](($toolbarY -shl 16) -bor ($toolbarX -band 0xFFFF))
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0200, [UIntPtr]::Zero, $mousePosition)
     Start-Sleep -Milliseconds 250
@@ -748,7 +761,35 @@ try {
     if ($viewerProcess.HasExited -or -not $viewerProcess.Responding) {
         throw "Overlay regression failed: bottom toolbar hover was not responsive."
     }
-    Write-Host "PASS compact bottom toolbar hover remains responsive."
+    Write-Host "PASS centered reference toolbar hover remains responsive."
+
+    $toolbarScale = [Math]::Min(1000, [Math]::Max(400,
+        [int][Math]::Floor(($clientWidth - 16) * 1000.0 / 595.0)))
+    $scaledToolbarWidth = [int][Math]::Floor((595 * $toolbarScale + 500) / 1000.0)
+    $scaledButtonSize = [int][Math]::Floor((34 * $toolbarScale + 500) / 1000.0)
+    $scaledPadding = [int][Math]::Floor((8 * $toolbarScale + 500) / 1000.0)
+    $scaledNextOffset = [int][Math]::Floor((35 * $toolbarScale + 500) / 1000.0)
+    $toolbarLeft = [int][Math]::Floor(($clientWidth - $scaledToolbarWidth) / 2.0)
+    $nextButtonX = $toolbarLeft + $scaledPadding + $scaledNextOffset +
+        [int][Math]::Floor($scaledButtonSize / 2.0)
+    $nextButtonPosition = [IntPtr](($toolbarY -shl 16) -bor ($nextButtonX -band 0xFFFF))
+    $titleBeforeToolbarClick = New-Object Text.StringBuilder 1024
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $window, $titleBeforeToolbarClick, $titleBeforeToolbarClick.Capacity)
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $window, 0x0200, [UIntPtr]::Zero, $nextButtonPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $window, 0x0201, [UIntPtr]1, $nextButtonPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $window, 0x0202, [UIntPtr]::Zero, $nextButtonPosition)
+    Start-Sleep -Milliseconds 500
+    $titleAfterToolbarClick = New-Object Text.StringBuilder 1024
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $window, $titleAfterToolbarClick, $titleAfterToolbarClick.Capacity)
+    if ($titleBeforeToolbarClick.ToString() -eq $titleAfterToolbarClick.ToString()) {
+        throw "Overlay regression failed: the centered Next button did not change images."
+    }
+    Write-Host "PASS centered toolbar Next button changes images through its precise hit target."
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0112, [UIntPtr]0xF030, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 300

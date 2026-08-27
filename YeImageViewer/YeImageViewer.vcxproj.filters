@@ -36,6 +36,9 @@
     <ClInclude Include="include\ImageInterpolation.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\ImageViewTransform.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\InitialWindowLayout.h">
       <Filter>include</Filter>
     </ClInclude>

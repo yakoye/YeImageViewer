@@ -3,6 +3,7 @@
 #include "TextDrawer.h"
 #include "ImageDatabase.h"
 #include "ImageInterpolation.h"
+#include "ImageViewTransform.h"
 #include "SvgRenderer.h"
 #include "Printer.h"
 #include "Setting.h"
@@ -27,8 +28,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.15";
-constinit int appVersionCode = 13615; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.16";
+constinit int appVersionCode = 13616; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -76,6 +77,8 @@ struct CurImageParameter {
     int zoomIndexFix = 0;
     int zoomIndex100percent = 0;
     bool isAnimationPause = false;
+    bool flipHorizontal = false;
+    bool flipVertical = false;
     int width = 0;
     int height = 0;
     int rotation = 0; // 旋转： 0正常， 1逆90度， 2：180度， 3顺90度
@@ -93,6 +96,8 @@ struct CurImageParameter {
         slideTarget = 0;
         rotation = initialRotation & 3;
         isAnimationPause = false;
+        flipHorizontal = false;
+        flipVertical = false;
 
         if (imageAssetPtr) {
             curFrameIdxMax = imageAssetPtr->format == ImageFormat::Animated ? (int)imageAssetPtr->frames.size() - 1 : 1;
@@ -201,9 +206,12 @@ struct CurImageParameter {
 
 class ExtraUIRes {
 public:
-    cv::Mat mainRes, leftArrow, rightArrow, leftRotate, rightRotate, setting, presentationClose, animationBarPlaying, animationBarPausing;
+    cv::Mat mainRes, leftArrow, rightArrow, leftRotate, rightRotate,
+        flipHorizontal, flipVertical, fitWindow, actualSize, fullscreen,
+        favorite, copy, deleteImage, setting, zoomOut, zoomIn,
+        presentationClose, animationBarPlaying, animationBarPausing;
 
-    static cv::Mat loadSvgIcon(int resourceId, int size = OverlayLayout::ICON_SIZE) {
+    static cv::Mat loadSvgIcon(int resourceId, int size = OverlayLayout::BASE_ICON_SIZE) {
         const auto rc = jarkUtils::GetResource(resourceId, L"SVG");
         if (!rc.ptr || rc.size == 0)
             return {};
@@ -223,11 +231,21 @@ public:
         rc = jarkUtils::GetResource(IDB_PNG_MAIN_RES, L"PNG");
         mainRes = cv::imdecode(cv::Mat(1, (int)rc.size, CV_8UC1, (uint8_t*)rc.ptr), cv::IMREAD_UNCHANGED);
 
-        leftArrow = loadSvgIcon(IDR_SVG_PREVIOUS_ICON);
-        rightArrow = loadSvgIcon(IDR_SVG_NEXT_ICON);
-        leftRotate = loadSvgIcon(IDR_SVG_ROTATE_LEFT_ICON);
-        rightRotate = loadSvgIcon(IDR_SVG_ROTATE_RIGHT_ICON);
-        setting = loadSvgIcon(IDR_SVG_SETTINGS_ICON);
+        leftArrow = loadSvgIcon(IDR_SVG_PREVIOUS_ICON, OverlayLayout::BASE_ICON_SIZE);
+        rightArrow = loadSvgIcon(IDR_SVG_NEXT_ICON, OverlayLayout::BASE_ICON_SIZE);
+        leftRotate = loadSvgIcon(IDR_SVG_ROTATE_LEFT_ICON, OverlayLayout::BASE_ICON_SIZE);
+        rightRotate = loadSvgIcon(IDR_SVG_ROTATE_RIGHT_ICON, OverlayLayout::BASE_ICON_SIZE);
+        flipHorizontal = loadSvgIcon(IDR_SVG_FLIP_HORIZONTAL_ICON, OverlayLayout::BASE_ICON_SIZE);
+        flipVertical = loadSvgIcon(IDR_SVG_FLIP_VERTICAL_ICON, OverlayLayout::BASE_ICON_SIZE);
+        fitWindow = loadSvgIcon(IDR_SVG_FIT_WINDOW_ICON, OverlayLayout::BASE_ICON_SIZE);
+        actualSize = loadSvgIcon(IDR_SVG_ACTUAL_SIZE_ICON, OverlayLayout::BASE_ICON_SIZE);
+        fullscreen = loadSvgIcon(IDR_SVG_FULLSCREEN_ICON, OverlayLayout::BASE_ICON_SIZE);
+        favorite = loadSvgIcon(IDR_SVG_FAVORITE_ICON, OverlayLayout::BASE_ICON_SIZE);
+        copy = loadSvgIcon(IDR_SVG_COPY_ICON, OverlayLayout::BASE_ICON_SIZE);
+        deleteImage = loadSvgIcon(IDR_SVG_DELETE_ICON, OverlayLayout::BASE_ICON_SIZE);
+        setting = loadSvgIcon(IDR_SVG_SETTINGS_ICON, OverlayLayout::BASE_ICON_SIZE);
+        zoomOut = loadSvgIcon(IDR_SVG_ZOOM_OUT_ICON, OverlayLayout::BASE_ICON_SIZE);
+        zoomIn = loadSvgIcon(IDR_SVG_ZOOM_IN_ICON, OverlayLayout::BASE_ICON_SIZE);
         presentationClose = loadSvgIcon(IDR_SVG_CLOSE_ICON, OverlayLayout::PRESENTATION_CLOSE_SIZE);
 
         animationBarPlaying = mainRes({ 0, 100, 200, 50 });
@@ -252,6 +270,7 @@ public:
     Cood mousePos, mousePressPos;
     ImageDatabase imgDB;
     RotationStore rotationStore;
+    std::unordered_set<std::wstring> favoritePaths;
     bool presentationMode = false;
     bool framedWindowAnchored = false;
     bool presentationClickCandidate = false;
@@ -677,8 +696,28 @@ public:
                 operateQueue.push({ ActionENUM::rotateLeft });
             else if (cursorPos == CursorPos::toolbarRotateRight)
                 operateQueue.push({ ActionENUM::rotateRight });
+            else if (cursorPos == CursorPos::toolbarFlipHorizontal)
+                operateQueue.push({ ActionENUM::flipHorizontal });
+            else if (cursorPos == CursorPos::toolbarFlipVertical)
+                operateQueue.push({ ActionENUM::flipVertical });
+            else if (cursorPos == CursorPos::toolbarZoomFit)
+                operateQueue.push({ ActionENUM::zoomFit });
+            else if (cursorPos == CursorPos::toolbarZoomActual)
+                operateQueue.push({ ActionENUM::zoomActual });
+            else if (cursorPos == CursorPos::toolbarFullscreen)
+                operateQueue.push({ ActionENUM::toggleFullScreen });
+            else if (cursorPos == CursorPos::toolbarFavorite)
+                operateQueue.push({ ActionENUM::toggleFavorite });
+            else if (cursorPos == CursorPos::toolbarCopy)
+                operateQueue.push({ ActionENUM::copyImage });
+            else if (cursorPos == CursorPos::toolbarDelete)
+                operateQueue.push({ ActionENUM::deleteImg });
             else if (cursorPos == CursorPos::toolbarSetting)
                 operateQueue.push({ ActionENUM::setting, 0 });
+            else if (cursorPos == CursorPos::toolbarZoomOut)
+                operateQueue.push({ ActionENUM::zoomOut });
+            else if (cursorPos == CursorPos::toolbarZoomIn)
+                operateQueue.push({ ActionENUM::zoomIn });
             else if (presentationMode && cursorPos == CursorPos::presentationClose)
                 operateQueue.push({ ActionENUM::requestExit });
             else if (cursorPos == CursorPos::centerTop) {
@@ -794,8 +833,38 @@ public:
             case OverlayLayout::Hit::RotateRight:
                 cursorPos = CursorPos::toolbarRotateRight;
                 break;
+            case OverlayLayout::Hit::FlipHorizontal:
+                cursorPos = CursorPos::toolbarFlipHorizontal;
+                break;
+            case OverlayLayout::Hit::FlipVertical:
+                cursorPos = CursorPos::toolbarFlipVertical;
+                break;
+            case OverlayLayout::Hit::ZoomFit:
+                cursorPos = CursorPos::toolbarZoomFit;
+                break;
+            case OverlayLayout::Hit::ZoomActual:
+                cursorPos = CursorPos::toolbarZoomActual;
+                break;
+            case OverlayLayout::Hit::Fullscreen:
+                cursorPos = CursorPos::toolbarFullscreen;
+                break;
+            case OverlayLayout::Hit::Favorite:
+                cursorPos = CursorPos::toolbarFavorite;
+                break;
+            case OverlayLayout::Hit::CopyImage:
+                cursorPos = CursorPos::toolbarCopy;
+                break;
+            case OverlayLayout::Hit::DeleteImage:
+                cursorPos = CursorPos::toolbarDelete;
+                break;
             case OverlayLayout::Hit::Settings:
                 cursorPos = CursorPos::toolbarSetting;
+                break;
+            case OverlayLayout::Hit::ZoomOut:
+                cursorPos = CursorPos::toolbarZoomOut;
+                break;
+            case OverlayLayout::Hit::ZoomIn:
+                cursorPos = CursorPos::toolbarZoomIn;
                 break;
             case OverlayLayout::Hit::Toolbar:
                 cursorPos = CursorPos::toolbar;
@@ -816,7 +885,7 @@ public:
         if (cursorPosLast != cursorPos) {
             switch (cursorPos) {
             case CursorPos::leftEdge:
-                extraUIFlag = ShowExtraUI::leftArrow;
+                extraUIFlag = ShowExtraUI::bottomToolbar;
                 break;
             case CursorPos::centerTop:
                 extraUIFlag = curPar.imageAssetPtr->format == ImageFormat::Animated ?
@@ -827,11 +896,21 @@ public:
                 extraUIFlag = ShowExtraUI::none;
                 break;
             case CursorPos::rightEdge:
-                extraUIFlag = ShowExtraUI::rightArrow;
+                extraUIFlag = ShowExtraUI::bottomToolbar;
                 break;
             case CursorPos::toolbarRotateLeft:
             case CursorPos::toolbarRotateRight:
+            case CursorPos::toolbarFlipHorizontal:
+            case CursorPos::toolbarFlipVertical:
+            case CursorPos::toolbarZoomFit:
+            case CursorPos::toolbarZoomActual:
+            case CursorPos::toolbarFullscreen:
+            case CursorPos::toolbarFavorite:
+            case CursorPos::toolbarCopy:
+            case CursorPos::toolbarDelete:
             case CursorPos::toolbarSetting:
+            case CursorPos::toolbarZoomOut:
+            case CursorPos::toolbarZoomIn:
             case CursorPos::toolbarPrevious:
             case CursorPos::toolbarNext:
             case CursorPos::toolbar:
@@ -1434,6 +1513,17 @@ public:
             break;
         }
 
+        if (curPar.flipHorizontal) {
+            transform.a = -transform.a;
+            transform.c = -transform.c;
+            transform.e = static_cast<float>(2.0 * deltaW + renderedW) - transform.e;
+        }
+        if (curPar.flipVertical) {
+            transform.b = -transform.b;
+            transform.d = -transform.d;
+            transform.f = static_cast<float>(2.0 * deltaH + renderedH) - transform.f;
+        }
+
         auto rendered = renderer->renderViewport(canvasW, canvasH, transform);
         fillCanvasBackground(canvas);
         if (rendered.empty()) {
@@ -1562,28 +1652,14 @@ public:
 
                 for (int x = xStart; x < xEnd; ++x) {
                     const float rotatedX = ((x - deltaW) + 0.5f) * zoomInvert - 0.5f;
-                    float sourceX = rotatedX;
-                    float sourceY = rotatedY;
-
-                    switch (curPar.rotation) {
-                    case 1:
-                        sourceX = srcH - 1.0f - rotatedY;
-                        sourceY = rotatedX;
-                        break;
-                    case 2:
-                        sourceX = srcW - 1.0f - rotatedX;
-                        sourceY = srcH - 1.0f - rotatedY;
-                        break;
-                    case 3:
-                        sourceX = rotatedY;
-                        sourceY = srcW - 1.0f - rotatedX;
-                        break;
-                    }
+                    const auto source = ImageViewTransform::displayToSource(
+                        rotatedX, rotatedY, srcW, srcH, curPar.rotation,
+                        curPar.flipHorizontal, curPar.flipVertical);
 
                     intUnion sampled;
                     sampled.u32 = ImageInterpolation::sampleBilinearBgra(
                         srcImg.ptr(), srcImg.cols, srcImg.rows, srcImg.step,
-                        channels, sourceX, sourceY);
+                        channels, source.x, source.y);
                     destination[x] = channels == 4 ?
                         compositeSrcPx4(sampled, x, y) : sampled.u32;
                 }
@@ -1600,35 +1676,13 @@ public:
 
                 srcY = std::clamp(srcY, 0, srcH - 1);
 
-                switch (curPar.rotation) {
-                case 0:
-                    for (int x = xStart; x < xEnd; x++) {
-                        int srcX = (int)((x - deltaW) * zoomInvert);
-                        srcX = std::clamp(srcX, 0, srcW - 1);
-                        ptr[x] = getSrcPx4(srcImg, srcX, srcY, x, y);
-                    }
-                    break;
-                case 1:
-                    for (int x = xStart; x < xEnd; x++) {
-                        int srcX = (int)((x - deltaW) * zoomInvert);
-                        srcX = std::clamp(srcX, 0, srcW - 1);
-                        ptr[x] = getSrcPx4(srcImg, srcH - 1 - srcY, srcX, x, y);
-                    }
-                    break;
-                case 2:
-                    for (int x = xStart; x < xEnd; x++) {
-                        int srcX = (int)((x - deltaW) * zoomInvert);
-                        srcX = std::clamp(srcX, 0, srcW - 1);
-                        ptr[x] = getSrcPx4(srcImg, srcW - 1 - srcX, srcH - 1 - srcY, x, y);
-                    }
-                    break;
-                default:
-                    for (int x = xStart; x < xEnd; x++) {
-                        int srcX = (int)((x - deltaW) * zoomInvert);
-                        srcX = std::clamp(srcX, 0, srcW - 1);
-                        ptr[x] = getSrcPx4(srcImg, srcY, srcW - 1 - srcX, x, y);
-                    }
-                    break;
+                for (int x = xStart; x < xEnd; x++) {
+                    int srcX = (int)((x - deltaW) * zoomInvert);
+                    srcX = std::clamp(srcX, 0, srcW - 1);
+                    const auto source = ImageViewTransform::displayToSource(
+                        srcX, srcY, srcW, srcH, curPar.rotation,
+                        curPar.flipHorizontal, curPar.flipVertical);
+                    ptr[x] = getSrcPx4(srcImg, source.x, source.y, x, y);
                 }
             });
         }break;
@@ -1641,35 +1695,13 @@ public:
 
                 srcY = std::clamp(srcY, 0, srcH - 1);
 
-                switch (curPar.rotation) {
-                case 0:
-                    for (int x = xStart; x < xEnd; x++) {
-                        int srcX = (int)((x - deltaW) * zoomInvert);
-                        srcX = std::clamp(srcX, 0, srcW - 1);
-                        ptr[x] = getSrcPx3(srcImg, srcX, srcY);
-                    }
-                    break;
-                case 1:
-                    for (int x = xStart; x < xEnd; x++) {
-                        int srcX = (int)((x - deltaW) * zoomInvert);
-                        srcX = std::clamp(srcX, 0, srcW - 1);
-                        ptr[x] = getSrcPx3(srcImg, srcH - 1 - srcY, srcX);
-                    }
-                    break;
-                case 2:
-                    for (int x = xStart; x < xEnd; x++) {
-                        int srcX = (int)((x - deltaW) * zoomInvert);
-                        srcX = std::clamp(srcX, 0, srcW - 1);
-                        ptr[x] = getSrcPx3(srcImg, srcW - 1 - srcX, srcH - 1 - srcY);
-                    }
-                    break;
-                default:
-                    for (int x = xStart; x < xEnd; x++) {
-                        int srcX = (int)((x - deltaW) * zoomInvert);
-                        srcX = std::clamp(srcX, 0, srcW - 1);
-                        ptr[x] = getSrcPx3(srcImg, srcY, srcW - 1 - srcX);
-                    }
-                    break;
+                for (int x = xStart; x < xEnd; x++) {
+                    int srcX = (int)((x - deltaW) * zoomInvert);
+                    srcX = std::clamp(srcX, 0, srcW - 1);
+                    const auto source = ImageViewTransform::displayToSource(
+                        srcX, srcY, srcW, srcH, curPar.rotation,
+                        curPar.flipHorizontal, curPar.flipVertical);
+                    ptr[x] = getSrcPx3(srcImg, source.x, source.y);
                 }
             });
         }break;
@@ -1682,35 +1714,13 @@ public:
 
                 srcY = std::clamp(srcY, 0, srcH - 1);
 
-                switch (curPar.rotation) {
-                case 0:
-                    for (int x = xStart; x < xEnd; x++) {
-                        int srcX = (int)((x - deltaW) * zoomInvert);
-                        srcX = std::clamp(srcX, 0, srcW - 1);
-                        ptr[x] = getSrcPx1(srcImg, srcX, srcY);
-                    }
-                    break;
-                case 1:
-                    for (int x = xStart; x < xEnd; x++) {
-                        int srcX = (int)((x - deltaW) * zoomInvert);
-                        srcX = std::clamp(srcX, 0, srcW - 1);
-                        ptr[x] = getSrcPx1(srcImg, srcH - 1 - srcY, srcX);
-                    }
-                    break;
-                case 2:
-                    for (int x = xStart; x < xEnd; x++) {
-                        int srcX = (int)((x - deltaW) * zoomInvert);
-                        srcX = std::clamp(srcX, 0, srcW - 1);
-                        ptr[x] = getSrcPx1(srcImg, srcW - 1 - srcX, srcH - 1 - srcY);
-                    }
-                    break;
-                default:
-                    for (int x = xStart; x < xEnd; x++) {
-                        int srcX = (int)((x - deltaW) * zoomInvert);
-                        srcX = std::clamp(srcX, 0, srcW - 1);
-                        ptr[x] = getSrcPx1(srcImg, srcY, srcW - 1 - srcX);
-                    }
-                    break;
+                for (int x = xStart; x < xEnd; x++) {
+                    int srcX = (int)((x - deltaW) * zoomInvert);
+                    srcX = std::clamp(srcX, 0, srcW - 1);
+                    const auto source = ImageViewTransform::displayToSource(
+                        srcX, srcY, srcW, srcH, curPar.rotation,
+                        curPar.flipHorizontal, curPar.flipVertical);
+                    ptr[x] = getSrcPx1(srcImg, source.x, source.y);
                 }
             });
         }break;
@@ -2146,44 +2156,269 @@ public:
             GlobalVar::currentTheme.FG, true, false);
     }
 
-    void drawExtraUI(cv::Mat& canvas) {
-        int canvasHeight = canvas.rows;
-        int canvasWidth = canvas.cols;
+    static cv::Mat roundedSurface(int width, int height, int radius,
+        uint32_t fill, uint32_t border = 0) {
+        cv::Mat surface(height, width, CV_8UC4, cv::Scalar(0, 0, 0, 0));
+        radius = std::clamp(radius, 1, std::min(width, height) / 2);
+        const auto fillColor = jarkUtils::to_cv_scalar(fill);
+        cv::rectangle(surface, { radius, 0, width - radius * 2, height }, fillColor, -1, cv::LINE_AA);
+        cv::rectangle(surface, { 0, radius, width, height - radius * 2 }, fillColor, -1, cv::LINE_AA);
+        cv::circle(surface, { radius, radius }, radius, fillColor, -1, cv::LINE_AA);
+        cv::circle(surface, { width - radius - 1, radius }, radius, fillColor, -1, cv::LINE_AA);
+        cv::circle(surface, { radius, height - radius - 1 }, radius, fillColor, -1, cv::LINE_AA);
+        cv::circle(surface, { width - radius - 1, height - radius - 1 }, radius, fillColor, -1, cv::LINE_AA);
+        if (border != 0)
+            cv::rectangle(surface, { 0, 0, width - 1, height - 1 },
+                jarkUtils::to_cv_scalar(border), 1, cv::LINE_AA);
+        return surface;
+    }
 
-        //窗口尺寸太小则直接退出
+    static cv::Rect toCvRect(const OverlayLayout::Rect& rect) {
+        return { rect.x, rect.y, rect.width, rect.height };
+    }
+
+    void drawOverlayIcon(cv::Mat& canvas, const cv::Mat& source,
+        const OverlayLayout::Rect& target, uint32_t tint = 0) {
+        if (source.empty() || target.width <= 0 || target.height <= 0)
+            return;
+        const int iconSize = std::max(10, std::min({ target.width - 8, target.height - 8,
+            OverlayLayout::scaled(OverlayLayout::BASE_ICON_SIZE,
+                OverlayLayout::toolbarScale(canvas.cols)) }));
+        cv::Mat icon;
+        if (source.cols == iconSize && source.rows == iconSize)
+            icon = source;
+        else
+            cv::resize(source, icon, { iconSize, iconSize }, 0, 0, cv::INTER_AREA);
+        if (tint != 0) {
+            icon = icon.clone();
+            intUnion tintColor{ tint };
+            for (int y = 0; y < icon.rows; ++y) {
+                auto* row = icon.ptr<intUnion>(y);
+                for (int x = 0; x < icon.cols; ++x) {
+                    if (row[x][3] == 0)
+                        continue;
+                    row[x][0] = tintColor[0];
+                    row[x][1] = tintColor[1];
+                    row[x][2] = tintColor[2];
+                }
+            }
+        }
+        jarkUtils::overlayImg(canvas, icon,
+            target.x + (target.width - icon.cols) / 2,
+            target.y + (target.height - icon.rows) / 2);
+    }
+
+    void drawViewerTopBar(cv::Mat& canvas) {
+        const int barHeight = std::min(58, canvas.rows / 4);
+        for (int y = 0; y < barHeight; ++y) {
+            const uint32_t alpha = static_cast<uint32_t>(210 * (barHeight - y) / barHeight);
+            blendInfoPanel(canvas, { 0, y, canvas.cols, 1 }, alpha << 24);
+        }
+
+        textDrawer.setSize(14);
+        const std::string position = std::format("{} / {}", curFileIdx + 1, imgFileList.size());
+        std::string fileName = jarkUtils::wstringToUtf8(appName);
+        if (hasCurrentImagePath())
+            fileName = jarkUtils::wstringToUtf8(std::filesystem::path(
+                imgFileList[curFileIdx]).filename().wstring());
+        textDrawer.putAlignLeft(canvas, { 16, 8, 64, 30 }, position.c_str(), 0xFFE8EAF0u);
+        textDrawer.putAlignLeft(canvas, { 78, 8, std::max(40, canvas.cols - 390), 30 },
+            fileName.c_str(), 0xFFB8BECCu);
+
+        const auto& model = currentImageInfoModel();
+        std::string dimensions = std::format("{} × {}", curPar.width, curPar.height);
+        std::string fileSize;
+        for (const auto& row : model.basic) {
+            if (row.label == "分辨率" || row.label == "Dimensions")
+                dimensions = row.value;
+            else if (row.label == "文件大小" || row.label == "Size")
+                fileSize = row.value;
+        }
+        const int closeReserve = presentationMode ? 66 : 12;
+        const int right = canvas.cols - closeReserve;
+        const int sizeWidth = fileSize.empty() ? 0 : 104;
+        if (sizeWidth > 0) {
+            const OverlayLayout::Rect badge{ right - sizeWidth, 10, sizeWidth - 8, 26 };
+            auto surface = roundedSurface(badge.width, badge.height, 6, 0x0FFFFFFFu);
+            jarkUtils::overlayImg(canvas, surface, badge.x, badge.y);
+            textDrawer.putAlignCenter(canvas, toCvRect(badge), fileSize.c_str(), 0xFFB8BECCu);
+        }
+        const OverlayLayout::Rect dimensionBadge{ right - sizeWidth - 116, 10, 108, 26 };
+        auto surface = roundedSurface(dimensionBadge.width, dimensionBadge.height, 6, 0x0FFFFFFFu);
+        jarkUtils::overlayImg(canvas, surface, dimensionBadge.x, dimensionBadge.y);
+        textDrawer.putAlignCenter(canvas, toCvRect(dimensionBadge), dimensions.c_str(), 0xFFB8BECCu);
+    }
+
+    const char* toolbarTooltip() const {
+        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        switch (cursorPos) {
+        case CursorPos::toolbarPrevious: return chinese ? "上一张" : "Previous";
+        case CursorPos::toolbarNext: return chinese ? "下一张" : "Next";
+        case CursorPos::toolbarRotateLeft: return chinese ? "左旋转 90°" : "Rotate left";
+        case CursorPos::toolbarRotateRight: return chinese ? "右旋转 90°" : "Rotate right";
+        case CursorPos::toolbarFlipHorizontal: return chinese ? "左右镜像" : "Flip horizontal";
+        case CursorPos::toolbarFlipVertical: return chinese ? "上下镜像" : "Flip vertical";
+        case CursorPos::toolbarZoomFit: return chinese ? "适应窗口" : "Fit to window";
+        case CursorPos::toolbarZoomActual: return chinese ? "实际大小 (1:1)" : "Actual size (1:1)";
+        case CursorPos::toolbarFullscreen: return presentationMode ?
+            (chinese ? "退出沉浸" : "Exit immersive") : (chinese ? "沉浸显示" : "Immersive view");
+        case CursorPos::toolbarFavorite: return chinese ? "收藏图片" : "Favorite";
+        case CursorPos::toolbarCopy: return chinese ? "复制图像" : "Copy image";
+        case CursorPos::toolbarDelete: return chinese ? "删除图片" : "Delete image";
+        case CursorPos::toolbarSetting: return chinese ? "设置" : "Settings";
+        case CursorPos::toolbarZoomOut: return chinese ? "缩小" : "Zoom out";
+        case CursorPos::toolbarZoomIn: return chinese ? "放大" : "Zoom in";
+        default: return nullptr;
+        }
+    }
+
+    void drawToolbarButton(cv::Mat& canvas, const OverlayLayout::Rect& rect,
+        const cv::Mat& icon, CursorPos expectedCursor, bool active = false,
+        bool danger = false) {
+        const bool hovered = cursorPos == expectedCursor;
+        if (hovered || active) {
+            const uint32_t background = active ? 0x383B82F6u :
+                (danger ? 0x1FEF4444u : 0x12FFFFFFu);
+            auto surface = roundedSurface(rect.width, rect.height,
+                std::max(4, rect.width / 3), background);
+            jarkUtils::overlayImg(canvas, surface, rect.x, rect.y);
+        }
+        drawOverlayIcon(canvas, icon, rect, active ? 0xFF60A5FAu : 0);
+        if (active) {
+            cv::circle(canvas, { rect.x + rect.width / 2, rect.y + rect.height - 4 },
+                2, jarkUtils::to_cv_scalar(0xFF60A5FAu), -1, cv::LINE_AA);
+        }
+    }
+
+    void drawSideButton(cv::Mat& canvas, const OverlayLayout::Rect& rect,
+        const cv::Mat& icon, bool hovered) {
+        auto surface = roundedSurface(rect.width, rect.height, 11,
+            hovered ? 0xD10D0F14u : 0xB30D0F14u, 0x17FFFFFFu);
+        jarkUtils::overlayImg(canvas, surface, rect.x, rect.y);
+        drawOverlayIcon(canvas, icon, rect);
+    }
+
+    void drawViewerToolbar(cv::Mat& canvas) {
+        const auto toolbar = OverlayLayout::toolbarRect(canvas.cols, canvas.rows);
+        auto pill = roundedSurface(toolbar.width, toolbar.height,
+            std::max(8, toolbar.height / 3), 0xD10D0F14u, 0x17FFFFFFu);
+        jarkUtils::overlayImg(canvas, pill, toolbar.x, toolbar.y);
+
+        const int scale = OverlayLayout::toolbarScale(canvas.cols);
+        for (const int baseX : { 77, 229, 346, 498 }) {
+            const int x = toolbar.x + OverlayLayout::scaled(
+                OverlayLayout::BASE_TOOLBAR_PADDING + baseX, scale);
+            const int half = OverlayLayout::scaled(10, scale);
+            cv::line(canvas, { x, toolbar.y + toolbar.height / 2 - half },
+                { x, toolbar.y + toolbar.height / 2 + half },
+                cv::Scalar(255, 255, 255, 26), 1, cv::LINE_AA);
+        }
+
+        const bool favorite = hasCurrentImagePath() && favoritePaths.contains(imgFileList[curFileIdx]);
+        drawToolbarButton(canvas, OverlayLayout::toolbarPreviousRect(canvas.cols, canvas.rows),
+            extraUIRes.leftArrow, CursorPos::toolbarPrevious);
+        drawToolbarButton(canvas, OverlayLayout::toolbarNextRect(canvas.cols, canvas.rows),
+            extraUIRes.rightArrow, CursorPos::toolbarNext);
+        drawToolbarButton(canvas, OverlayLayout::rotateLeftRect(canvas.cols, canvas.rows),
+            extraUIRes.leftRotate, CursorPos::toolbarRotateLeft);
+        drawToolbarButton(canvas, OverlayLayout::rotateRightRect(canvas.cols, canvas.rows),
+            extraUIRes.rightRotate, CursorPos::toolbarRotateRight);
+        drawToolbarButton(canvas, OverlayLayout::flipHorizontalRect(canvas.cols, canvas.rows),
+            extraUIRes.flipHorizontal, CursorPos::toolbarFlipHorizontal, curPar.flipHorizontal);
+        drawToolbarButton(canvas, OverlayLayout::flipVerticalRect(canvas.cols, canvas.rows),
+            extraUIRes.flipVertical, CursorPos::toolbarFlipVertical, curPar.flipVertical);
+        drawToolbarButton(canvas, OverlayLayout::zoomFitRect(canvas.cols, canvas.rows),
+            extraUIRes.fitWindow, CursorPos::toolbarZoomFit,
+            curPar.zoomIndex == curPar.zoomIndexFix);
+        drawToolbarButton(canvas, OverlayLayout::zoomActualRect(canvas.cols, canvas.rows),
+            extraUIRes.actualSize, CursorPos::toolbarZoomActual,
+            curPar.zoomIndex == curPar.zoomIndex100percent);
+        drawToolbarButton(canvas, OverlayLayout::fullscreenRect(canvas.cols, canvas.rows),
+            extraUIRes.fullscreen, CursorPos::toolbarFullscreen, presentationMode);
+        drawToolbarButton(canvas, OverlayLayout::favoriteRect(canvas.cols, canvas.rows),
+            extraUIRes.favorite, CursorPos::toolbarFavorite, favorite);
+        drawToolbarButton(canvas, OverlayLayout::copyImageRect(canvas.cols, canvas.rows),
+            extraUIRes.copy, CursorPos::toolbarCopy);
+        drawToolbarButton(canvas, OverlayLayout::deleteImageRect(canvas.cols, canvas.rows),
+            extraUIRes.deleteImage, CursorPos::toolbarDelete, false, true);
+        drawToolbarButton(canvas, OverlayLayout::settingsRect(canvas.cols, canvas.rows),
+            extraUIRes.setting, CursorPos::toolbarSetting);
+        drawToolbarButton(canvas, OverlayLayout::zoomOutRect(canvas.cols, canvas.rows),
+            extraUIRes.zoomOut, CursorPos::toolbarZoomOut);
+        drawToolbarButton(canvas, OverlayLayout::zoomInRect(canvas.cols, canvas.rows),
+            extraUIRes.zoomIn, CursorPos::toolbarZoomIn);
+
+        textDrawer.setSize(12);
+        const std::string zoomText = std::format("{}%", (curPar.zoomCur * 100 +
+            CurImageParameter::ZOOM_BASE / 2) / CurImageParameter::ZOOM_BASE);
+        textDrawer.putAlignCenter(canvas,
+            toCvRect(OverlayLayout::zoomTextRect(canvas.cols, canvas.rows)),
+            zoomText.c_str(), 0xFFB8BECCu);
+
+        if (const char* tooltip = toolbarTooltip()) {
+            OverlayLayout::Rect hovered{};
+            switch (cursorPos) {
+            case CursorPos::toolbarPrevious: hovered = OverlayLayout::toolbarPreviousRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarNext: hovered = OverlayLayout::toolbarNextRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarRotateLeft: hovered = OverlayLayout::rotateLeftRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarRotateRight: hovered = OverlayLayout::rotateRightRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarFlipHorizontal: hovered = OverlayLayout::flipHorizontalRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarFlipVertical: hovered = OverlayLayout::flipVerticalRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarZoomFit: hovered = OverlayLayout::zoomFitRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarZoomActual: hovered = OverlayLayout::zoomActualRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarFullscreen: hovered = OverlayLayout::fullscreenRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarFavorite: hovered = OverlayLayout::favoriteRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarCopy: hovered = OverlayLayout::copyImageRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarDelete: hovered = OverlayLayout::deleteImageRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarSetting: hovered = OverlayLayout::settingsRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarZoomOut: hovered = OverlayLayout::zoomOutRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarZoomIn: hovered = OverlayLayout::zoomInRect(canvas.cols, canvas.rows); break;
+            default: break;
+            }
+            const auto tooltipWide = jarkUtils::utf8ToWstring(tooltip);
+            int tooltipTextWidth = 0;
+            for (const wchar_t character : tooltipWide)
+                tooltipTextWidth += character > 0xFF ? 14 : 7;
+            const int tooltipWidth = std::min(180, std::max(72,
+                tooltipTextWidth + 24));
+            const int tooltipHeight = 30;
+            const int tooltipX = std::clamp(hovered.x + hovered.width / 2 - tooltipWidth / 2,
+                4, canvas.cols - tooltipWidth - 4);
+            const int tooltipY = std::max(4, toolbar.y - tooltipHeight - 8);
+            auto surface = roundedSurface(tooltipWidth, tooltipHeight, 7,
+                0xE6000000u, 0x1AFFFFFFu);
+            jarkUtils::overlayImg(canvas, surface, tooltipX, tooltipY);
+            textDrawer.putAlignCenter(canvas,
+                { tooltipX, tooltipY, tooltipWidth, tooltipHeight }, tooltip, 0xFFE8EAF0u);
+        }
+    }
+
+    void drawExtraUI(cv::Mat& canvas) {
+        const int canvasHeight = canvas.rows;
+        const int canvasWidth = canvas.cols;
         if (canvasWidth < 100 || canvasHeight < 100)
             return;
 
-        switch (extraUIFlag)
-        {
-        case ShowExtraUI::leftArrow: {
-            auto& img = extraUIRes.leftArrow;
-            const auto rect = OverlayLayout::previousImageIconRect(canvasWidth, canvasHeight);
-            jarkUtils::overlayImg(canvas, img, rect.x, rect.y);
-        } break;
+        // The reference header is persistent; only the navigation controls use
+        // the deliberately small hover-reveal regions requested for the viewer.
+        drawViewerTopBar(canvas);
 
-        case ShowExtraUI::rightArrow: {
-            auto& img = extraUIRes.rightArrow;
-            const auto rect = OverlayLayout::nextImageIconRect(canvasWidth, canvasHeight);
-            jarkUtils::overlayImg(canvas, img, rect.x, rect.y);
-        } break;
-
+        switch (extraUIFlag) {
         case ShowExtraUI::bottomToolbar: {
-            const auto previous = OverlayLayout::toolbarPreviousRect(canvasWidth, canvasHeight);
-            const auto next = OverlayLayout::toolbarNextRect(canvasWidth, canvasHeight);
-            const auto rotateLeft = OverlayLayout::rotateLeftRect(canvasWidth, canvasHeight);
-            const auto rotateRight = OverlayLayout::rotateRightRect(canvasWidth, canvasHeight);
-            const auto settings = OverlayLayout::settingsRect(canvasWidth, canvasHeight);
-            jarkUtils::overlayImg(canvas, extraUIRes.leftArrow, previous.x, previous.y);
-            jarkUtils::overlayImg(canvas, extraUIRes.rightArrow, next.x, next.y);
-            jarkUtils::overlayImg(canvas, extraUIRes.leftRotate, rotateLeft.x, rotateLeft.y);
-            jarkUtils::overlayImg(canvas, extraUIRes.rightRotate, rotateRight.x, rotateRight.y);
-            jarkUtils::overlayImg(canvas, extraUIRes.setting, settings.x, settings.y);
+            const auto previous = OverlayLayout::previousImageIconRect(canvasWidth, canvasHeight);
+            const auto next = OverlayLayout::nextImageIconRect(canvasWidth, canvasHeight);
+            drawSideButton(canvas, previous, extraUIRes.leftArrow,
+                cursorPos == CursorPos::leftEdge);
+            drawSideButton(canvas, next, extraUIRes.rightArrow,
+                cursorPos == CursorPos::rightEdge);
+            drawViewerToolbar(canvas);
         } break;
-
+        case ShowExtraUI::leftArrow:
+        case ShowExtraUI::rightArrow:
+            break;
         case ShowExtraUI::animationBar: {
             auto& img = curPar.isAnimationPause ? extraUIRes.animationBarPausing : extraUIRes.animationBarPlaying;
-            jarkUtils::overlayImg(canvas, img, (canvasWidth - img.cols)/2, 0);
+            jarkUtils::overlayImg(canvas, img, (canvasWidth - img.cols) / 2, 0);
         } break;
         case ShowExtraUI::none:
             break;
@@ -2196,12 +2431,12 @@ public:
             const auto close = OverlayLayout::presentationCloseRect(canvasWidth, canvasHeight);
             const cv::Point center{ close.x + close.width / 2, close.y + close.height / 2 };
             cv::circle(canvas, center, close.width / 2 - 1,
-                cv::Scalar(33, 32, 32, 255), -1, cv::LINE_AA);
+                cv::Scalar(33, 32, 32, 235), -1, cv::LINE_AA);
             constexpr int arm = 9;
             cv::line(canvas, { center.x - arm, center.y - arm },
-                { center.x + arm, center.y + arm }, cv::Scalar(255, 255, 255, 255), 4, cv::LINE_AA);
+                { center.x + arm, center.y + arm }, cv::Scalar(255, 255, 255, 255), 3, cv::LINE_AA);
             cv::line(canvas, { center.x + arm, center.y - arm },
-                { center.x - arm, center.y + arm }, cv::Scalar(255, 255, 255, 255), 4, cv::LINE_AA);
+                { center.x - arm, center.y + arm }, cv::Scalar(255, 255, 255, 255), 3, cv::LINE_AA);
         }
     }
 
@@ -2302,6 +2537,25 @@ public:
                     }, operateAction.value1);
                 settingThread.detach();
             }
+            return;
+        }
+
+        if (operateAction.action == ActionENUM::toggleFullScreen) {
+            if (presentationMode)
+                exitPresentationMode();
+            else
+                enterPresentationMode();
+            return;
+        }
+
+        if (operateAction.action == ActionENUM::copyImage) {
+            cv::Mat source;
+            if (curPar.imageAssetPtr->format == ImageFormat::None ||
+                curPar.imageAssetPtr->format == ImageFormat::Still)
+                source = curPar.imageAssetPtr->primaryFrame;
+            else
+                source = curPar.imageAssetPtr->frames[curPar.curFrameIdx];
+            jarkUtils::copyImageToClipboard(source);
             return;
         }
 
@@ -2530,6 +2784,24 @@ public:
             smoothShift = !curPar.imageAssetPtr->svgRenderer;
         } break;
 
+        case ActionENUM::zoomFit: {
+            curPar.zoomIndex = curPar.zoomIndexFix;
+            const auto zoomNext = curPar.zoomList[curPar.zoomIndex];
+            if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
+                computeZoomSlide(zoomNext);
+            curPar.zoomTarget = zoomNext;
+            smoothShift = !curPar.imageAssetPtr->svgRenderer;
+        } break;
+
+        case ActionENUM::zoomActual: {
+            curPar.zoomIndex = curPar.zoomIndex100percent;
+            const auto zoomNext = curPar.zoomList[curPar.zoomIndex];
+            if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
+                computeZoomSlide(zoomNext);
+            curPar.zoomTarget = zoomNext;
+            smoothShift = !curPar.imageAssetPtr->svgRenderer;
+        } break;
+
         case ActionENUM::rotateLeft: {
             if (GlobalVar::settingParameter.isAllowRotateAnimation) {
                 rotateLeftAnimation();
@@ -2558,6 +2830,24 @@ public:
             else
                 curPar.updateZoomList(winWidth, winHeight);
             persistCurrentRotation();
+        } break;
+
+        case ActionENUM::flipHorizontal: {
+            curPar.flipHorizontal = !curPar.flipHorizontal;
+        } break;
+
+        case ActionENUM::flipVertical: {
+            curPar.flipVertical = !curPar.flipVertical;
+        } break;
+
+        case ActionENUM::toggleFavorite: {
+            if (!hasCurrentImagePath())
+                break;
+            const auto& path = imgFileList[curFileIdx];
+            if (favoritePaths.contains(path))
+                favoritePaths.erase(path);
+            else
+                favoritePaths.insert(path);
         } break;
 
         case ActionENUM::deleteImg: {

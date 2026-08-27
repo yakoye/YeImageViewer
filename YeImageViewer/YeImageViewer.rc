@@ -92,8 +92,8 @@ IDR_MSYHMONO_TTF        TTF                     "file\\MSYHMONO.ttf"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,36,15,0
- PRODUCTVERSION 1,36,15,0
+ FILEVERSION 1,36,16,0
+ PRODUCTVERSION 1,36,16,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -110,12 +110,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "YeImageViewer Project"
             VALUE "FileDescription", "YeImageViewer 图像查看器"
-            VALUE "FileVersion", "1.36.15.0"
+            VALUE "FileVersion", "1.36.16.0"
             VALUE "InternalName", "YeImageViewer"
             VALUE "LegalCopyright", "Copyright (C) 2023-2026 JARK006 and YeImageViewer contributors"
             VALUE "OriginalFilename", "YeImageViewer.exe"
             VALUE "ProductName", "YeImageViewer"
-            VALUE "ProductVersion", "1.36.15.0"
+            VALUE "ProductVersion", "1.36.16.0"
         END
     END
     BLOCK "VarFileInfo"
@@ -144,6 +144,16 @@ IDR_SVG_ROTATE_LEFT_ICON SVG                    "file\\icons\\rotate-left.svg"
 IDR_SVG_ROTATE_RIGHT_ICON SVG                   "file\\icons\\rotate-right.svg"
 IDR_SVG_SETTINGS_ICON   SVG                     "file\\icons\\settings.svg"
 IDR_SVG_CLOSE_ICON      SVG                     "file\\icons\\close.svg"
+IDR_SVG_FLIP_HORIZONTAL_ICON SVG                "file\\icons\\flip-horizontal.svg"
+IDR_SVG_FLIP_VERTICAL_ICON SVG                  "file\\icons\\flip-vertical.svg"
+IDR_SVG_FIT_WINDOW_ICON SVG                     "file\\icons\\fit-window.svg"
+IDR_SVG_ACTUAL_SIZE_ICON SVG                    "file\\icons\\actual-size.svg"
+IDR_SVG_FULLSCREEN_ICON SVG                     "file\\icons\\fullscreen.svg"
+IDR_SVG_FAVORITE_ICON   SVG                     "file\\icons\\favorite.svg"
+IDR_SVG_COPY_ICON       SVG                     "file\\icons\\copy.svg"
+IDR_SVG_DELETE_ICON     SVG                     "file\\icons\\delete.svg"
+IDR_SVG_ZOOM_OUT_ICON   SVG                     "file\\icons\\zoom-out.svg"
+IDR_SVG_ZOOM_IN_ICON    SVG                     "file\\icons\\zoom-in.svg"
 
 
 /////////////////////////////////////////////////////////////////////////////

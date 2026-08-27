@@ -18,6 +18,16 @@
 #define IDR_SVG_ROTATE_RIGHT_ICON       145
 #define IDR_SVG_SETTINGS_ICON           146
 #define IDR_SVG_CLOSE_ICON              147
+#define IDR_SVG_FLIP_HORIZONTAL_ICON    148
+#define IDR_SVG_FLIP_VERTICAL_ICON      149
+#define IDR_SVG_FIT_WINDOW_ICON         150
+#define IDR_SVG_ACTUAL_SIZE_ICON        151
+#define IDR_SVG_FULLSCREEN_ICON         152
+#define IDR_SVG_FAVORITE_ICON           153
+#define IDR_SVG_COPY_ICON               154
+#define IDR_SVG_DELETE_ICON             155
+#define IDR_SVG_ZOOM_OUT_ICON           156
+#define IDR_SVG_ZOOM_IN_ICON            157
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
@@ -25,7 +35,7 @@
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NO_MFC                     1
-#define _APS_NEXT_RESOURCE_VALUE        148
+#define _APS_NEXT_RESOURCE_VALUE        158
 #define _APS_NEXT_COMMAND_VALUE         32772
 #define _APS_NEXT_CONTROL_VALUE         1000
 #define _APS_NEXT_SYMED_VALUE           110

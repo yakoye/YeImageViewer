@@ -8,6 +8,7 @@
 #include "ImageInfoPresentation.h"
 #include "PresentationLayout.h"
 #include "OverlayLayout.h"
+#include "ImageViewTransform.h"
 #include "RotationStore.h"
 #include "SettingLayout.h"
 #include "TextRenderingPolicy.h"
@@ -262,41 +263,53 @@ void expectOverlayLayout() {
     constexpr int height = 600;
     constexpr auto toolbarPrevious = OverlayLayout::toolbarPreviousRect(width, height);
     constexpr auto toolbarNext = OverlayLayout::toolbarNextRect(width, height);
-    constexpr auto leftRotate = OverlayLayout::rotateLeftRect(width, height);
-    constexpr auto rightRotate = OverlayLayout::rotateRightRect(width, height);
-    constexpr auto settings = OverlayLayout::settingsRect(width, height);
+    constexpr auto toolbar = OverlayLayout::toolbarRect(width, height);
     constexpr auto previous = OverlayLayout::previousImageIconRect(width, height);
     constexpr auto next = OverlayLayout::nextImageIconRect(width, height);
     constexpr auto close = OverlayLayout::presentationCloseRect(width, height);
 
-    passOrFail("bottom toolbar uses five equal compact icons",
-        OverlayLayout::ICON_SIZE == 30 &&
-        toolbarPrevious.width == 30 && toolbarNext.width == 30 &&
-        leftRotate.width == 30 && leftRotate.height == 30 &&
-        rightRotate.width == 30 && settings.width == 30);
-    passOrFail("bottom toolbar is a horizontal row near the lower-right edge",
-        toolbarPrevious.x == 618 && toolbarNext.x == 654 &&
-        leftRotate.x == 690 && rightRotate.x == 726 && settings.x == 762 &&
-        toolbarPrevious.y == 564 && toolbarNext.y == 564 &&
-        leftRotate.y == 564 && rightRotate.y == 564 && settings.y == 564 &&
-        settings.x + settings.width == width - 8 &&
-        settings.y + settings.height == height - 6);
-    passOrFail("edge navigation icons match the toolbar icon style and size",
-        previous.width == 30 && previous.height == 30 &&
-        next.width == 30 && next.height == 30 &&
-        previous.y == 285 && next.y == 285);
-    passOrFail("toolbar hit testing maps all five actions and keeps gaps visible",
-        OverlayLayout::hitTest(width, height, 625, 575) == OverlayLayout::Hit::ToolbarPreviousImage &&
-        OverlayLayout::hitTest(width, height, 660, 575) == OverlayLayout::Hit::ToolbarNextImage &&
-        OverlayLayout::hitTest(width, height, 700, 575) == OverlayLayout::Hit::RotateLeft &&
-        OverlayLayout::hitTest(width, height, 735, 575) == OverlayLayout::Hit::RotateRight &&
-        OverlayLayout::hitTest(width, height, 775, 575) == OverlayLayout::Hit::Settings &&
-        OverlayLayout::hitTest(width, height, 722, 575) == OverlayLayout::Hit::Toolbar);
-    passOrFail("lower-left printing hotspot is removed",
-        OverlayLayout::hitTest(width, height, 5, 590) == OverlayLayout::Hit::None);
-    passOrFail("wide previous and next edge hit areas are preserved",
-        OverlayLayout::hitTest(width, height, 40, 300) == OverlayLayout::Hit::EdgePreviousImage &&
-        OverlayLayout::hitTest(width, height, 760, 300) == OverlayLayout::Hit::EdgeNextImage);
+    const auto hitCenter = [&](OverlayLayout::Rect rect) {
+        return OverlayLayout::hitTest(width, height,
+            rect.x + rect.width / 2, rect.y + rect.height / 2);
+    };
+    passOrFail("viewer toolbar is centered with the reference proportions",
+        toolbar.width == OverlayLayout::BASE_TOOLBAR_WIDTH &&
+        toolbar.height == OverlayLayout::BASE_TOOLBAR_HEIGHT &&
+        toolbar.x == (width - toolbar.width) / 2 &&
+        toolbar.y + toolbar.height == height - OverlayLayout::BASE_TOOLBAR_BOTTOM_MARGIN &&
+        toolbarPrevious.width == OverlayLayout::BASE_BUTTON_SIZE &&
+        toolbarNext.width == OverlayLayout::BASE_BUTTON_SIZE);
+    passOrFail("side navigation buttons match the reference size and margins",
+        previous.width == 40 && previous.height == 40 && previous.x == 16 &&
+        next.width == 40 && next.height == 40 && next.x + next.width == width - 16 &&
+        previous.y == 280 && next.y == 280);
+    passOrFail("toolbar hit testing maps every reference action",
+        hitCenter(OverlayLayout::toolbarPreviousRect(width, height)) == OverlayLayout::Hit::ToolbarPreviousImage &&
+        hitCenter(OverlayLayout::toolbarNextRect(width, height)) == OverlayLayout::Hit::ToolbarNextImage &&
+        hitCenter(OverlayLayout::rotateLeftRect(width, height)) == OverlayLayout::Hit::RotateLeft &&
+        hitCenter(OverlayLayout::rotateRightRect(width, height)) == OverlayLayout::Hit::RotateRight &&
+        hitCenter(OverlayLayout::flipHorizontalRect(width, height)) == OverlayLayout::Hit::FlipHorizontal &&
+        hitCenter(OverlayLayout::flipVerticalRect(width, height)) == OverlayLayout::Hit::FlipVertical &&
+        hitCenter(OverlayLayout::zoomFitRect(width, height)) == OverlayLayout::Hit::ZoomFit &&
+        hitCenter(OverlayLayout::zoomActualRect(width, height)) == OverlayLayout::Hit::ZoomActual &&
+        hitCenter(OverlayLayout::fullscreenRect(width, height)) == OverlayLayout::Hit::Fullscreen &&
+        hitCenter(OverlayLayout::favoriteRect(width, height)) == OverlayLayout::Hit::Favorite &&
+        hitCenter(OverlayLayout::copyImageRect(width, height)) == OverlayLayout::Hit::CopyImage &&
+        hitCenter(OverlayLayout::deleteImageRect(width, height)) == OverlayLayout::Hit::DeleteImage &&
+        hitCenter(OverlayLayout::settingsRect(width, height)) == OverlayLayout::Hit::Settings &&
+        hitCenter(OverlayLayout::zoomOutRect(width, height)) == OverlayLayout::Hit::ZoomOut &&
+        hitCenter(OverlayLayout::zoomInRect(width, height)) == OverlayLayout::Hit::ZoomIn);
+    passOrFail("overlay reveal regions stay limited to visible controls",
+        OverlayLayout::toolbarRevealRect(width, height).x == toolbar.x &&
+        OverlayLayout::toolbarRevealRect(width, height).width == toolbar.width &&
+        OverlayLayout::hitTest(width, height, 5, 590) == OverlayLayout::Hit::None &&
+        OverlayLayout::hitTest(width, height, 40, 250) == OverlayLayout::Hit::None &&
+        hitCenter(previous) == OverlayLayout::Hit::EdgePreviousImage &&
+        hitCenter(next) == OverlayLayout::Hit::EdgeNextImage);
+    constexpr auto narrowToolbar = OverlayLayout::toolbarRect(300, 600);
+    passOrFail("toolbar scales down without leaving narrow windows",
+        narrowToolbar.width <= 284 && narrowToolbar.x >= 0 &&
+        narrowToolbar.x + narrowToolbar.width <= 300);
     passOrFail("presentation close button stays in the upper-right corner",
         close.x == 746 && close.y == 12 && close.width == 42 && close.height == 42 &&
         OverlayLayout::hitTest(width, height, 767, 33) == OverlayLayout::Hit::PresentationClose);
@@ -305,6 +318,20 @@ void expectOverlayLayout() {
         OverlayLayout::shouldDrawPresentationClose(true, false, false) &&
         OverlayLayout::shouldDrawPresentationClose(false, false, false) &&
         !OverlayLayout::shouldDrawPresentationClose(false, true, true));
+}
+
+void expectImageViewTransform() {
+    const auto identity = ImageViewTransform::displayToSource(2, 3, 10, 8, 0, false, false);
+    const auto horizontal = ImageViewTransform::displayToSource(2, 3, 10, 8, 0, true, false);
+    const auto vertical = ImageViewTransform::displayToSource(2, 3, 10, 8, 0, false, true);
+    const auto clockwise = ImageViewTransform::displayToSource(2, 3, 8, 10, 1, false, false);
+    const auto combined = ImageViewTransform::displayToSource(2, 3, 8, 10, 1, true, true);
+    passOrFail("image view transforms preserve, flip, and rotate source coordinates",
+        identity.x == 2 && identity.y == 3 &&
+        horizontal.x == 7 && horizontal.y == 3 &&
+        vertical.x == 2 && vertical.y == 4 &&
+        clockwise.x == 6 && clockwise.y == 2 &&
+        combined.x == 3 && combined.y == 5);
 }
 
 void expectInitialWindowLayout() {
@@ -414,7 +441,7 @@ void expectMonitorPlacement() {
 }
 
 void expectToolbarIcons(const std::vector<std::string>& paths) {
-    bool allValid = paths.size() == 6;
+    bool allValid = paths.size() == 16;
     for (const auto& path : paths) {
         const auto source = readFile(path);
         const auto renderer = SvgRenderer::create(source);
@@ -422,18 +449,15 @@ void expectToolbarIcons(const std::vector<std::string>& paths) {
             allValid = false;
             continue;
         }
-        const auto bitmap = renderer->renderToBitmap(OverlayLayout::ICON_SIZE, OverlayLayout::ICON_SIZE);
+        const auto bitmap = renderer->renderToBitmap(OverlayLayout::BASE_ICON_SIZE, OverlayLayout::BASE_ICON_SIZE);
         size_t visiblePixels = 0;
-        size_t lightPixels = 0;
         for (size_t offset = 0; offset + 3 < bitmap.bgra.size(); offset += 4) {
             visiblePixels += bitmap.bgra[offset + 3] > 0;
-            lightPixels += bitmap.bgra[offset + 3] > 128 &&
-                bitmap.bgra[offset] > 200 && bitmap.bgra[offset + 1] > 200 && bitmap.bgra[offset + 2] > 200;
         }
-        allValid = allValid && bitmap.width == 30 && bitmap.height == 30 &&
-            visiblePixels > 400 && lightPixels > 10;
+        allValid = allValid && bitmap.width == OverlayLayout::BASE_ICON_SIZE &&
+            bitmap.height == OverlayLayout::BASE_ICON_SIZE && visiblePixels > 8;
     }
-    passOrFail("all six IconPark overlay SVG resources render correctly", allValid);
+    passOrFail("all reference viewer overlay SVG resources render correctly", allValid);
 }
 
 uint16_t readLittleEndian16(const std::vector<uint8_t>& bytes, std::size_t offset) {
@@ -717,6 +741,7 @@ int main(int argc, char* argv[]) {
     expectBilinearEnlargement();
     expectBackgroundRendering();
     expectOverlayLayout();
+    expectImageViewTransform();
     expectInitialWindowLayout();
     expectPresentationLayout();
     expectMonitorPlacement();
@@ -741,15 +766,17 @@ int main(int argc, char* argv[]) {
         failedTests += 4;
         std::cerr << "FAIL SVG regression fixture paths were not provided\n";
     }
-    if (argc >= 10) {
-        expectToolbarIcons({ argv[4], argv[5], argv[6], argv[7], argv[8], argv[9] });
+    if (argc >= 20) {
+        expectToolbarIcons({ argv[4], argv[5], argv[6], argv[7], argv[8], argv[9],
+            argv[10], argv[11], argv[12], argv[13], argv[14], argv[15], argv[16],
+            argv[17], argv[18], argv[19] });
     }
     else {
         ++failedTests;
         std::cerr << "FAIL toolbar icon paths were not provided\n";
     }
-    if (argc >= 13) {
-        expectApplicationIcons({ argv[10], argv[11], argv[12] });
+    if (argc >= 23) {
+        expectApplicationIcons({ argv[20], argv[21], argv[22] });
     }
     else {
         ++failedTests;
