@@ -13,7 +13,7 @@
 
 **YeImageViewer** is a minimal, fast native Windows image viewer. It supports common still images, animations, RAW files, iOS Live Photos, and Android Motion Photos, together with EXIF display, printing, simple editing, and file associations.
 
-Current version: **v1.36.11** · [Changelog](CHANGELOG.md)
+Current version: **v1.36.12** · [Changelog](CHANGELOG.md)
 
 This project is based on [JarkViewer](https://github.com/jark006/JarkViewer) and is licensed under GNU GPL v3. Thanks to upstream author JARK006 and all contributors.
 
@@ -33,7 +33,7 @@ This project is based on [JarkViewer](https://github.com/jark006/JarkViewer) and
 10. Browse frames: use the top controls, or press `J` / `K` / `L`
 11. Split an animation into frames: `Ctrl + S`
 
-Opening an image now starts in a borderless immersive preview covering the current monitor work area. A per-pixel-alpha black layer at roughly 60% opacity keeps the desktop visible while the image itself stays opaque; Windows frosted glass is not used. The same translucent black remains around the image after returning to and enlarging the framed window. Small images use logical 100% at the current DPI. Landscape images are capped at 90% of the work-area width and 82.5% of its height; portrait images shrink only when their width exceeds 90%, and may be panned vertically when taller than the viewport.
+Opening an image now starts in a borderless immersive preview covering the current monitor work area. A per-pixel-alpha black layer at roughly 60% opacity keeps the desktop visible while the image itself stays opaque; Windows frosted glass is not used. After returning to the framed window, the area outside the image switches to opaque `#7F7F7F` middle gray and remains stable when resized. Small images use logical 100% at the current DPI. Landscape images are capped at 90% of the work-area width and 82.5% of its height; portrait images shrink only when their width exceeds 90%, and may be panned vertically when taller than the viewport.
 Clicking the background outside the image or pressing `Esc` returns to a framed window sized for the image currently visible at the moment presentation ends, capped at 90% of the monitor work area. If another image is selected while immersive, that image determines the restored frame. Once framed, browsing previous or next images keeps the frame fixed while each image retains its own preview zoom. Rotation is remembered per image path.
 “Remember Last Monitor” is enabled by default; if that monitor is disconnected, the window falls back to the primary display.
 

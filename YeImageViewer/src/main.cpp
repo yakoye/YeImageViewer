@@ -26,8 +26,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.11";
-constinit int appVersionCode = 13611; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.12";
+constinit int appVersionCode = 13612; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -1296,52 +1296,17 @@ public:
         operateQueue.push({ ActionENUM::refresh });
     }
 
-    uint32_t backgroundPixelAt(int x, int y) const {
-        if (IsFrostedGlassActive())
-            return BackgroundPolicy::presentationCanvasPixel(
-                true, GlobalVar::currentTheme.BG);
-        return BackgroundRenderer::canvasPixel(
-            currentBackgroundMode(), IsFrostedGlassActive(), x, y,
-            GlobalVar::currentTheme.BG,
-            GlobalVar::currentTheme.BLACK_GRID,
-            GlobalVar::currentTheme.WHITE_GRID);
+    uint32_t windowBackgroundPixel() const {
+        return BackgroundPolicy::windowCanvasPixel(
+            presentationMode, IsFrostedGlassActive(), GlobalVar::currentTheme.BG);
     }
 
     void fillCanvasBackground(cv::Mat& canvas) const {
-        if (IsFrostedGlassActive()) {
-            const uint32_t presentationPixel = BackgroundPolicy::presentationCanvasPixel(
-                true, GlobalVar::currentTheme.BG);
-            for (int y = 0; y < canvas.rows; ++y) {
-                auto row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
-                std::fill(row, row + canvas.cols, presentationPixel);
-            }
-            return;
-        }
-
-        const auto mode = currentBackgroundMode();
-        const bool frostedGlassActive = IsFrostedGlassActive();
-        if (mode != BackgroundMode::Transparent) {
-            const uint32_t color = BackgroundRenderer::canvasPixel(
-                mode, frostedGlassActive, 0, 0,
-                GlobalVar::currentTheme.BG,
-                GlobalVar::currentTheme.BLACK_GRID,
-                GlobalVar::currentTheme.WHITE_GRID);
-            for (int y = 0; y < canvas.rows; ++y) {
-                auto row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
-                std::fill(row, row + canvas.cols, color);
-            }
-            return;
-        }
-
-        concurrency::parallel_for(0, canvas.rows, [&](int y) {
+        const uint32_t canvasPixel = BackgroundPolicy::windowCanvasPixel(
+            presentationMode, IsFrostedGlassActive(), GlobalVar::currentTheme.BG);
+        concurrency::parallel_for(0, canvas.rows, [&, canvasPixel](int y) {
             auto row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
-            for (int x = 0; x < canvas.cols; ++x) {
-                row[x] = BackgroundRenderer::canvasPixel(
-                    mode, false, x, y,
-                    GlobalVar::currentTheme.BG,
-                    GlobalVar::currentTheme.BLACK_GRID,
-                    GlobalVar::currentTheme.WHITE_GRID);
-            }
+            std::fill(row, row + canvas.cols, canvasPixel);
         });
     }
 
@@ -1762,7 +1727,7 @@ public:
 
         cv::Mat rotationMatrix = cv::getRotationMatrix2D(center, angle, 1.0);
 
-        intUnion background{ backgroundPixelAt(0, 0) };
+        intUnion background{ windowBackgroundPixel() };
         cv::Mat rotatedImage;
         cv::warpAffine(image, rotatedImage, rotationMatrix, image.size(),
             cv::INTER_LINEAR, cv::BORDER_CONSTANT, 

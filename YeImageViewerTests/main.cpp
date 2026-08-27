@@ -245,10 +245,13 @@ void expectBackgroundRendering() {
     passOrFail("configured background only changes the image area during presentation",
         BackgroundPolicy::imageAreaMode(BackgroundMode::White) == BackgroundMode::White &&
         BackgroundPolicy::imageAreaMode(BackgroundMode::Black) == BackgroundMode::Black);
-    passOrFail("presentation black overlay is sixty percent opaque and normal fallback stays opaque",
-        BackgroundPolicy::presentationCanvasPixel(true, theme) == BackgroundPolicy::PRESENTATION_TINT &&
+    passOrFail("immersive canvas is sixty percent black while framed canvas is opaque middle gray",
+        BackgroundPolicy::windowCanvasPixel(true, true, theme) == BackgroundPolicy::PRESENTATION_TINT &&
         BackgroundPolicy::PRESENTATION_TINT == 0x99000000u &&
-        BackgroundPolicy::presentationCanvasPixel(false, theme) == theme);
+        BackgroundPolicy::windowCanvasPixel(false, true, theme) == BackgroundPolicy::FRAMED_CANVAS &&
+        BackgroundPolicy::FRAMED_CANVAS == 0xFF7F7F7Fu);
+    passOrFail("immersive canvas falls back to the opaque theme without alpha composition",
+        BackgroundPolicy::windowCanvasPixel(true, false, theme) == theme);
 }
 
 void expectOverlayLayout() {
