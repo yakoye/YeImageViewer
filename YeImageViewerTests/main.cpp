@@ -1,4 +1,5 @@
 #include "MotionPhotoUtils.h"
+#include "ImageInterpolation.h"
 #include "StbImageDecoder.h"
 #include "SvgRenderer.h"
 
@@ -173,6 +174,26 @@ void expectSvgRerendersAtDisplayResolution(std::string_view path) {
         nearestDifference > enlarged.bgra.size() / 100);
 }
 
+void expectBilinearEnlargement() {
+    const uint8_t blackAndWhite[]{ 0, 0, 0, 255, 255, 255 };
+    const uint32_t gray = ImageInterpolation::sampleBilinearBgra(
+        blackAndWhite, 2, 1, 6, 3, 0.5f, 0.0f);
+    passOrFail("enlarged raster edges use bilinear gray transitions",
+        (gray & 0x00FFFFFFu) == 0x00808080u && (gray >> 24) == 255);
+
+    const uint8_t transparentBlueAndOpaqueRed[]{
+        255, 0, 0, 0,
+        0, 0, 255, 255
+    };
+    const uint32_t alphaEdge = ImageInterpolation::sampleBilinearBgra(
+        transparentBlueAndOpaqueRed, 2, 1, 8, 4, 0.5f, 0.0f);
+    passOrFail("transparent bilinear edges avoid dark or colored fringes",
+        (alphaEdge & 0xFFu) == 0 &&
+        ((alphaEdge >> 8) & 0xFFu) == 0 &&
+        ((alphaEdge >> 16) & 0xFFu) == 255 &&
+        ((alphaEdge >> 24) & 0xFFu) == 128);
+}
+
 void expectDrawioTextFallback(std::string_view path) {
     const auto source = readFile(path);
     const auto processed = SvgRenderer::preprocess(source);
@@ -182,8 +203,16 @@ void expectDrawioTextFallback(std::string_view path) {
         processed.find("<foreignObject") == std::string::npos &&
         processed.find("<switch") == std::string::npos &&
         processed.find("light-dark(") == std::string::npos &&
-        std::count(processed.begin(), processed.end(), '<') > 37;
-    passOrFail("draw.io foreignObject labels select their image fallbacks", selectedFallback);
+        processed.find("data-yeimageviewer=\"drawio-text\"") != std::string::npos &&
+        std::count(processed.begin(), processed.end(), '<') > 74;
+    if (!selectedFallback || !renderer) {
+        std::cerr << "draw.io preprocess diagnostics: bytes=" << processed.size()
+            << ", marker=" << (processed.find("data-yeimageviewer") != std::string::npos)
+            << ", text=" << (processed.find("<text") != std::string::npos)
+            << ", image=" << (processed.find("<image") != std::string::npos)
+            << ", renderer=" << static_cast<bool>(renderer) << '\n';
+    }
+    passOrFail("draw.io foreignObject labels become native SVG text", selectedFallback);
 
     if (!renderer) {
         passOrFail("draw.io SVG renders fallback label pixels", false);
@@ -205,8 +234,24 @@ void expectDrawioTextFallback(std::string_view path) {
     }
     const bool lightBackground = !bitmap.empty() &&
         bitmap.bgra[0] > 240 && bitmap.bgra[1] > 240 && bitmap.bgra[2] > 240 && bitmap.bgra[3] > 240;
-    passOrFail("draw.io SVG renders fallback label pixels", darkTitlePixels > 100);
+    passOrFail("draw.io SVG renders native label pixels", darkTitlePixels > 100);
     passOrFail("draw.io light-dark CSS uses its light fallback", lightBackground);
+
+    const auto enlarged = renderer->renderToBitmap(1446, 2260);
+    size_t nativeTextDifferences = 0;
+    if (!bitmap.empty() && !enlarged.empty()) {
+        for (int y = 0; y < enlarged.height; ++y) {
+            for (int x = 0; x < enlarged.width; ++x) {
+                const size_t largeOffset = (static_cast<size_t>(y) * enlarged.width + x) * 4;
+                const size_t smallOffset = (static_cast<size_t>(y / 2) * bitmap.width + x / 2) * 4;
+                for (int channel = 0; channel < 4; ++channel) {
+                    nativeTextDifferences += enlarged.bgra[largeOffset + channel] != bitmap.bgra[smallOffset + channel];
+                }
+            }
+        }
+    }
+    passOrFail("draw.io text is rerendered as vector content when enlarged",
+        !enlarged.empty() && nativeTextDifferences > enlarged.bgra.size() / 100);
 }
 
 }
@@ -222,6 +267,7 @@ int main(int argc, char* argv[]) {
     expectVideoSize("non-numeric length", "Item:Semantic: MotionPhoto\nItem:Length: unknown", 0);
     expectVideoSize("overflowing length", "Item:Semantic: MotionPhoto\nItem:Length: 999999999999999999999999999999", 0);
     expectHdrChannelOrder();
+    expectBilinearEnlargement();
     if (argc >= 2) {
         expectRealHdrChannelOrder(argv[1]);
     }
@@ -234,7 +280,7 @@ int main(int argc, char* argv[]) {
         expectDrawioTextFallback(argv[3]);
     }
     else {
-        failedTests += 3;
+        failedTests += 4;
         std::cerr << "FAIL SVG regression fixture paths were not provided\n";
     }
 

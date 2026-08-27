@@ -166,6 +166,7 @@
     <ClInclude Include="include\FileAssociationNaming.h" />
     <ClInclude Include="include\FileAssociationManager.h" />
     <ClInclude Include="include\ImageDatabase.h" />
+    <ClInclude Include="include\ImageInterpolation.h" />
     <ClInclude Include="include\LRU.h" />
     <ClInclude Include="include\MotionPhotoUtils.h" />
     <ClInclude Include="include\Printer.h" />

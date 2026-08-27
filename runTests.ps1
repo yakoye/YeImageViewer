@@ -12,7 +12,8 @@ $unitTests = Join-Path $releaseDir "YeImageViewerTests.exe"
 $crashFixture = Join-Path $repoRoot "test\Image crash\dji_export_photo_20260809221510044.jpg"
 $hdrFixture = Join-Path $repoRoot "test\HDR color error\HDR.hdr"
 $sharpSvgFixture = Join-Path $repoRoot "test\SVG Blurring\SittingHuman.svg"
-$textSvgFixture = Join-Path $repoRoot "test\SVG Blurring\cache策略全景梳理.drawio.svg"
+$textSvgFixture = Join-Path $repoRoot "test\severely jagged\cachetest.drawio.svg"
+$jaggedFixture = Join-Path $repoRoot "test\severely jagged\cachetest.drawio.png"
 
 if (-not $SkipBuild) {
     $shell = Join-Path $PSHOME "pwsh.exe"
@@ -26,13 +27,13 @@ if (-not $SkipBuild) {
     }
 }
 
-foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sharpSvgFixture, $textSvgFixture)) {
+foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sharpSvgFixture, $textSvgFixture, $jaggedFixture)) {
     if (-not (Test-Path -LiteralPath $requiredFile)) {
         throw "Required regression-test file is missing: $requiredFile"
     }
 }
 
-Write-Host "Running MotionPhoto parser tests..."
+Write-Host "Running unit regression tests..."
 $expectedHdrHash = "1A1A661E0A22BECBE019B6C095004315351F28600D9BD7600BD933BEB351E5D5"
 $actualHdrHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $hdrFixture).Hash
 if ($actualHdrHash -ne $expectedHdrHash) {
@@ -51,9 +52,15 @@ if ($actualTextSvgHash -ne $expectedTextSvgHash) {
     throw "Text SVG regression fixture hash mismatch: expected $expectedTextSvgHash, got $actualTextSvgHash."
 }
 
+$expectedJaggedHash = "14FD50F84BCD0576FB55D3C34848B840C808F141C9009BF01A2FED372742BF10"
+$actualJaggedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $jaggedFixture).Hash
+if ($actualJaggedHash -ne $expectedJaggedHash) {
+    throw "Jagged-image regression fixture hash mismatch: expected $expectedJaggedHash, got $actualJaggedHash."
+}
+
 & $unitTests $hdrFixture $sharpSvgFixture $textSvgFixture
 if ($LASTEXITCODE -ne 0) {
-    throw "MotionPhoto parser tests failed with exit code $LASTEXITCODE."
+    throw "Unit regression tests failed with exit code $LASTEXITCODE."
 }
 
 $existingViewer = Get-CimInstance Win32_Process -Filter "Name='YeImageViewer.exe'" |
@@ -91,6 +98,43 @@ try {
     }
 
     Write-Host "PASS DJI MotionPhoto remains open and responsive."
+}
+finally {
+    if ($viewerProcess -and -not $viewerProcess.HasExited) {
+        [void]$viewerProcess.CloseMainWindow()
+        if (-not $viewerProcess.WaitForExit(3000)) {
+            Stop-Process -Id $viewerProcess.Id -Force
+            $viewerProcess.WaitForExit()
+        }
+    }
+}
+
+Write-Host "Opening the enlarged-text interpolation fixture..."
+$viewerProcess = $null
+try {
+    $viewerProcess = Start-Process -FilePath $viewer -ArgumentList ('"' + $jaggedFixture + '"') -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(6)
+
+    do {
+        Start-Sleep -Milliseconds 200
+        $viewerProcess.Refresh()
+    } while (-not $viewerProcess.HasExited -and $viewerProcess.MainWindowHandle -eq 0 -and [DateTime]::UtcNow -lt $deadline)
+
+    if ($viewerProcess.HasExited) {
+        $unsignedExitCode = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$viewerProcess.ExitCode), 0)
+        throw "Raster interpolation regression failed: viewer exited with 0x$('{0:X8}' -f $unsignedExitCode)."
+    }
+    if ($viewerProcess.MainWindowHandle -eq 0 -or -not $viewerProcess.Responding) {
+        throw "Raster interpolation regression failed: viewer did not open a responsive window."
+    }
+
+    Start-Sleep -Seconds 1
+    $viewerProcess.Refresh()
+    if ($viewerProcess.HasExited -or -not $viewerProcess.Responding) {
+        throw "Raster interpolation regression failed: viewer did not remain responsive."
+    }
+
+    Write-Host "PASS enlarged-text interpolation fixture remains open and responsive."
 }
 finally {
     if ($viewerProcess -and -not $viewerProcess.HasExited) {

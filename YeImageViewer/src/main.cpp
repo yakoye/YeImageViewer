@@ -2,6 +2,7 @@
 
 #include "TextDrawer.h"
 #include "ImageDatabase.h"
+#include "ImageInterpolation.h"
 #include "SvgRenderer.h"
 #include "Printer.h"
 #include "Setting.h"
@@ -1035,7 +1036,20 @@ public:
         return *((uint32_t*)&srcPx) | (255 << 24);
     }
 
-    // 要求 srcImg 必须是内存紧凑布局，每行像素数据没有填充字节，且每行连接紧凑
+    inline static uint32_t compositeSrcPx4(intUnion srcPx, int mainX, int mainY) {
+        if (srcPx[3] == 255) return srcPx.u32;
+
+        intUnion bgPx = ((mainX / BG_GRID_WIDTH + mainY / BG_GRID_WIDTH) & 1) ?
+            GlobalVar::currentTheme.BLACK_GRID : GlobalVar::currentTheme.WHITE_GRID;
+        if (srcPx[3] == 0) return bgPx.u32;
+
+        const int alpha = srcPx[3];
+        return 255 << 24 |
+            (((bgPx[2] * (255 - alpha) + srcPx[2] * alpha + 255) & 0xff00) << 8) |
+            ((bgPx[1] * (255 - alpha) + srcPx[1] * alpha + 255) & 0xff00) |
+            ((bgPx[0] * (255 - alpha) + srcPx[0] * alpha + 255) >> 8);
+    }
+
     inline static uint32_t getSrcPx4(const cv::Mat& srcImg, int srcX, int srcY, int mainX, int mainY) {
         const intUnion* srcPtr = (intUnion*)srcImg.ptr();
         const int srcW = srcImg.cols;
@@ -1050,21 +1064,7 @@ public:
                 srcPx[i] = (px1[i] + px2[i] + px3[i] + srcPx[i]) >> 2;
         }
 
-        if (srcPx[3] == 255) return srcPx.u32;
-
-        intUnion bgPx = ((mainX / BG_GRID_WIDTH + mainY / BG_GRID_WIDTH) & 1) ? 
-            GlobalVar::currentTheme.BLACK_GRID : GlobalVar::currentTheme.WHITE_GRID;
-        if (srcPx[3] == 0) return bgPx.u32;
-
-        const int alpha = srcPx[3];
-        //intUnion ret = 255;
-        //ret[0] = (bgPx[0] * (255 - alpha) + srcPx[0] * alpha + 255) >> 8;
-        //ret[1] = (bgPx[1] * (255 - alpha) + srcPx[1] * alpha + 255) >> 8;
-        //ret[2] = (bgPx[2] * (255 - alpha) + srcPx[2] * alpha + 255) >> 8;
-        return 255 << 24 |
-            (((bgPx[2] * (255 - alpha) + srcPx[2] * alpha + 255) & 0xff00) << 8) |
-            ((bgPx[1] * (255 - alpha) + srcPx[1] * alpha + 255) & 0xff00) |
-            ((bgPx[0] * (255 - alpha) + srcPx[0] * alpha + 255) >> 8);
+        return compositeSrcPx4(srcPx, mainX, mainY);
     }
 
     void drawSvgCanvas(cv::Mat& canvas) const {
@@ -1221,6 +1221,44 @@ public:
 
         const float zoomInvert = (float)curPar.ZOOM_BASE / curPar.zoomCur;
         isLowZoom = curPar.zoomCur < curPar.ZOOM_BASE;
+
+        if (curPar.zoomCur > curPar.ZOOM_BASE &&
+            (srcImg.channels() == 1 || srcImg.channels() == 3 || srcImg.channels() == 4)) {
+            const int channels = srcImg.channels();
+            concurrency::parallel_for(yStart, yEnd, [&](int y) {
+                auto destination = ((uint32_t*)canvas.ptr()) + (size_t)y * canvasW;
+                const float rotatedY = ((y - deltaH) + 0.5f) * zoomInvert - 0.5f;
+
+                for (int x = xStart; x < xEnd; ++x) {
+                    const float rotatedX = ((x - deltaW) + 0.5f) * zoomInvert - 0.5f;
+                    float sourceX = rotatedX;
+                    float sourceY = rotatedY;
+
+                    switch (curPar.rotation) {
+                    case 1:
+                        sourceX = srcH - 1.0f - rotatedY;
+                        sourceY = rotatedX;
+                        break;
+                    case 2:
+                        sourceX = srcW - 1.0f - rotatedX;
+                        sourceY = srcH - 1.0f - rotatedY;
+                        break;
+                    case 3:
+                        sourceX = rotatedY;
+                        sourceY = srcW - 1.0f - rotatedX;
+                        break;
+                    }
+
+                    intUnion sampled;
+                    sampled.u32 = ImageInterpolation::sampleBilinearBgra(
+                        srcImg.ptr(), srcImg.cols, srcImg.rows, srcImg.step,
+                        channels, sourceX, sourceY);
+                    destination[x] = channels == 4 ?
+                        compositeSrcPx4(sampled, x, y) : sampled.u32;
+                }
+            });
+            return;
+        }
 
         switch (srcImg.type()) {
         case CV_8UC4: {

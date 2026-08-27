@@ -3,6 +3,8 @@
 #include <vector>
 #include <string>
 #include <string_view>
+#include <algorithm>
+#include <cmath>
 #include <tinyxml2.h>
 
 // 因lunaSVG不支持<switch>标签，需预处理SVG
@@ -23,6 +25,18 @@ public:
     }
 
 private:
+    struct DrawioTextLine {
+        std::string text;
+        bool bold = false;
+        bool ruleAfter = false;
+    };
+
+    struct DrawioTextStyle {
+        double fontSize = 12.0;
+        bool centered = false;
+        bool hasBackground = false;
+    };
+
     static std::string trim(std::string value) {
         const auto first = value.find_first_not_of(" \t\r\n");
         if (first == std::string::npos) return {};
@@ -100,6 +114,13 @@ private:
     }
 
     void processSwitchElement(cv::tinyxml2::XMLElement* switchElement, const std::string& language) {
+        if (auto drawioText = createDrawioTextFallback(switchElement)) {
+            auto parent = switchElement->Parent();
+            parent->InsertAfterChild(switchElement, drawioText);
+            parent->DeleteChild(switchElement);
+            return;
+        }
+
         cv::tinyxml2::XMLElement* selectedChild = nullptr;
 
         // 按顺序检查子元素
@@ -126,6 +147,149 @@ private:
             auto parent = switchElement->Parent();
             parent->DeleteChild(switchElement);
         }
+    }
+
+    static double readCssNumber(std::string_view style, std::string_view property, double fallback) {
+        const size_t propertyPos = style.find(property);
+        if (propertyPos == std::string_view::npos) return fallback;
+
+        const size_t valueStart = propertyPos + property.size();
+        try {
+            return std::stod(std::string(style.substr(valueStart)));
+        }
+        catch (...) {
+            return fallback;
+        }
+    }
+
+    void inspectDrawioStyle(cv::tinyxml2::XMLElement* element, DrawioTextStyle& style) {
+        if (!element) return;
+
+        if (const char* rawStyle = element->Attribute("style")) {
+            const std::string_view css(rawStyle);
+            style.fontSize = std::max(style.fontSize, readCssNumber(css, "font-size:", style.fontSize));
+            style.centered = style.centered ||
+                css.find("text-align: center") != std::string_view::npos ||
+                css.find("justify-content: unsafe center") != std::string_view::npos;
+            style.hasBackground = style.hasBackground ||
+                css.find("background-color:") != std::string_view::npos;
+        }
+
+        for (auto child = element->FirstChildElement(); child; child = child->NextSiblingElement()) {
+            inspectDrawioStyle(child, style);
+        }
+    }
+
+    void collectDrawioText(
+        cv::tinyxml2::XMLNode* node,
+        bool inheritedBold,
+        std::vector<DrawioTextLine>& lines) {
+        if (!node) return;
+        if (lines.empty()) lines.emplace_back();
+
+        for (auto child = node->FirstChild(); child; child = child->NextSibling()) {
+            if (auto text = child->ToText()) {
+                lines.back().text += text->Value();
+                lines.back().bold = lines.back().bold || inheritedBold;
+                continue;
+            }
+
+            auto element = child->ToElement();
+            if (!element) continue;
+            const std::string_view name(element->Name());
+            if (name == "br") {
+                lines.emplace_back();
+            }
+            else if (name == "hr") {
+                lines.back().ruleAfter = true;
+                lines.emplace_back();
+            }
+            else {
+                collectDrawioText(element, inheritedBold || name == "b" || name == "strong", lines);
+            }
+        }
+    }
+
+    cv::tinyxml2::XMLElement* createDrawioTextFallback(cv::tinyxml2::XMLElement* switchElement) {
+        auto foreignObject = switchElement->FirstChildElement("foreignObject");
+        if (!foreignObject) return nullptr;
+
+        cv::tinyxml2::XMLElement* fallbackImage = nullptr;
+        for (auto child = switchElement->FirstChildElement(); child; child = child->NextSiblingElement()) {
+            if (std::string_view(child->Name()) == "image") {
+                fallbackImage = child;
+                break;
+            }
+        }
+        if (!fallbackImage) return nullptr;
+
+        double x = 0.0;
+        double y = 0.0;
+        double width = 0.0;
+        double height = 0.0;
+        if (fallbackImage->QueryDoubleAttribute("x", &x) != cv::tinyxml2::XML_SUCCESS ||
+            fallbackImage->QueryDoubleAttribute("y", &y) != cv::tinyxml2::XML_SUCCESS ||
+            fallbackImage->QueryDoubleAttribute("width", &width) != cv::tinyxml2::XML_SUCCESS ||
+            fallbackImage->QueryDoubleAttribute("height", &height) != cv::tinyxml2::XML_SUCCESS ||
+            width <= 0.0 || height <= 0.0) {
+            return nullptr;
+        }
+
+        std::vector<DrawioTextLine> lines;
+        collectDrawioText(foreignObject, false, lines);
+        for (auto& line : lines) line.text = trim(std::move(line.text));
+        std::erase_if(lines, [](const DrawioTextLine& line) { return line.text.empty(); });
+        if (lines.empty()) return nullptr;
+
+        DrawioTextStyle style;
+        inspectDrawioStyle(foreignObject, style);
+        const double lineHeight = style.fontSize * 1.2;
+        const double ruleSpacing = std::ranges::count_if(lines, [](const DrawioTextLine& line) {
+            return line.ruleAfter;
+        }) * 4.0;
+        const double blockHeight = lines.size() * lineHeight + ruleSpacing;
+        double baseline = y + std::max(0.0, (height - blockHeight) / 2.0) + style.fontSize;
+        const double textX = style.centered ? x + width / 2.0 : x;
+
+        auto doc = switchElement->GetDocument();
+        auto group = doc->NewElement("g");
+        group->SetAttribute("data-yeimageviewer", "drawio-text");
+
+        if (style.hasBackground) {
+            auto background = doc->NewElement("rect");
+            background->SetAttribute("x", x);
+            background->SetAttribute("y", y);
+            background->SetAttribute("width", width);
+            background->SetAttribute("height", height);
+            background->SetAttribute("fill", "#ffffff");
+            group->InsertEndChild(background);
+        }
+
+        for (const auto& line : lines) {
+            auto text = doc->NewElement("text");
+            text->SetAttribute("x", textX);
+            text->SetAttribute("y", baseline);
+            text->SetAttribute("fill", "#000000");
+            text->SetAttribute("font-size", style.fontSize);
+            if (style.centered) text->SetAttribute("text-anchor", "middle");
+            if (line.bold) text->SetAttribute("font-weight", "bold");
+            text->SetText(line.text.c_str());
+            group->InsertEndChild(text);
+
+            if (line.ruleAfter) {
+                auto rule = doc->NewElement("line");
+                rule->SetAttribute("x1", x);
+                rule->SetAttribute("x2", x + width);
+                rule->SetAttribute("y1", baseline + 3.0);
+                rule->SetAttribute("y2", baseline + 3.0);
+                rule->SetAttribute("stroke", "#b3b3b3");
+                rule->SetAttribute("stroke-width", 1.0);
+                group->InsertEndChild(rule);
+                baseline += 4.0;
+            }
+            baseline += lineHeight;
+        }
+        return group;
     }
 
     // 手动实现元素克隆
