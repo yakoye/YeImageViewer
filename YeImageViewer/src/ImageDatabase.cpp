@@ -1,4 +1,5 @@
 #include "ImageDatabase.h"
+#include "MotionPhotoUtils.h"
 
 #ifndef STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
@@ -2932,51 +2933,6 @@ ImageAsset ImageDatabase::loadLivp(wstring_view path, std::span<const uint8_t> f
     return imageAsset;
 }
 
-// 从xmp获取视频数据大小  https://developer.android.com/media/platform/motion-photo-format?hl=zh-cn
-// 旧标准（MicroVideo）    Xmp.GCamera.MicroVideoOffset: xxxx
-// 新标准（MotionPhoto）   Xmp.Container.Directory[xxx]/Item:Length: xxxx
-static size_t getVideoSize(string_view exifStr) {
-    constexpr std::string_view targetKey1 = "Xmp.GCamera.MicroVideoOffset: ";
-    constexpr size_t targetKey1Len = targetKey1.length();
-
-    size_t valueStart = 0;
-    size_t pos = exifStr.find(targetKey1);
-    if (pos != std::string::npos) {
-        valueStart = pos + targetKey1Len;
-    }
-    else {
-        pos = exifStr.find("Item:Semantic: MotionPhoto");
-        if (pos == std::string::npos) {
-            return 0;
-        }
-        constexpr std::string_view targetKey2 = "Item:Length: ";
-        constexpr size_t targetKey2Len = targetKey2.length();
-        pos = exifStr.find(targetKey2, pos);
-        if (pos == std::string::npos) {
-            return 0;
-        }
-        valueStart = pos + targetKey2Len;
-    }
-
-    size_t valueEnd = valueStart;
-    while (valueEnd < exifStr.length() && '0' <= exifStr[valueEnd] && exifStr[valueEnd] <= '9') valueEnd++;
-
-    if (valueEnd <= valueStart) {
-        return 0;
-    }
-
-    std::string_view valueStr(exifStr.data() + valueStart, valueEnd - valueStart);
-
-    int value = 0;
-    try {
-        value = std::stoi(std::string(valueStr));
-    }
-    catch ([[maybe_unused]] const std::exception& e) {
-        return 0;
-    }
-    return value;
-}
-
 static std::vector<std::wstring> getVideoCandidatePaths(std::wstring_view imagePath) {
     const std::wstring fullPath(imagePath);
     const auto lastDot = fullPath.find_last_of(L'.');
@@ -3027,7 +2983,7 @@ ImageAsset ImageDatabase::loadMotionPhoto(wstring_view path, std::span<const uin
         }
     }
 
-    auto videoSize = getVideoSize(exifInfo);
+    auto videoSize = MotionPhotoUtils::getVideoSize(exifInfo);
     std::vector<cv::Mat> frames;
     if (videoSize >= MIN_VIDEO_BUFF_SIZE && videoSize < fileBuf.size()) {
         frames = DecodeVideoFrames(fileBuf.data() + fileBuf.size() - videoSize, videoSize);

@@ -14,12 +14,15 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 # Release x64 构建
 ./buildRelease.ps1
 
+# Release x64 构建并运行全部自动化回归测试
+./runTests.ps1
+
 # 运行已构建程序
 ./x64/Release/YeImageViewer.exe
 ./x64/Release/YeImageViewer.exe "D:/path/to/image.png"
 ```
 
-每次修改后至少保证 `buildRelease.ps1` 能干净编译通过；行为变更需手动冒烟验证静态图加载、动图播放、EXIF 显示、打印预览和导出流程。
+每次修改后必须运行 `runTests.ps1`，保证 Release x64 编译和全部已登记回归用例通过；行为变更还需手动冒烟验证受影响流程。每个已修复缺陷都必须新增能在修复前失败、修复后通过的自动化测试，并把真实复现素材保存在 `test/`（素材过大或涉及隐私时需改为最小化夹具）。
 
 ## 构建前提
 
