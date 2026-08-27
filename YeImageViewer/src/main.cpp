@@ -17,6 +17,9 @@
 #include "D3D11App.h"
 #include <ppl.h>
 #include <concrt.h>
+#include <shellapi.h>
+
+#pragma comment(lib, "Shell32.lib")
 
 /* TODO
 1. 在鼠标光标位置缩放
@@ -28,8 +31,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.16";
-constinit int appVersionCode = 13616; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.17";
+constinit int appVersionCode = 13617; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -3022,6 +3025,44 @@ public:
 
 void test();
 
+static int runDecodeProbe(const std::wstring& imagePath, const std::wstring& resultPath) {
+    ImageDatabase imageDatabase;
+    const cv::Mat errorTips = imageDatabase.getErrorTipsMat();
+    const ImageAsset asset = imageDatabase.myLoader(imagePath);
+
+    const cv::Mat* decodedFrame = nullptr;
+    if (!asset.primaryFrame.empty()) {
+        decodedFrame = &asset.primaryFrame;
+    }
+    else if (!asset.frames.empty()) {
+        decodedFrame = &asset.frames.front();
+    }
+
+    const bool isErrorPlaceholder = decodedFrame != nullptr
+        && decodedFrame->data == errorTips.data
+        && decodedFrame->cols == errorTips.cols
+        && decodedFrame->rows == errorTips.rows;
+    const bool success = asset.format != ImageFormat::None
+        && decodedFrame != nullptr
+        && !decodedFrame->empty()
+        && !isErrorPlaceholder;
+
+    std::ofstream result(std::filesystem::path(resultPath), std::ios::trunc);
+    if (!result) {
+        return 3;
+    }
+
+    const char* format = asset.format == ImageFormat::Animated ? "animated"
+        : asset.format == ImageFormat::Still ? "still"
+        : "none";
+    result << (success ? "OK" : "ERROR") << '\t'
+        << (decodedFrame ? decodedFrame->cols : 0) << '\t'
+        << (decodedFrame ? decodedFrame->rows : 0) << '\t'
+        << asset.frames.size() << '\t'
+        << format << '\n';
+    return success ? 0 : 2;
+}
+
 int WINAPI wWinMain(
     _In_ HINSTANCE hInstance,
     _In_opt_ HINSTANCE hPrevInstance,
@@ -3048,12 +3089,30 @@ int WINAPI wWinMain(
         concurrency::Scheduler::SetDefaultSchedulerPolicy(policy);
     }
 
+    // OpenCV keeps OpenEXR disabled unless this opt-in is present before the
+    // first image-codec call. EXR is an advertised YeImageViewer format.
+    ::SetEnvironmentVariableW(L"OPENCV_IO_ENABLE_OPENEXR", L"1");
+    ::_wputenv_s(L"OPENCV_IO_ENABLE_OPENEXR", L"1");
+
     Exiv2::enableBMFF();
     ::ImmDisableIME(GetCurrentThreadId()); // 禁用输入法，防止干扰按键操作
 
     ::HeapSetInformation(nullptr, HeapEnableTerminationOnCorruption, nullptr, 0);
     if (!SUCCEEDED(::CoInitialize(nullptr)))
         return 0;
+
+    int argumentCount = 0;
+    LPWSTR* arguments = ::CommandLineToArgvW(::GetCommandLineW(), &argumentCount);
+    if (arguments != nullptr && argumentCount == 4
+        && std::wstring_view(arguments[1]) == L"--decode-probe") {
+        const int probeResult = runDecodeProbe(arguments[2], arguments[3]);
+        ::LocalFree(arguments);
+        ::CoUninitialize();
+        return probeResult;
+    }
+    if (arguments != nullptr) {
+        ::LocalFree(arguments);
+    }
 
     wstring filePath = lpCmdLine;
     if (!filePath.empty() && filePath.front() == '\"') {

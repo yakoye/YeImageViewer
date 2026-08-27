@@ -2,6 +2,13 @@
 
 此目录保存曾触发真实缺陷的原始文件。新增素材时，应同时在根目录的 `runTests.ps1` 中加入自动化回归步骤，并记录缺陷现象和预期行为。
 
+## format corpus 格式解码测试集
+
+- `format corpus/manifest.tsv` 登记除暂缺可靠样本的 LEP 外全部 `ImageDatabase::supportExt` 扩展名，并锁定 SHA-256、尺寸、最少帧数和图片类型。
+- `format corpus/SOURCES.md` 记录网络素材的上游 URL、固定 commit、许可证和本地生成方式；原生样本优先来自 OpenCV、libavif、libheif、libjxl 和 BLP 解码器的官方测试仓库。
+- `runTests.ps1` 使用 `YeImageViewer.exe --decode-probe` 逐文件走正式解码分派；错误提示占位图、错误退出、尺寸或帧数不符都会使回归失败，全程不创建可见窗口。
+- 本测试集在建立时发现并锁定了两个真实问题：默认环境下 EXR 被 OpenCV 关闭，以及已声明的 Sun Raster (`.ras`/`.sr`) 没有可用解码路径。
+
 ## Image crash/dji_export_photo_20260809221510044.jpg
 
 - 来源：用户提供的 DJI MotionPhoto 原图。

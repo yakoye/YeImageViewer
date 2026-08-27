@@ -482,6 +482,7 @@ public:
     cv::Mat loadPFM(wstring_view path, std::span<const uint8_t> buf);
     cv::Mat loadQOI(wstring_view path, std::span<const uint8_t> buf);
     cv::Mat loadPCX(wstring_view path, std::span<const uint8_t> buf);
+    cv::Mat loadSunRaster(wstring_view path, std::span<const uint8_t> buf);
     cv::Mat loadBLP(wstring_view path, std::span<const uint8_t> buf);
     cv::Mat loadHeic(wstring_view path, std::span<const uint8_t> buf);
     cv::Mat loadRaw(wstring_view path, std::span<const uint8_t> buf);

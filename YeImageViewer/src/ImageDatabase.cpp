@@ -2403,6 +2403,99 @@ static bool parsePFMHeader(std::span<const uint8_t> buf, int& width, int& height
 }
 
 
+cv::Mat ImageDatabase::loadSunRaster(wstring_view path, std::span<const uint8_t> buf) {
+    constexpr uint32_t RAS_MAGIC = 0x59A66A95;
+    constexpr uint32_t RAS_TYPE_OLD = 0;
+    constexpr uint32_t RAS_TYPE_STANDARD = 1;
+    constexpr uint32_t RAS_TYPE_RGB = 3;
+
+    auto readBigEndian32 = [&](size_t offset) -> uint32_t {
+        if (offset + 4 > buf.size()) {
+            return 0;
+        }
+        return (uint32_t(buf[offset]) << 24)
+            | (uint32_t(buf[offset + 1]) << 16)
+            | (uint32_t(buf[offset + 2]) << 8)
+            | uint32_t(buf[offset + 3]);
+    };
+
+    if (buf.size() < 32 || readBigEndian32(0) != RAS_MAGIC) {
+        JARK_LOG("Invalid Sun Raster header: {}", jarkUtils::wstringToUtf8(path));
+        return {};
+    }
+
+    const uint32_t width = readBigEndian32(4);
+    const uint32_t height = readBigEndian32(8);
+    const uint32_t depth = readBigEndian32(12);
+    const uint32_t rasterType = readBigEndian32(20);
+    const uint32_t mapType = readBigEndian32(24);
+    const uint32_t mapLength = readBigEndian32(28);
+    if (width == 0 || height == 0 || width > INT_MAX || height > INT_MAX
+        || (depth != 8 && depth != 24 && depth != 32)
+        || (rasterType != RAS_TYPE_OLD && rasterType != RAS_TYPE_STANDARD
+            && rasterType != RAS_TYPE_RGB)) {
+        JARK_LOG("Unsupported Sun Raster layout: {}", jarkUtils::wstringToUtf8(path));
+        return {};
+    }
+
+    const uint64_t rowBytes64 = (uint64_t(width) * depth + 7) / 8;
+    const uint64_t rowStride64 = (rowBytes64 + 1) & ~uint64_t(1);
+    const uint64_t dataOffset64 = 32ULL + mapLength;
+    const uint64_t pixelBytes64 = rowStride64 * height;
+    if (rowStride64 > SIZE_MAX || dataOffset64 > buf.size()
+        || pixelBytes64 > buf.size() - size_t(dataOffset64)) {
+        JARK_LOG("Truncated Sun Raster data: {}", jarkUtils::wstringToUtf8(path));
+        return {};
+    }
+
+    const size_t rowStride = size_t(rowStride64);
+    const uint8_t* pixels = buf.data() + size_t(dataOffset64);
+    cv::Mat image(int(height), int(width), depth == 32 ? CV_8UC4 : CV_8UC3);
+
+    if (depth == 8) {
+        const bool hasRgbPalette = mapType == 1 && mapLength >= 3 && mapLength % 3 == 0;
+        const size_t colorCount = hasRgbPalette ? mapLength / 3 : 0;
+        const uint8_t* red = hasRgbPalette ? buf.data() + 32 : nullptr;
+        const uint8_t* green = hasRgbPalette ? red + colorCount : nullptr;
+        const uint8_t* blue = hasRgbPalette ? green + colorCount : nullptr;
+        for (uint32_t y = 0; y < height; ++y) {
+            const uint8_t* source = pixels + size_t(y) * rowStride;
+            cv::Vec3b* target = image.ptr<cv::Vec3b>(int(y));
+            for (uint32_t x = 0; x < width; ++x) {
+                const size_t index = source[x];
+                target[x] = hasRgbPalette && index < colorCount
+                    ? cv::Vec3b(blue[index], green[index], red[index])
+                    : cv::Vec3b(source[x], source[x], source[x]);
+            }
+        }
+    }
+    else if (depth == 24) {
+        for (uint32_t y = 0; y < height; ++y) {
+            const uint8_t* source = pixels + size_t(y) * rowStride;
+            cv::Vec3b* target = image.ptr<cv::Vec3b>(int(y));
+            for (uint32_t x = 0; x < width; ++x) {
+                const uint8_t* pixel = source + size_t(x) * 3;
+                target[x] = rasterType == RAS_TYPE_RGB
+                    ? cv::Vec3b(pixel[2], pixel[1], pixel[0])
+                    : cv::Vec3b(pixel[0], pixel[1], pixel[2]);
+            }
+        }
+    }
+    else {
+        for (uint32_t y = 0; y < height; ++y) {
+            const uint8_t* source = pixels + size_t(y) * rowStride;
+            cv::Vec4b* target = image.ptr<cv::Vec4b>(int(y));
+            for (uint32_t x = 0; x < width; ++x) {
+                const uint8_t* pixel = source + size_t(x) * 4;
+                target[x] = rasterType == RAS_TYPE_RGB
+                    ? cv::Vec4b(pixel[3], pixel[2], pixel[1], pixel[0])
+                    : cv::Vec4b(pixel[1], pixel[2], pixel[3], pixel[0]);
+            }
+        }
+    }
+    return image;
+}
+
 cv::Mat ImageDatabase::loadPFM(wstring_view path, std::span<const uint8_t> buf) {
     int width, height;
     float scaleFactor;
@@ -3265,6 +3358,13 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
         }
         else {
             exifInfo = ExifParse::getSimpleInfo(path, img.cols, img.rows, fileBuf.data(), fileBuf.size());
+        }
+    }
+    else if (ext == L"ras" || ext == L"sr") {
+        img = loadSunRaster(path, fileBuf);
+        exifInfo = ExifParse::getSimpleInfo(path, img.cols, img.rows, fileBuf.data(), fileBuf.size());
+        if (img.empty()) {
+            img = getErrorTipsMat();
         }
     }
     else if (supportRaw.contains(ext)) {

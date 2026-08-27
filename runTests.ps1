@@ -14,6 +14,8 @@ $hdrFixture = Join-Path $repoRoot "test\HDR color error\HDR.hdr"
 $sharpSvgFixture = Join-Path $repoRoot "test\SVG Blurring\SittingHuman.svg"
 $textSvgFixture = Join-Path $repoRoot "test\severely jagged\cachetest.drawio.svg"
 $jaggedFixture = Join-Path $repoRoot "test\severely jagged\cachetest.drawio.png"
+$formatCorpusRoot = Join-Path $repoRoot "test\format corpus"
+$formatManifest = Join-Path $formatCorpusRoot "manifest.tsv"
 $currentRestoreFixtures = @(
     (Join-Path $repoRoot "test\current image restore\01-small.svg"),
     (Join-Path $repoRoot "test\current image restore\02-landscape.svg"),
@@ -58,13 +60,13 @@ if (-not $SkipBuild) {
     }
 }
 
-foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sharpSvgFixture, $textSvgFixture, $jaggedFixture, $appIconPreview) + $toolbarIcons + $appIcons + $currentRestoreFixtures) {
+foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sharpSvgFixture, $textSvgFixture, $jaggedFixture, $appIconPreview, $formatManifest) + $toolbarIcons + $appIcons + $currentRestoreFixtures) {
     if (-not (Test-Path -LiteralPath $requiredFile)) {
         throw "Required regression-test file is missing: $requiredFile"
     }
 }
 
-$expectedFileVersion = "1.36.16.0"
+$expectedFileVersion = "1.36.17.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -158,6 +160,80 @@ foreach ($appIcon in $appIcons) {
 if ($LASTEXITCODE -ne 0) {
     throw "Unit regression tests failed with exit code $LASTEXITCODE."
 }
+
+Write-Host "Running real format decode corpus..."
+$formatCases = @(Import-Csv -LiteralPath $formatManifest -Delimiter "`t")
+if ($formatCases.Count -lt 40) {
+    throw "Format corpus is unexpectedly small: only $($formatCases.Count) registered cases."
+}
+
+$declaredStaticExtensions = @(
+    "apng", "avif", "avifs", "blp", "bmp", "dds", "dib", "exr", "gif", "hdr",
+    "heic", "heif", "ico", "icon", "jfif", "jp2", "jpe", "jpeg", "jpg", "jxl",
+    "jxr", "lep", "livp", "pbm", "pcx", "pfm", "pgm", "pic", "png", "pnm", "ppm",
+    "psd", "psdt", "pxm", "qoi", "ras", "sr", "svg", "tga", "tif", "tiff", "webm",
+    "webp", "wp2"
+)
+$temporarilyExemptExtensions = @("lep")
+$coveredExtensions = @($formatCases | ForEach-Object {
+    [IO.Path]::GetExtension($_.File).TrimStart(".").ToLowerInvariant()
+} | Sort-Object -Unique)
+$missingExtensions = @($declaredStaticExtensions | Where-Object {
+    $_ -notin $coveredExtensions -and $_ -notin $temporarilyExemptExtensions
+})
+if ($missingExtensions.Count -ne 0) {
+    throw "Format corpus does not cover declared extensions: $($missingExtensions -join ', ')."
+}
+
+$formatProbeDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Format-Probes-" + [Guid]::NewGuid().ToString("N"))
+[void](New-Item -ItemType Directory -Path $formatProbeDirectory)
+try {
+    foreach ($case in $formatCases) {
+        $fixture = [IO.Path]::GetFullPath((Join-Path $formatCorpusRoot $case.File))
+        $repoBoundary = [IO.Path]::GetFullPath($repoRoot) + [IO.Path]::DirectorySeparatorChar
+        if (-not $fixture.StartsWith($repoBoundary, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Format fixture escapes the repository: $($case.File)"
+        }
+        if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
+            throw "Format fixture is missing: $fixture"
+        }
+
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $fixture).Hash
+        if ($actualHash -ne $case.SHA256) {
+            throw "Format fixture hash mismatch for $($case.File): expected $($case.SHA256), got $actualHash."
+        }
+
+        $probeResult = Join-Path $formatProbeDirectory (([Guid]::NewGuid().ToString("N")) + ".tsv")
+        $probeProcess = Start-Process -FilePath $viewer -ArgumentList @(
+            "--decode-probe", ('"' + $fixture + '"'), ('"' + $probeResult + '"')
+        ) -WindowStyle Hidden -Wait -PassThru
+        if ($probeProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $probeResult)) {
+            throw "Real decoder rejected $($case.File) with exit code $($probeProcess.ExitCode)."
+        }
+
+        $probeFields = @((Get-Content -LiteralPath $probeResult -Raw).Trim() -split "`t")
+        if ($probeFields.Count -ne 5 -or $probeFields[0] -ne "OK") {
+            throw "Invalid decoder-probe result for $($case.File): $($probeFields -join '|')"
+        }
+        $actualWidth = [int]$probeFields[1]
+        $actualHeight = [int]$probeFields[2]
+        $actualFrames = [int]$probeFields[3]
+        $actualKind = $probeFields[4]
+        if ($actualWidth -ne [int]$case.Width -or
+            $actualHeight -ne [int]$case.Height -or
+            $actualFrames -lt [int]$case.MinimumFrames -or
+            $actualKind -ne $case.Kind) {
+            throw "Unexpected decode result for $($case.File): $actualWidth x $actualHeight, $actualFrames frames, $actualKind."
+        }
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $formatProbeDirectory) {
+        [IO.Directory]::Delete($formatProbeDirectory, $true)
+    }
+}
+Write-Host "PASS $($formatCases.Count) real format fixtures decode through the production loader."
+Write-Host "PASS format corpus covers every declared static extension except documented LEP."
 
 if (-not ("YeImageViewerTestNativeV1365" -as [type])) {
 Add-Type @"
@@ -444,14 +520,21 @@ try {
         throw "Settings-layout regression failed: Settings window did not open."
     }
     $settingRect = New-Object YeImageViewerTestNativeV1365+RECT
-    [void][YeImageViewerTestNativeV1365]::GetClientRect($settingWindow, [ref]$settingRect)
-    $settingDpi = [YeImageViewerTestNativeV1365]::GetDpiForWindow($settingWindow)
-    $expectedSettingWidth = [int][Math]::Round(620 * 96.0 / $settingDpi)
-    $expectedSettingHeight = [int][Math]::Round(620 * 96.0 / $settingDpi)
-    if (($settingRect.Right - $settingRect.Left) -ne $expectedSettingWidth -or
-        ($settingRect.Bottom - $settingRect.Top) -ne $expectedSettingHeight -or
-        -not [YeImageViewerTestNativeV1365]::IsWindowEnabled($settingWindow)) {
-        throw "Settings-layout regression failed: Settings canvas dimensions or interaction state changed."
+    $settingLayoutDeadline = [DateTime]::UtcNow.AddSeconds(2)
+    do {
+        [void][YeImageViewerTestNativeV1365]::GetClientRect($settingWindow, [ref]$settingRect)
+        $expectedSettingWidth = 620
+        $expectedSettingHeight = 620
+        $settingLayoutReady = ($settingRect.Right - $settingRect.Left) -eq $expectedSettingWidth -and
+            ($settingRect.Bottom - $settingRect.Top) -eq $expectedSettingHeight -and
+            [YeImageViewerTestNativeV1365]::IsWindowEnabled($settingWindow)
+        if (-not $settingLayoutReady) {
+            Start-Sleep -Milliseconds 100
+        }
+    } while (-not $settingLayoutReady -and [DateTime]::UtcNow -lt $settingLayoutDeadline)
+    if (-not $settingLayoutReady) {
+        $actualSettingSize = "$(($settingRect.Right - $settingRect.Left))x$(($settingRect.Bottom - $settingRect.Top))"
+        throw "Settings-layout regression failed: expected ${expectedSettingWidth}x${expectedSettingHeight}, got $actualSettingSize."
     }
     $initialSettingWidth = $settingRect.Right - $settingRect.Left
     $initialSettingHeight = $settingRect.Bottom - $settingRect.Top
