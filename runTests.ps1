@@ -14,6 +14,13 @@ $hdrFixture = Join-Path $repoRoot "test\HDR color error\HDR.hdr"
 $sharpSvgFixture = Join-Path $repoRoot "test\SVG Blurring\SittingHuman.svg"
 $textSvgFixture = Join-Path $repoRoot "test\severely jagged\cachetest.drawio.svg"
 $jaggedFixture = Join-Path $repoRoot "test\severely jagged\cachetest.drawio.png"
+$currentRestoreFixtures = @(
+    (Join-Path $repoRoot "test\current image restore\01-small.svg"),
+    (Join-Path $repoRoot "test\current image restore\02-landscape.svg"),
+    (Join-Path $repoRoot "test\current image restore\03-square.svg"),
+    (Join-Path $repoRoot "test\current image restore\04-wide.svg"),
+    (Join-Path $repoRoot "test\current image restore\05-tall-capped.svg")
+)
 $toolbarIcons = @(
     (Join-Path $repoRoot "YeImageViewer\file\icons\previous.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\next.svg"),
@@ -35,13 +42,13 @@ if (-not $SkipBuild) {
     }
 }
 
-foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sharpSvgFixture, $textSvgFixture, $jaggedFixture) + $toolbarIcons) {
+foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sharpSvgFixture, $textSvgFixture, $jaggedFixture) + $toolbarIcons + $currentRestoreFixtures) {
     if (-not (Test-Path -LiteralPath $requiredFile)) {
         throw "Required regression-test file is missing: $requiredFile"
     }
 }
 
-$expectedFileVersion = "1.36.10.0"
+$expectedFileVersion = "1.36.11.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -456,6 +463,101 @@ finally {
     }
 }
 
+Write-Host "Checking current-image window restoration..."
+$restoreTestDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Current-Restore-" + [Guid]::NewGuid().ToString("N"))
+$restoreTestViewer = Join-Path $restoreTestDirectory "YeImageViewer.exe"
+$restoreTestProcess = $null
+try {
+    [void](New-Item -ItemType Directory -Path $restoreTestDirectory)
+    Copy-Item -LiteralPath $viewer -Destination $restoreTestViewer
+    $restoreTestProcess = Start-Process -FilePath $restoreTestViewer -ArgumentList ('"' + $currentRestoreFixtures[0] + '"') -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(6)
+    do {
+        Start-Sleep -Milliseconds 200
+        $restoreTestProcess.Refresh()
+    } while (-not $restoreTestProcess.HasExited -and $restoreTestProcess.MainWindowHandle -eq 0 -and [DateTime]::UtcNow -lt $deadline)
+    if ($restoreTestProcess.HasExited -or $restoreTestProcess.MainWindowHandle -eq 0 -or -not $restoreTestProcess.Responding) {
+        throw "Current-image restore regression failed: viewer did not open the five-image fixture set."
+    }
+
+    $restoreWindow = [IntPtr]$restoreTestProcess.MainWindowHandle
+    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 500
+    $firstRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($restoreWindow, [ref]$firstRect)
+    $firstWidth = $firstRect.Right - $firstRect.Left
+    $firstHeight = $firstRect.Bottom - $firstRect.Top
+    if ($firstWidth -le 0 -or $firstHeight -le 0) {
+        throw "Current-image restore regression failed: first image did not produce a framed client."
+    }
+
+    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0112, [UIntPtr]0xF030, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 350
+    for ($index = 0; $index -lt 4; $index++) {
+        [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0100, [UIntPtr]0x27, [IntPtr]::Zero)
+        [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0101, [UIntPtr]0x27, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 350
+    }
+    $fifthTitle = New-Object Text.StringBuilder 2048
+    [void][YeImageViewerTestNativeV1365]::GetWindowText($restoreWindow, $fifthTitle, $fifthTitle.Capacity)
+    if (-not $fifthTitle.ToString().Contains("[5/5]")) {
+        throw "Current-image restore regression failed: immersive browsing did not reach image 5."
+    }
+
+    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 600
+    $fifthStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($restoreWindow, -16).ToInt64()
+    $fifthRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($restoreWindow, [ref]$fifthRect)
+    $fifthWidth = $fifthRect.Right - $fifthRect.Left
+    $fifthHeight = $fifthRect.Bottom - $fifthRect.Top
+    $restoreMonitor = [YeImageViewerTestNativeV1365]::MonitorFromWindow($restoreWindow, 2)
+    $restoreMonitorInfo = New-Object YeImageViewerTestNativeV1365+MONITORINFO
+    $restoreMonitorInfo.Size = [Runtime.InteropServices.Marshal]::SizeOf($restoreMonitorInfo)
+    [void][YeImageViewerTestNativeV1365]::GetMonitorInfo($restoreMonitor, [ref]$restoreMonitorInfo)
+    $maximumRestoreWidth = [int](($restoreMonitorInfo.Work.Right - $restoreMonitorInfo.Work.Left) * 90 / 100)
+    $maximumRestoreHeight = [int](($restoreMonitorInfo.Work.Bottom - $restoreMonitorInfo.Work.Top) * 90 / 100)
+    if (($fifthStyle -band 0x00C00000) -eq 0 -or
+        $fifthWidth -eq $firstWidth -or $fifthHeight -eq $firstHeight -or
+        [Math]::Abs($fifthWidth - $maximumRestoreWidth) -gt 1 -or
+        [Math]::Abs($fifthHeight - $maximumRestoreHeight) -gt 1) {
+        throw "Current-image restore regression failed: image 5 did not determine the capped framed size."
+    }
+
+    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0100, [UIntPtr]0x25, [IntPtr]::Zero)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0101, [UIntPtr]0x25, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 450
+    $normalBrowseRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($restoreWindow, [ref]$normalBrowseRect)
+    if (($normalBrowseRect.Right - $normalBrowseRect.Left) -ne $fifthWidth -or
+        ($normalBrowseRect.Bottom - $normalBrowseRect.Top) -ne $fifthHeight) {
+        throw "Current-image restore regression failed: normal browsing changed the restored frame."
+    }
+    Write-Host "PASS immersive image 5 determines the capped framed size and normal browsing keeps it fixed."
+}
+finally {
+    if ($restoreTestProcess -and -not $restoreTestProcess.HasExited) {
+        [void]$restoreTestProcess.CloseMainWindow()
+        if (-not $restoreTestProcess.WaitForExit(3000)) {
+            Stop-Process -Id $restoreTestProcess.Id -Force
+            $restoreTestProcess.WaitForExit()
+        }
+    }
+    foreach ($restoreFile in @(
+        $restoreTestViewer,
+        (Join-Path $restoreTestDirectory "YeImageViewer.db"),
+        (Join-Path $restoreTestDirectory "YeImageViewer.rotations.db"),
+        (Join-Path $restoreTestDirectory "YeImageViewer.rotations.db.tmp")
+    )) {
+        if (Test-Path -LiteralPath $restoreFile) {
+            Remove-Item -LiteralPath $restoreFile -Force
+        }
+    }
+    if (Test-Path -LiteralPath $restoreTestDirectory) {
+        Remove-Item -LiteralPath $restoreTestDirectory
+    }
+}
+
 Write-Host "Opening the SVG background-selector fixture..."
 $viewerProcess = $null
 try {
@@ -557,9 +659,9 @@ try {
     [void][YeImageViewerTestNativeV1365]::GetClientRect($window, [ref]$switchedClientRect)
     if (($switchedClientRect.Right - $switchedClientRect.Left) -ne $clientWidth -or
         ($switchedClientRect.Bottom - $switchedClientRect.Top) -ne $clientHeight) {
-        throw "Initial-size regression failed: switching to another image changed the fixed client size."
+        throw "Framed-size regression failed: normal browsing changed the current fixed client size."
     }
-    Write-Host "PASS image changes keep the first framed window size."
+    Write-Host "PASS normal image changes keep the current framed window size."
 
     $targetClientWidth = [int][Math]::Round($clientWidth * $windowDpi / 96.0)
     $targetClientHeight = [int][Math]::Round($clientHeight * $windowDpi / 96.0)

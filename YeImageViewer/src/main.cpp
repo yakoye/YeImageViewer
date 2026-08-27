@@ -26,8 +26,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.10";
-constinit int appVersionCode = 13610; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.11";
+constinit int appVersionCode = 13611; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -258,7 +258,6 @@ public:
     DWORD presentationWindowedExtendedStyle = 0;
     Cood presentationPressPos;
     PresentationLayout::Result presentationLayout;
-    PresentationLayout::Result presentationAnchorLayout;
 
     int curFileIdx = -1;         // 文件在路径列表的索引
     vector<wstring> imgFileList; // 工作目录下所有图像文件路径
@@ -426,7 +425,6 @@ public:
             monitorInfo.rcWork.bottom - monitorInfo.rcWork.top,
             SWP_NOACTIVATE | SWP_FRAMECHANGED);
         applyPresentationImageLayout();
-        presentationAnchorLayout = presentationLayout;
         operateQueue.push({ ActionENUM::refresh });
     }
 
@@ -439,8 +437,11 @@ public:
             return;
         const int workWidth = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
         const int workHeight = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
+        // Recalculate from the image that is visible at the moment of exit.
+        // Browsing in presentation must not keep the entry image's frame size.
+        const auto currentPresentationLayout = calculatePresentationLayout();
         const auto windowed = PresentationLayout::calculateWindowed(
-            presentationAnchorLayout, workWidth, workHeight);
+            currentPresentationLayout, workWidth, workHeight);
 
         presentationMode = false;
         framedWindowAnchored = true;

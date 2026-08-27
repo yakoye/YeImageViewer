@@ -371,6 +371,11 @@ void expectPresentationLayout() {
     passOrFail("an overflowing portrait keeps its zoom and uses a centered scrollable viewport",
         tallWindow.clientWidth == 904 && tallWindow.clientHeight == 918 &&
         tallWindow.initialSlideY == 1);
+    passOrFail("the current image layout determines the next framed window",
+        tallWindow.clientWidth != smallWindow.clientWidth &&
+        tallWindow.clientHeight != smallWindow.clientHeight &&
+        tallWindow.clientWidth <= 1920 * PresentationLayout::WINDOWED_MAX_PERCENT / 100 &&
+        tallWindow.clientHeight <= 1020 * PresentationLayout::WINDOWED_MAX_PERCENT / 100);
 }
 
 void expectMonitorPlacement() {
