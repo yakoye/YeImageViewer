@@ -34,7 +34,9 @@ using std::unordered_map;
 
 #include "psapi.h"
 #include <dxgi.h>
+#include <dxgi1_2.h>
 #include <D3D11.h>
+#include <dcomp.h>
 #include <wincodec.h>
 #include <imm.h>
 #include <commdlg.h>
@@ -59,6 +61,7 @@ using std::unordered_map;
 #pragma comment(lib, "Psapi.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dcomp.lib")
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "dxguid.lib")

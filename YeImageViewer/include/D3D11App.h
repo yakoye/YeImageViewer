@@ -38,7 +38,7 @@ protected:
     void DiscardDeviceResources();
     void ApplyWindowBackgroundMode();
     void SetPresentationBackdrop(bool enabled);
-    bool IsFrostedGlassActive() const { return m_isFrostedGlassActive; }
+    bool IsFrostedGlassActive() const { return m_compositionAlphaActive || m_isFrostedGlassActive; }
 
     // CPU 画布数据呈现到屏幕
     void PresentCanvas(const uint8_t* data, int width, int height, int stride);
@@ -73,5 +73,10 @@ protected:
     bool hasInitWinSize = false;
     bool m_isFrostedGlassActive = false;
     bool m_presentationBackdropRequested = false;
+    bool m_compositionAlphaActive = false;
+    UINT m_swapChainBufferCount = 1;
+    IDCompositionDevice* m_pCompositionDevice = nullptr;
+    IDCompositionTarget* m_pCompositionTarget = nullptr;
+    IDCompositionVisual* m_pCompositionVisual = nullptr;
     cv::Mat mainCanvas;
 };

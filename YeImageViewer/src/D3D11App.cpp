@@ -242,7 +242,7 @@ HRESULT D3D11App::Initialize(HINSTANCE hInstance) {
     if (window_rect.right <= window_rect.left || window_rect.bottom <= window_rect.top)
         window_rect = { 0, 0, 800, 600 };
     DWORD window_style = WS_OVERLAPPEDWINDOW;
-    m_hWnd = CreateWindowExW(0, L"D3D11WndClass", m_wndCaption.c_str(), window_style,
+    m_hWnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP, L"D3D11WndClass", m_wndCaption.c_str(), window_style,
         window_rect.left, window_rect.top, window_rect.right - window_rect.left, window_rect.bottom - window_rect.top,
         0, 0, hInstance, this);
     hr = m_hWnd ? S_OK : E_FAIL;
@@ -271,26 +271,19 @@ void D3D11App::ApplyWindowBackgroundMode() {
         return;
     }
 
-    const auto mode = BackgroundRenderer::normalizeMode(GlobalVar::settingParameter.backgroundMode);
-    const bool requestFrostedGlass = BackgroundPolicy::requestsFrostedGlass(
-        m_presentationBackdropRequested, mode);
-    const BOOL useAlpha = requestFrostedGlass ? TRUE : FALSE;
-    const DWM_SYSTEMBACKDROP_TYPE backdrop = requestFrostedGlass ?
-        DWMSBT_TRANSIENTWINDOW : DWMSBT_NONE;
+    // The client uses a premultiplied-alpha DirectComposition surface in both
+    // framed and presentation modes. Keep DWM backdrop effects disabled: the
+    // canvas itself supplies the uniform translucent black layer.
+    const BOOL useAlpha = FALSE;
+    const DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_NONE;
 
     const HRESULT alphaResult = DwmSetWindowAttribute(
         m_hWnd, DWMWA_REDIRECTIONBITMAP_ALPHA, &useAlpha, sizeof(useAlpha));
     const HRESULT backdropResult = DwmSetWindowAttribute(
         m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
-    m_isFrostedGlassActive = requestFrostedGlass &&
-        SUCCEEDED(alphaResult) && SUCCEEDED(backdropResult);
-
-    if (requestFrostedGlass && !m_isFrostedGlassActive) {
-        const BOOL disableAlpha = FALSE;
-        const DWM_SYSTEMBACKDROP_TYPE noBackdrop = DWMSBT_NONE;
-        DwmSetWindowAttribute(m_hWnd, DWMWA_REDIRECTIONBITMAP_ALPHA, &disableAlpha, sizeof(disableAlpha));
-        DwmSetWindowAttribute(m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &noBackdrop, sizeof(noBackdrop));
-    }
+    m_isFrostedGlassActive = false;
+    (void)alphaResult;
+    (void)backdropResult;
     DwmFlush();
 }
 
@@ -342,27 +335,76 @@ HRESULT D3D11App::CreateDeviceResources() {
     if (SUCCEEDED(hr))
         hr = pDxgiAdapter->GetParent(__uuidof(IDXGIFactory), (void**)&pDxgiFactory);
 
-    // 创建交换链（Win7 兼容：使用 IDXGIFactory::CreateSwapChain + DXGI_SWAP_EFFECT_DISCARD）
+    // Windows 10/11: use a windowless flip-model swap chain so the alpha
+    // channel of the CPU canvas is composed into the HWND client area. The
+    // system non-client frame remains independent and fully interactive.
     if (SUCCEEDED(hr)) {
-        RECT rect = { 0 };
+        RECT rect{};
         GetClientRect(m_hWnd, &rect);
 
-        DXGI_SWAP_CHAIN_DESC swapChainDesc = {};
-        swapChainDesc.BufferDesc.Width = rect.right - rect.left;
-        swapChainDesc.BufferDesc.Height = rect.bottom - rect.top;
-        swapChainDesc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        swapChainDesc.BufferDesc.RefreshRate.Numerator = 0;
-        swapChainDesc.BufferDesc.RefreshRate.Denominator = 0;
-        swapChainDesc.SampleDesc.Count = 1;
-        swapChainDesc.SampleDesc.Quality = 0;
-        swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        swapChainDesc.BufferCount = 1;
-        swapChainDesc.OutputWindow = m_hWnd;
-        swapChainDesc.Windowed = TRUE;
-        swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-        swapChainDesc.Flags = 0;
+        IDXGIFactory2* factory2 = nullptr;
+        hr = pDxgiFactory->QueryInterface(IID_PPV_ARGS(&factory2));
+        if (SUCCEEDED(hr)) {
+            DXGI_SWAP_CHAIN_DESC1 swapChainDesc{};
+            swapChainDesc.Width = rect.right - rect.left;
+            swapChainDesc.Height = rect.bottom - rect.top;
+            swapChainDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            swapChainDesc.SampleDesc.Count = 1;
+            swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+            swapChainDesc.BufferCount = 2;
+            swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+            swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+            swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
 
-        hr = pDxgiFactory->CreateSwapChain(m_pD3DDevice, &swapChainDesc, &m_pSwapChain);
+            IDXGISwapChain1* compositionSwapChain = nullptr;
+            hr = factory2->CreateSwapChainForComposition(
+                m_pD3DDevice, &swapChainDesc, nullptr, &compositionSwapChain);
+            if (SUCCEEDED(hr)) {
+                m_pSwapChain = compositionSwapChain;
+                m_swapChainBufferCount = 2;
+                hr = DCompositionCreateDevice(
+                    pDxgiDevice, IID_PPV_ARGS(&m_pCompositionDevice));
+            }
+            if (SUCCEEDED(hr))
+                hr = m_pCompositionDevice->CreateTargetForHwnd(
+                    m_hWnd, TRUE, &m_pCompositionTarget);
+            if (SUCCEEDED(hr))
+                hr = m_pCompositionDevice->CreateVisual(&m_pCompositionVisual);
+            if (SUCCEEDED(hr))
+                hr = m_pCompositionVisual->SetContent(m_pSwapChain);
+            if (SUCCEEDED(hr))
+                hr = m_pCompositionTarget->SetRoot(m_pCompositionVisual);
+            if (SUCCEEDED(hr))
+                hr = m_pCompositionDevice->Commit();
+            if (SUCCEEDED(hr))
+                m_compositionAlphaActive = true;
+        }
+        SafeRelease(factory2);
+
+        if (FAILED(hr)) {
+            SafeRelease(m_pCompositionVisual);
+            SafeRelease(m_pCompositionTarget);
+            SafeRelease(m_pCompositionDevice);
+            SafeRelease(m_pSwapChain);
+            m_compositionAlphaActive = false;
+            m_swapChainBufferCount = 1;
+            SetWindowLongPtrW(m_hWnd, GWL_EXSTYLE,
+                GetWindowLongPtrW(m_hWnd, GWL_EXSTYLE) &
+                ~static_cast<LONG_PTR>(WS_EX_NOREDIRECTIONBITMAP));
+
+            DXGI_SWAP_CHAIN_DESC fallbackDesc{};
+            fallbackDesc.BufferDesc.Width = rect.right - rect.left;
+            fallbackDesc.BufferDesc.Height = rect.bottom - rect.top;
+            fallbackDesc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            fallbackDesc.SampleDesc.Count = 1;
+            fallbackDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+            fallbackDesc.BufferCount = 1;
+            fallbackDesc.OutputWindow = m_hWnd;
+            fallbackDesc.Windowed = TRUE;
+            fallbackDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+            hr = pDxgiFactory->CreateSwapChain(
+                m_pD3DDevice, &fallbackDesc, &m_pSwapChain);
+        }
     }
 
     SafeRelease(pDxgiDevice);
@@ -392,7 +434,7 @@ void D3D11App::CreateWindowSizeDependentResources() {
 
     // 重设交换链缓冲区
     HRESULT hr = m_pSwapChain->ResizeBuffers(
-        1,
+        m_swapChainBufferCount,
         width,
         height,
         DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -460,6 +502,9 @@ void D3D11App::PresentCanvas(const uint8_t* data, int width, int height, int str
 
 void D3D11App::DiscardDeviceResources() {
     SafeRelease(m_pStagingTexture);
+    SafeRelease(m_pCompositionVisual);
+    SafeRelease(m_pCompositionTarget);
+    SafeRelease(m_pCompositionDevice);
     SafeRelease(m_pSwapChain);
     SafeRelease(m_pD3DDevice);
     SafeRelease(m_pD3DDeviceContext);

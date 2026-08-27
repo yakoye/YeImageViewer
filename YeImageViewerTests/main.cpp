@@ -240,15 +240,14 @@ void expectBackgroundRendering() {
         BackgroundRenderer::compositeBgra(halfTransparentColor,
             BackgroundMode::Black, false, 0, 0,
             theme, darkGrid, lightGrid) == 0xFF402010u);
-    passOrFail("presentation canvas always requests frosted glass",
-        BackgroundPolicy::canvasMode(true, BackgroundMode::White) == BackgroundMode::FrostedGlass &&
-        BackgroundPolicy::requestsFrostedGlass(true, BackgroundMode::Black));
+    passOrFail("presentation canvas uses the layered alpha surface",
+        BackgroundPolicy::usesPerPixelAlphaSurface());
     passOrFail("configured background only changes the image area during presentation",
         BackgroundPolicy::imageAreaMode(BackgroundMode::White) == BackgroundMode::White &&
-        BackgroundPolicy::imageAreaMode(BackgroundMode::Black) == BackgroundMode::Black &&
-        BackgroundPolicy::canvasMode(false, BackgroundMode::Transparent) == BackgroundMode::Transparent);
-    passOrFail("presentation tint is stable and normal fallback stays opaque",
+        BackgroundPolicy::imageAreaMode(BackgroundMode::Black) == BackgroundMode::Black);
+    passOrFail("presentation black overlay is sixty percent opaque and normal fallback stays opaque",
         BackgroundPolicy::presentationCanvasPixel(true, theme) == BackgroundPolicy::PRESENTATION_TINT &&
+        BackgroundPolicy::PRESENTATION_TINT == 0x99000000u &&
         BackgroundPolicy::presentationCanvasPixel(false, theme) == theme);
 }
 
@@ -295,6 +294,11 @@ void expectOverlayLayout() {
     passOrFail("presentation close button stays in the upper-right corner",
         close.x == 746 && close.y == 12 && close.width == 42 && close.height == 42 &&
         OverlayLayout::hitTest(width, height, 767, 33) == OverlayLayout::Hit::PresentationClose);
+    passOrFail("presentation close button does not depend on the optional SVG resource",
+        OverlayLayout::shouldDrawPresentationClose(true, false, true) &&
+        OverlayLayout::shouldDrawPresentationClose(true, false, false) &&
+        OverlayLayout::shouldDrawPresentationClose(false, false, false) &&
+        !OverlayLayout::shouldDrawPresentationClose(false, true, true));
 }
 
 void expectInitialWindowLayout() {

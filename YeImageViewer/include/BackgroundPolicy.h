@@ -4,18 +4,14 @@
 
 namespace BackgroundPolicy {
 
-inline constexpr uint32_t PRESENTATION_TINT = 0x44000000u;
-
-constexpr BackgroundMode canvasMode(bool presentationMode, BackgroundMode configuredMode) {
-    return presentationMode ? BackgroundMode::FrostedGlass : configuredMode;
-}
+inline constexpr uint32_t PRESENTATION_TINT = 0x99000000u;
 
 constexpr BackgroundMode imageAreaMode(BackgroundMode configuredMode) {
     return configuredMode;
 }
 
-constexpr bool requestsFrostedGlass(bool presentationMode, BackgroundMode configuredMode) {
-    return presentationMode || configuredMode == BackgroundMode::FrostedGlass;
+constexpr bool usesPerPixelAlphaSurface() {
+    return true;
 }
 
 constexpr uint32_t presentationCanvasPixel(bool frostedGlassActive, uint32_t themeBackground) {

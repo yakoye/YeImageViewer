@@ -45,6 +45,13 @@ constexpr Rect presentationCloseRect(int canvasWidth, int) {
     };
 }
 
+constexpr bool shouldDrawPresentationClose(
+    bool presentationMode, bool windowHasCaption, bool) {
+    // The actual borderless state is authoritative during startup resize
+    // messages. The SVG is optional decoration and must not hide the button.
+    return presentationMode || !windowHasCaption;
+}
+
 constexpr int toolbarWidth() {
     return ICON_SIZE * 5 + TOOLBAR_GAP * 4;
 }

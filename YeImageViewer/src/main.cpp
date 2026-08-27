@@ -26,8 +26,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.9";
-constinit int appVersionCode = 13609; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.10";
+constinit int appVersionCode = 13610; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -407,12 +407,10 @@ public:
         presentationWindowedExtendedStyle = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_EXSTYLE));
         framedWindowAnchored = false;
         presentationMode = true;
-        SetPresentationBackdrop(true);
 
         MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
         if (!GetMonitorInfoW(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST), &monitorInfo)) {
             presentationMode = false;
-            SetPresentationBackdrop(false);
             return;
         }
 
@@ -421,6 +419,7 @@ public:
         SetWindowLongPtrW(m_hWnd, GWL_EXSTYLE,
             presentationWindowedExtendedStyle &
             ~(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE));
+        SetPresentationBackdrop(true);
         SetWindowPos(m_hWnd, HWND_TOP,
             monitorInfo.rcWork.left, monitorInfo.rcWork.top,
             monitorInfo.rcWork.right - monitorInfo.rcWork.left,
@@ -905,10 +904,6 @@ public:
         enterPresentationMode();
     }
 
-    void requestInitialPresentation() {
-        PostMessageW(m_hWnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0);
-    }
-
     void handleEscapeKey() {
         if (presentationMode) {
             exitPresentationMode();
@@ -1301,9 +1296,9 @@ public:
     }
 
     uint32_t backgroundPixelAt(int x, int y) const {
-        if (presentationMode)
+        if (IsFrostedGlassActive())
             return BackgroundPolicy::presentationCanvasPixel(
-                IsFrostedGlassActive(), GlobalVar::currentTheme.BG);
+                true, GlobalVar::currentTheme.BG);
         return BackgroundRenderer::canvasPixel(
             currentBackgroundMode(), IsFrostedGlassActive(), x, y,
             GlobalVar::currentTheme.BG,
@@ -1312,9 +1307,9 @@ public:
     }
 
     void fillCanvasBackground(cv::Mat& canvas) const {
-        if (presentationMode) {
+        if (IsFrostedGlassActive()) {
             const uint32_t presentationPixel = BackgroundPolicy::presentationCanvasPixel(
-                IsFrostedGlassActive(), GlobalVar::currentTheme.BG);
+                true, GlobalVar::currentTheme.BG);
             for (int y = 0; y < canvas.rows; ++y) {
                 auto row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
                 std::fill(row, row + canvas.cols, presentationPixel);
@@ -1388,6 +1383,7 @@ public:
             fillCanvasBackground(mainCanvas);
         }
 
+        drawExtraUI(mainCanvas);
         updateMainCanvas();
         operateQueue.push({ ActionENUM::refresh });
     }
@@ -2106,9 +2102,19 @@ public:
             break;
         }
 
-        if (presentationMode && !extraUIRes.presentationClose.empty()) {
+        const bool windowHasCaption =
+            (GetWindowLongPtrW(m_hWnd, GWL_STYLE) & WS_CAPTION) != 0;
+        if (OverlayLayout::shouldDrawPresentationClose(
+            presentationMode, windowHasCaption, !extraUIRes.presentationClose.empty())) {
             const auto close = OverlayLayout::presentationCloseRect(canvasWidth, canvasHeight);
-            jarkUtils::overlayImg(canvas, extraUIRes.presentationClose, close.x, close.y);
+            const cv::Point center{ close.x + close.width / 2, close.y + close.height / 2 };
+            cv::circle(canvas, center, close.width / 2 - 1,
+                cv::Scalar(33, 32, 32, 255), -1, cv::LINE_AA);
+            constexpr int arm = 9;
+            cv::line(canvas, { center.x - arm, center.y - arm },
+                { center.x + arm, center.y + arm }, cv::Scalar(255, 255, 255, 255), 4, cv::LINE_AA);
+            cv::line(canvas, { center.x + arm, center.y - arm },
+                { center.x - arm, center.y + arm }, cv::Scalar(255, 255, 255, 255), 4, cv::LINE_AA);
         }
     }
 
@@ -2683,12 +2689,9 @@ int WINAPI wWinMain(
     YeImageViewerApp app;
     if (SUCCEEDED(app.InitWindow(hInstance))) {
         app.initOpenFile(filePath);
-        app.ShowInitialWindow();
+        app.enterPresentationMode();
         app.DrawScene();
-        DwmFlush();
-        // Use the exact same in-loop window-message path as a user clicking
-        // maximize, after startup sizing and DWM visibility messages settle.
-        app.requestInitialPresentation();
+        app.ShowInitialWindow();
         app.Run();
     }
     else {

@@ -41,7 +41,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.9.0"
+$expectedFileVersion = "1.36.10.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -219,7 +219,9 @@ try {
     $freshWorkWidth = $freshMonitorInfo.Work.Right - $freshMonitorInfo.Work.Left
     $freshWorkHeight = $freshMonitorInfo.Work.Bottom - $freshMonitorInfo.Work.Top
     $freshStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($freshWindow, -16).ToInt64()
+    $freshExtendedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($freshWindow, -20).ToInt64()
     if (($freshStyle -band 0x00C00000) -ne 0 -or
+        ($freshExtendedStyle -band 0x00200000) -eq 0 -or
         [Math]::Abs(($freshClientRect.Right - $freshClientRect.Left) - $freshWorkWidth) -gt 1 -or
         [Math]::Abs(($freshClientRect.Bottom - $freshClientRect.Top) - $freshWorkHeight) -gt 1) {
         throw "Fresh-install regression failed: image did not open in the borderless monitor work area."
@@ -255,11 +257,13 @@ try {
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0202, [UIntPtr]0, $freshBackgroundPosition)
     Start-Sleep -Milliseconds 500
     $freshFramedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($freshWindow, -16).ToInt64()
+    $freshFramedExtendedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($freshWindow, -20).ToInt64()
     $freshFramedRect = New-Object YeImageViewerTestNativeV1365+RECT
     [void][YeImageViewerTestNativeV1365]::GetClientRect($freshWindow, [ref]$freshFramedRect)
     $freshFramedWidth = $freshFramedRect.Right - $freshFramedRect.Left
     $freshFramedHeight = $freshFramedRect.Bottom - $freshFramedRect.Top
     if (($freshFramedStyle -band 0x00C00000) -eq 0 -or
+        ($freshFramedExtendedStyle -band 0x00200000) -eq 0 -or
         $freshFramedWidth -ge $freshWorkWidth -or $freshFramedHeight -ge $freshWorkHeight) {
         throw "Fresh-install regression failed: clicking the background did not return to an image-sized framed window."
     }
@@ -516,15 +520,19 @@ try {
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0112, [UIntPtr]0xF030, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 250
     $maximizePresentationStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64()
+    $maximizePresentationExtendedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -20).ToInt64()
     if (($maximizePresentationStyle -band 0x00C00000) -ne 0 -or
+        ($maximizePresentationExtendedStyle -band 0x00200000) -eq 0 -or
         [YeImageViewerTestNativeV1365]::IsZoomed($window)) {
         throw "Presentation regression failed: maximize did not enter borderless presentation mode."
     }
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 250
     $maximizeRestoredStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64()
+    $maximizeRestoredExtendedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -20).ToInt64()
     $viewerProcess.Refresh()
     if ($viewerProcess.HasExited -or ($maximizeRestoredStyle -band 0x00C00000) -eq 0 -or
+        ($maximizeRestoredExtendedStyle -band 0x00200000) -eq 0 -or
         [YeImageViewerTestNativeV1365]::IsZoomed($window)) {
         throw "Presentation regression failed: Escape did not restore the pre-presentation frame."
     }
