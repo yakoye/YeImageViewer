@@ -383,6 +383,7 @@ enum class ShowExtraUI :int {
 enum class ContextMenu :int {
     openNewImage = 1000, copyImageInfo, copyImagePath, copyImageData, toggleExifDisplay, openContainerFloder, deleteImage,
     openFileProperties, printImage, toggleFullScreen, openSetting, openHelp, aboutSoftware, exitSoftware,
+    renameImage = 1014,
     backgroundTransparent = 1100, backgroundWhite, backgroundBlack, backgroundFrostedGlass
 };
 

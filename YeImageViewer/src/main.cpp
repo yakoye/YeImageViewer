@@ -13,11 +13,13 @@
 #include "BackgroundPolicy.h"
 #include "ImageInfoPresentation.h"
 #include "WheelInput.h"
+#include "RenamePolicy.h"
 
 #include "D3D11App.h"
 #include <ppl.h>
 #include <concrt.h>
 #include <shellapi.h>
+#include <optional>
 
 #pragma comment(lib, "Shell32.lib")
 
@@ -31,10 +33,217 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.17";
-constinit int appVersionCode = 13617; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.18";
+constinit int appVersionCode = 13618; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
+
+namespace {
+
+constexpr wchar_t RENAME_WINDOW_CLASS[] = L"YeImageViewerRenameWnd";
+constexpr int RENAME_EDIT_ID = 1001;
+
+struct RenameDialogState {
+    std::wstring initialName;
+    std::optional<std::wstring> result;
+    HWND window = nullptr;
+    HWND edit = nullptr;
+    HFONT font = nullptr;
+    bool finished = false;
+};
+
+int scaleForDpi(int value, UINT dpi) {
+    return MulDiv(value, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
+}
+
+LRESULT CALLBACK RenameDialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto* state = reinterpret_cast<RenameDialogState*>(
+        GetWindowLongPtrW(window, GWLP_USERDATA));
+
+    if (message == WM_NCCREATE) {
+        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+        state = static_cast<RenameDialogState*>(create->lpCreateParams);
+        state->window = window;
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+    }
+
+    if (!state)
+        return DefWindowProcW(window, message, wParam, lParam);
+
+    switch (message) {
+    case WM_CREATE: {
+        const UINT dpi = GetDpiForWindow(window);
+        NONCLIENTMETRICSW metrics{ .cbSize = sizeof(NONCLIENTMETRICSW) };
+        if (!SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0, dpi))
+            SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0);
+        state->font = CreateFontIndirectW(&metrics.lfMessageFont);
+
+        const auto makeControl = [&](const wchar_t* className, const wchar_t* text,
+            DWORD style, int x, int y, int width, int height, int id) {
+                HWND control = CreateWindowExW(0, className, text,
+                    WS_CHILD | WS_VISIBLE | style,
+                    scaleForDpi(x, dpi), scaleForDpi(y, dpi),
+                    scaleForDpi(width, dpi), scaleForDpi(height, dpi),
+                    window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                    GetModuleHandleW(nullptr), nullptr);
+                if (control && state->font)
+                    SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), TRUE);
+                return control;
+            };
+
+        makeControl(L"STATIC", getUIStringW(49), SS_LEFT,
+            20, 16, 380, 22, -1);
+        state->edit = makeControl(L"EDIT", state->initialName.c_str(),
+            WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL,
+            20, 43, 380, 27, RENAME_EDIT_ID);
+        makeControl(L"BUTTON", L"确定", WS_TABSTOP | BS_DEFPUSHBUTTON,
+            226, 88, 82, 30, IDOK);
+        makeControl(L"BUTTON", L"取消", WS_TABSTOP | BS_PUSHBUTTON,
+            318, 88, 82, 30, IDCANCEL);
+        if (GlobalVar::settingParameter.UI_LANG != 0) {
+            SetDlgItemTextW(window, IDOK, L"OK");
+            SetDlgItemTextW(window, IDCANCEL, L"Cancel");
+        }
+        SendMessageW(state->edit, EM_SETLIMITTEXT, 255, 0);
+        return 0;
+    }
+
+    case WM_COMMAND:
+        if (LOWORD(wParam) == RENAME_EDIT_ID && HIWORD(wParam) == EN_CHANGE) {
+            const HWND edit = reinterpret_cast<HWND>(lParam);
+            const int length = GetWindowTextLengthW(edit);
+            std::wstring value(static_cast<size_t>(length) + 1, L'\0');
+            GetWindowTextW(edit, value.data(), length + 1);
+            value.resize(static_cast<size_t>(length));
+            state->initialName = std::move(value);
+            return 0;
+        }
+        if (LOWORD(wParam) == IDOK) {
+            const HWND edit = GetDlgItem(window, RENAME_EDIT_ID);
+            const int length = GetWindowTextLengthW(edit);
+            std::wstring value(static_cast<size_t>(length) + 1, L'\0');
+            GetWindowTextW(edit, value.data(), length + 1);
+            value.resize(static_cast<size_t>(length));
+            state->result = std::move(value);
+            state->finished = true;
+            ShowWindow(window, SW_HIDE);
+            PostThreadMessageW(GetCurrentThreadId(), WM_NULL, 0, 0);
+            return 0;
+        }
+        if (LOWORD(wParam) == IDCANCEL) {
+            state->finished = true;
+            ShowWindow(window, SW_HIDE);
+            PostThreadMessageW(GetCurrentThreadId(), WM_NULL, 0, 0);
+            return 0;
+        }
+        break;
+
+    case WM_CLOSE:
+        state->finished = true;
+        ShowWindow(window, SW_HIDE);
+        PostThreadMessageW(GetCurrentThreadId(), WM_NULL, 0, 0);
+        return 0;
+
+    case WM_DESTROY:
+        state->window = nullptr;
+        if (!state->finished) {
+            state->finished = true;
+            PostThreadMessageW(GetCurrentThreadId(), WM_NULL, 0, 0);
+        }
+        return 0;
+
+    case WM_CTLCOLORSTATIC:
+        SetBkMode(reinterpret_cast<HDC>(wParam), TRANSPARENT);
+        return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+std::optional<std::wstring> showRenameDialog(HWND owner, std::wstring initialName) {
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    WNDCLASSEXW windowClass{ .cbSize = sizeof(WNDCLASSEXW) };
+    windowClass.style = CS_HREDRAW | CS_VREDRAW;
+    windowClass.lpfnWndProc = RenameDialogProc;
+    windowClass.hInstance = instance;
+    windowClass.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_YEIMAGEVIEWER));
+    windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    windowClass.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+    windowClass.lpszClassName = RENAME_WINDOW_CLASS;
+    windowClass.hIconSm = windowClass.hIcon;
+    if (!RegisterClassExW(&windowClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        return std::nullopt;
+
+    RenameDialogState state{ .initialName = std::move(initialName) };
+    const UINT dpi = owner ? GetDpiForWindow(owner) : USER_DEFAULT_SCREEN_DPI;
+    RECT outer{ 0, 0, scaleForDpi(420, dpi), scaleForDpi(138, dpi) };
+    const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP;
+    const DWORD extendedStyle = WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT;
+    if (!AdjustWindowRectExForDpi(&outer, style, FALSE, extendedStyle, dpi))
+        AdjustWindowRectEx(&outer, style, FALSE, extendedStyle);
+    const int width = outer.right - outer.left;
+    const int height = outer.bottom - outer.top;
+
+    RECT ownerRect{};
+    if (!owner || !GetWindowRect(owner, &ownerRect))
+        ownerRect = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
+    int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
+    MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
+    if (GetMonitorInfoW(MonitorFromRect(&ownerRect, MONITOR_DEFAULTTONEAREST), &monitorInfo)) {
+        x = std::clamp(x, static_cast<int>(monitorInfo.rcWork.left),
+            static_cast<int>(monitorInfo.rcWork.right) - width);
+        y = std::clamp(y, static_cast<int>(monitorInfo.rcWork.top),
+            static_cast<int>(monitorInfo.rcWork.bottom) - height);
+    }
+
+    HWND window = CreateWindowExW(extendedStyle, RENAME_WINDOW_CLASS, getUIStringW(48), style,
+        x, y, width, height, owner, nullptr, instance, &state);
+    if (!window) {
+        if (state.font)
+            DeleteObject(state.font);
+        return std::nullopt;
+    }
+
+    const bool restoreOwner = owner && IsWindowEnabled(owner);
+    if (restoreOwner)
+        EnableWindow(owner, FALSE);
+    ShowWindow(window, SW_SHOW);
+    UpdateWindow(window);
+    SendMessageW(state.edit, EM_SETSEL, 0, -1);
+    SetFocus(state.edit);
+
+    bool repostQuit = false;
+    int quitCode = 0;
+    MSG message{};
+    while (!state.finished) {
+        const BOOL status = GetMessageW(&message, nullptr, 0, 0);
+        if (status <= 0) {
+            repostQuit = status == 0;
+            quitCode = static_cast<int>(message.wParam);
+            break;
+        }
+        if (!IsDialogMessageW(window, &message)) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+
+    if (IsWindow(window))
+        DestroyWindow(window);
+    if (state.font)
+        DeleteObject(state.font);
+    if (restoreOwner && IsWindow(owner)) {
+        EnableWindow(owner, TRUE);
+        SetForegroundWindow(owner);
+        SetActiveWindow(owner);
+        SetFocus(owner);
+    }
+    if (repostQuit)
+        PostQuitMessage(quitCode);
+    return state.result;
+}
+
+} // namespace
 
 
 static constexpr auto generate_zoom_list() {
@@ -309,6 +518,69 @@ public:
     bool hasCurrentImagePath() const {
         return curFileIdx >= 0 && curFileIdx < static_cast<int>(imgFileList.size()) &&
             imgFileList[curFileIdx] != m_wndCaption;
+    }
+
+    const wchar_t* renameValidationMessage(RenamePolicy::ValidationError error) const {
+        switch (error) {
+        case RenamePolicy::ValidationError::Empty: return getUIStringW(50);
+        case RenamePolicy::ValidationError::InvalidCharacter: return getUIStringW(51);
+        case RenamePolicy::ValidationError::TrailingDotOrSpace: return getUIStringW(52);
+        case RenamePolicy::ValidationError::ReservedName: return getUIStringW(53);
+        case RenamePolicy::ValidationError::TooLong: return getUIStringW(54);
+        default: return getUIStringW(14);
+        }
+    }
+
+    void renameCurrentImage() {
+        if (!hasCurrentImagePath())
+            return;
+
+        const std::filesystem::path source(imgFileList[curFileIdx]);
+        std::error_code sourceError;
+        if (!std::filesystem::is_regular_file(source, sourceError))
+            return;
+
+        std::wstring candidate = source.stem().wstring();
+        while (true) {
+            auto requestedName = showRenameDialog(m_hWnd, candidate);
+            if (!requestedName)
+                return;
+
+            candidate = RenamePolicy::trim(*requestedName);
+            const auto renameResult = RenamePolicy::renameFile(source, candidate);
+            if (renameResult.error == RenamePolicy::OperationError::InvalidName) {
+                MessageBoxW(m_hWnd, renameValidationMessage(renameResult.validation), getUIStringW(48),
+                    MB_OK | MB_ICONWARNING);
+                continue;
+            }
+            if (renameResult.error == RenamePolicy::OperationError::NoChange)
+                return;
+            if (renameResult.error == RenamePolicy::OperationError::AlreadyExists) {
+                MessageBoxW(m_hWnd, getUIStringW(55), getUIStringW(48),
+                    MB_OK | MB_ICONWARNING);
+                continue;
+            }
+            if (renameResult.error == RenamePolicy::OperationError::SystemError) {
+                const auto message = std::format(
+                    L"{} 0x{:08X}", getUIStringW(56), renameResult.systemError);
+                MessageBoxW(m_hWnd, message.c_str(), getUIStringW(48), MB_OK | MB_ICONERROR);
+                continue;
+            }
+
+            const auto sourceText = source.wstring();
+            const auto targetText = renameResult.target.wstring();
+            const int savedRotation = rotationStore.get(sourceText);
+            rotationStore.erase(sourceText);
+            rotationStore.set(targetText, savedRotation);
+            rotationStore.save();
+
+            if (favoritePaths.erase(sourceText) > 0)
+                favoritePaths.insert(targetText);
+
+            initOpenFile(targetText);
+            operateQueue.push({ ActionENUM::refresh });
+            return;
+        }
     }
 
     void initCurrentImageParameters() {
@@ -1222,6 +1494,10 @@ public:
                 operateQueue.push({ ActionENUM::setting, 0 });
             }break;
 
+            case VK_F2: {
+                renameCurrentImage();
+            }break;
+
             case VK_F3: {
                 operateQueue.push({ ActionENUM::setting, 2 });
             }break;
@@ -1309,6 +1585,10 @@ public:
 
         case ContextMenu::openContainerFloder: {
             jarkUtils::openFileLocation(imgFileList[curFileIdx]);
+        }break;
+
+        case ContextMenu::renameImage: {
+            renameCurrentImage();
         }break;
 
         case ContextMenu::deleteImage: {

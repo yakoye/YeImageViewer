@@ -183,6 +183,7 @@
     <ClInclude Include="include\OverlayLayout.h" />
     <ClInclude Include="include\PresentationLayout.h" />
     <ClInclude Include="include\Printer.h" />
+    <ClInclude Include="include\RenamePolicy.h" />
     <ClInclude Include="include\RotationStore.h" />
     <ClInclude Include="include\SettingLayout.h" />
     <ClInclude Include="include\Setting.h" />

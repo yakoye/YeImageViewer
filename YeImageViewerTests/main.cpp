@@ -10,6 +10,7 @@
 #include "OverlayLayout.h"
 #include "ImageViewTransform.h"
 #include "RotationStore.h"
+#include "RenamePolicy.h"
 #include "SettingLayout.h"
 #include "TextRenderingPolicy.h"
 #include "WheelInput.h"
@@ -540,6 +541,56 @@ void expectRotationPersistence() {
     std::filesystem::remove(databasePath, ignored);
 }
 
+void expectRenamePolicy() {
+    const std::filesystem::path source = LR"(D:\images\holiday.photo.png)";
+    const auto target = RenamePolicy::buildTargetPath(source, L"summer trip");
+    passOrFail("rename keeps the current image extension",
+        target == std::filesystem::path(LR"(D:\images\summer trip.png)"));
+    passOrFail("rename trims surrounding whitespace before validation",
+        RenamePolicy::trim(L"  summer trip  ") == L"summer trip");
+    passOrFail("rename accepts a normal Unicode file name",
+        RenamePolicy::validate(L"夏日照片", L".png") == RenamePolicy::ValidationError::None);
+    passOrFail("rename rejects an empty file name",
+        RenamePolicy::validate(L"", L".png") == RenamePolicy::ValidationError::Empty);
+    passOrFail("rename rejects Windows-invalid characters",
+        RenamePolicy::validate(L"bad:name", L".png") == RenamePolicy::ValidationError::InvalidCharacter);
+    passOrFail("rename rejects a trailing dot",
+        RenamePolicy::validate(L"bad.", L".png") == RenamePolicy::ValidationError::TrailingDotOrSpace);
+    passOrFail("rename rejects reserved Windows device names",
+        RenamePolicy::validate(L"CON.notes", L".png") == RenamePolicy::ValidationError::ReservedName);
+    passOrFail("rename rejects an overlong file component",
+        RenamePolicy::validate(std::wstring(252, L'a'), L".png") == RenamePolicy::ValidationError::TooLong);
+
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto testDirectory = std::filesystem::temp_directory_path() /
+        (L"YeImageViewerRename-" + std::to_wstring(unique));
+    const auto original = testDirectory / L"original.png";
+    const auto renamed = testDirectory / L"renamed-by-production.png";
+    const auto occupied = testDirectory / L"occupied.png";
+    std::error_code ignored;
+    std::filesystem::create_directories(testDirectory, ignored);
+    {
+        std::ofstream fixture(original, std::ios::binary);
+        fixture << "rename regression fixture";
+    }
+    const auto renamedResult = RenamePolicy::renameFile(original, L"renamed-by-production");
+    passOrFail("production rename moves a real file and preserves its extension",
+        renamedResult.error == RenamePolicy::OperationError::None &&
+        renamedResult.target == renamed && std::filesystem::exists(renamed) &&
+        !std::filesystem::exists(original));
+    {
+        std::ofstream fixture(occupied, std::ios::binary);
+        fixture << "must not be overwritten";
+    }
+    const auto collisionResult = RenamePolicy::renameFile(renamed, L"occupied");
+    passOrFail("production rename refuses to overwrite an existing file",
+        collisionResult.error == RenamePolicy::OperationError::AlreadyExists &&
+        std::filesystem::exists(renamed) && std::filesystem::file_size(occupied) == 23);
+    std::filesystem::remove(renamed, ignored);
+    std::filesystem::remove(occupied, ignored);
+    std::filesystem::remove(testDirectory, ignored);
+}
+
 void expectEscapeBehavior() {
     passOrFail("Escape exits fullscreen before considering close preference",
         EscapeBehavior::resolve(true, true, true) == EscapeBehavior::Action::ExitFullScreen);
@@ -751,6 +802,7 @@ int main(int argc, char* argv[]) {
     expectImageInfoPresentation();
     expectWheelInput();
     expectRotationPersistence();
+    expectRenamePolicy();
     if (argc >= 2) {
         expectRealHdrChannelOrder(argv[1]);
     }

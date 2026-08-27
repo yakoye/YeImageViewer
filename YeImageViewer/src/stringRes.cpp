@@ -115,6 +115,16 @@ std::wstring_view UIStringTableW[STRING_MAX_NUM][2] = {
     {L"白色", L"White"},
     {L"黑色", L"Black"},
     {L"毛玻璃", L"Frosted glass"},
+    {L"重命名 (&R)", L"&Rename"},
+    {L"重命名图片", L"Rename image"},
+    {L"请输入新的文件名：", L"Enter a new file name:"},
+    {L"文件名不能为空。", L"The file name cannot be empty."}, // 50
+    {L"文件名不能包含以下字符：<>:\"/\\|?*", L"The file name cannot contain: <>:\"/\\|?*"},
+    {L"文件名不能以空格或句点结尾。", L"The file name cannot end with a space or period."},
+    {L"该文件名是 Windows 保留名称，请使用其他名称。", L"This name is reserved by Windows. Choose another name."},
+    {L"文件名过长。", L"The file name is too long."},
+    {L"同名文件已存在，请使用其他名称。", L"A file with that name already exists."}, // 55
+    {L"重命名失败，错误码", L"Rename failed, error code"},
 };
 
 // 获取字符串

@@ -45,6 +45,9 @@
     <ClInclude Include="include\RotationStore.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\RenamePolicy.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\OverlayLayout.h">
       <Filter>include</Filter>
     </ClInclude>

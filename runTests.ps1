@@ -66,7 +66,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.17.0"
+$expectedFileVersion = "1.36.18.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -275,10 +275,19 @@ public static class YeImageViewerTestNativeV1365
     public static extern IntPtr SendMessage(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll")]
+    public static extern bool PostMessage(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
     public static extern bool IsZoomed(IntPtr window);
 
     [DllImport("user32.dll")]
     public static extern bool IsWindowEnabled(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetDlgItem(IntPtr window, int controlId);
 
     [DllImport("user32.dll")]
     public static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter,
@@ -308,7 +317,7 @@ public static class YeImageViewerTestNativeV1365
             if (ownerProcessId == processId) {
                 StringBuilder className = new StringBuilder(256);
                 GetClassName(window, className, className.Capacity);
-                if (className.ToString() == expectedClassName) {
+                if (className.ToString() == expectedClassName && IsWindowVisible(window)) {
                     found = window;
                     return false;
                 }
@@ -335,6 +344,7 @@ public static class YeImageViewerTestNativeV1365
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetWindowText(IntPtr window, StringBuilder text, int maximumLength);
+
 }
 "@
 }
@@ -500,14 +510,27 @@ try {
     }
     Write-Host "PASS background exit anchors the frame while browsing preserves per-image zoom."
 
-    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0100, [UIntPtr]0x71, [IntPtr]::Zero)
-    Start-Sleep -Milliseconds 300
+    [void][YeImageViewerTestNativeV1365]::PostMessage($freshWindow, 0x0100, [UIntPtr]0x71, [IntPtr]::Zero)
+    $renameDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $renameWindow = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$freshProcess.Id, "YeImageViewerRenameWnd")
+    } while ($renameWindow -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $renameDeadline)
+    if ($renameWindow -eq [IntPtr]::Zero) {
+        throw "Rename-shortcut regression failed: F2 did not open the rename window."
+    }
     $unexpectedF2Window = [YeImageViewerTestNativeV1365]::FindProcessWindow(
         [uint32]$freshProcess.Id, "YeImageViewerSettingWnd")
     if ($unexpectedF2Window -ne [IntPtr]::Zero) {
-        throw "Settings-shortcut regression failed: F2 still opened Settings."
+        throw "Rename-shortcut regression failed: F2 also opened Settings."
     }
-    Write-Host "PASS F2 no longer opens Settings."
+    [void][YeImageViewerTestNativeV1365]::SendMessage($renameWindow, 0x0111, [UIntPtr]2, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 150
+    if (-not [YeImageViewerTestNativeV1365]::IsWindowEnabled($freshWindow)) {
+        throw "Rename-shortcut regression failed: cancelling rename left the viewer disabled."
+    }
+    Write-Host "PASS F2 opens Rename, not Settings, and cancel restores viewer interaction."
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0111, [UIntPtr]1010, [IntPtr]::Zero)
     $settingDeadline = [DateTime]::UtcNow.AddSeconds(3)
@@ -627,6 +650,118 @@ finally {
     }
     if (Test-Path -LiteralPath $freshDirectory) {
         Remove-Item -LiteralPath $freshDirectory
+    }
+}
+
+Write-Host "Checking current-image rename workflow..."
+$renameTestDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Rename-" + [Guid]::NewGuid().ToString("N"))
+$renameTestViewer = Join-Path $renameTestDirectory "YeImageViewer.exe"
+$renameOriginal = Join-Path $renameTestDirectory "rename-original.png"
+$renameTestProcess = $null
+try {
+    [void](New-Item -ItemType Directory -Path $renameTestDirectory)
+    Copy-Item -LiteralPath $viewer -Destination $renameTestViewer
+    Copy-Item -LiteralPath $jaggedFixture -Destination $renameOriginal
+    $renameTestProcess = Start-Process -FilePath $renameTestViewer -ArgumentList ('"' + $renameOriginal + '"') -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(6)
+    do {
+        Start-Sleep -Milliseconds 200
+        $renameTestProcess.Refresh()
+    } while (-not $renameTestProcess.HasExited -and $renameTestProcess.MainWindowHandle -eq 0 -and [DateTime]::UtcNow -lt $deadline)
+    if ($renameTestProcess.HasExited -or $renameTestProcess.MainWindowHandle -eq 0 -or -not $renameTestProcess.Responding) {
+        throw "Rename regression failed: viewer did not open the dedicated rename fixture."
+    }
+
+    $renameMainWindow = [IntPtr]$renameTestProcess.MainWindowHandle
+    [void][YeImageViewerTestNativeV1365]::PostMessage($renameMainWindow, 0x0100, [UIntPtr]0x71, [IntPtr]::Zero)
+    $renameDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $renameWindow = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$renameTestProcess.Id, "YeImageViewerRenameWnd")
+    } while ($renameWindow -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $renameDeadline)
+    if ($renameWindow -eq [IntPtr]::Zero) {
+        throw "Rename regression failed: F2 did not open the native rename window."
+    }
+    $renameEdit = [YeImageViewerTestNativeV1365]::GetDlgItem($renameWindow, 1001)
+    if ($renameEdit -eq [IntPtr]::Zero) {
+        throw "Rename regression failed: filename edit control was not available."
+    }
+    $renameCancelButton = [YeImageViewerTestNativeV1365]::GetDlgItem($renameWindow, 2)
+    if ($renameCancelButton -eq [IntPtr]::Zero) {
+        throw "Rename regression failed: Cancel button was not available."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage($renameCancelButton, 0x00F5, [UIntPtr]::Zero, [IntPtr]::Zero)
+    $renameDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+    } while (-not [YeImageViewerTestNativeV1365]::IsWindowEnabled($renameMainWindow) -and
+        [DateTime]::UtcNow -lt $renameDeadline)
+    if (-not [YeImageViewerTestNativeV1365]::IsWindowEnabled($renameMainWindow) -or
+        -not (Test-Path -LiteralPath $renameOriginal)) {
+        throw "Rename regression failed: cancelling the F2 dialog did not restore the original image and interaction."
+    }
+    $renameTitle = New-Object Text.StringBuilder 2048
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $renameMainWindow, $renameTitle, $renameTitle.Capacity)
+    if (-not $renameTitle.ToString().Contains("rename-original.png")) {
+        throw "Rename regression failed: cancelling F2 changed the current image."
+    }
+
+    [void][YeImageViewerTestNativeV1365]::PostMessage($renameMainWindow, 0x0111, [UIntPtr]1014, [IntPtr]::Zero)
+    $renameDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $renameWindow = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$renameTestProcess.Id, "YeImageViewerRenameWnd")
+    } while ($renameWindow -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $renameDeadline)
+    if ($renameWindow -eq [IntPtr]::Zero) {
+        throw "Rename regression failed: the context-menu rename command did not open the rename window."
+    }
+    $renameEdit = [YeImageViewerTestNativeV1365]::GetDlgItem($renameWindow, 1001)
+    $renameCancelButton = [YeImageViewerTestNativeV1365]::GetDlgItem($renameWindow, 2)
+    if ($renameEdit -eq [IntPtr]::Zero -or $renameCancelButton -eq [IntPtr]::Zero) {
+        throw "Rename regression failed: context-menu rename controls were unavailable."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage($renameCancelButton, 0x00F5, [UIntPtr]::Zero, [IntPtr]::Zero)
+    $renameDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+    } while (-not [YeImageViewerTestNativeV1365]::IsWindowEnabled($renameMainWindow) -and
+        [DateTime]::UtcNow -lt $renameDeadline)
+    if (-not [YeImageViewerTestNativeV1365]::IsWindowEnabled($renameMainWindow) -or
+        -not (Test-Path -LiteralPath $renameOriginal)) {
+        throw "Rename regression failed: cancelling the context-menu dialog did not restore the viewer."
+    }
+    $renameTitle.Clear() | Out-Null
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $renameMainWindow, $renameTitle, $renameTitle.Capacity)
+    if (-not $renameTitle.ToString().Contains("rename-original.png")) {
+        throw "Rename regression failed: cancelling context-menu rename changed the current image."
+    }
+    Write-Host "PASS F2 and context-menu commands open Rename and cancel restores the current image and interaction."
+}
+finally {
+    if ($renameTestProcess -and -not $renameTestProcess.HasExited) {
+        [void]$renameTestProcess.CloseMainWindow()
+        if (-not $renameTestProcess.WaitForExit(3000)) {
+            Stop-Process -Id $renameTestProcess.Id -Force
+            $renameTestProcess.WaitForExit()
+        }
+    }
+    foreach ($renameFile in @(
+        $renameTestViewer,
+        $renameOriginal,
+        (Join-Path $renameTestDirectory "YeImageViewer.db"),
+        (Join-Path $renameTestDirectory "YeImageViewer.rotations.db"),
+        (Join-Path $renameTestDirectory "YeImageViewer.rotations.db.tmp")
+    )) {
+        if (Test-Path -LiteralPath $renameFile) {
+            Remove-Item -LiteralPath $renameFile -Force
+        }
+    }
+    if (Test-Path -LiteralPath $renameTestDirectory) {
+        Remove-Item -LiteralPath $renameTestDirectory
     }
 }
 
