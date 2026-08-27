@@ -189,6 +189,7 @@
     <ClInclude Include="include\SvgRenderer.h" />
     <ClInclude Include="include\StbImageDecoder.h" />
     <ClInclude Include="include\TextDrawer.h" />
+    <ClInclude Include="include\TextRenderingPolicy.h" />
     <ClInclude Include="include\YeThumbnailProviderGuids.h" />
     <ClInclude Include="include\ThumbnailRegistrar.h" />
     <ClInclude Include="include\jarkUtils.h" />
@@ -220,7 +221,6 @@
     <Image Include="file\home.png" />
     <Image Include="file\mainRes.png" />
     <Image Include="file\printerRes.png" />
-    <Image Include="file\settingRes.png" />
     <Image Include="file\tips.png" />
     <Image Include="YeImageViewer.ico" />
     <Image Include="small.ico" />

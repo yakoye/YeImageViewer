@@ -26,8 +26,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.12";
-constinit int appVersionCode = 13612; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.13";
+constinit int appVersionCode = 13613; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -274,12 +274,7 @@ public:
         rotationStore.setStoragePath(std::move(rotationPath));
         rotationStore.load();
 
-        HDC hdc = GetDC(nullptr);
-        UINT dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSX) : 96; // 100%: 96 150%: 144 200%: 192
-        if (hdc) ReleaseDC(nullptr, hdc);
-        if (dpi >= 144) {
-            textDrawer.setSize(dpi < 168 ? 24 : 32);
-        }
+        textDrawer.setSize(TextRenderingPolicy::LOGICAL_FONT_SIZE);
     }
 
     ~YeImageViewerApp() {
@@ -1382,9 +1377,7 @@ public:
         return BackgroundRenderer::compositeBgra(
             srcPx.u32, BackgroundPolicy::imageAreaMode(currentBackgroundMode()),
             IsFrostedGlassActive(), mainX, mainY,
-            GlobalVar::currentTheme.BG,
-            GlobalVar::currentTheme.BLACK_GRID,
-            GlobalVar::currentTheme.WHITE_GRID);
+            GlobalVar::currentTheme.BG);
     }
 
     inline uint32_t getSrcPx4(const cv::Mat& srcImg, int srcX, int srcY, int mainX, int mainY) const {
@@ -2021,7 +2014,35 @@ public:
             const int padding = 10;
             const int areaWidth = (canvas.cols - 2 * padding) / 4;
             cv::Rect rect{ padding, padding, std::max(areaWidth, 400), canvas.rows - 2 * padding };
-            textDrawer.putAlignLeft(canvas, rect, curPar.imageAssetPtr->exifInfo.c_str(), GlobalVar::currentTheme.FG, true);
+            rect &= cv::Rect{ 0, 0, canvas.cols, canvas.rows };
+            if (rect.empty())
+                return;
+
+            const UINT dpi = m_hWnd ? GetDpiForWindow(m_hWnd) : 96;
+            const bool readableFramedExif = TextRenderingPolicy::usesReadableFramedExif(
+                presentationMode);
+            const int fontSize = readableFramedExif ?
+                TextRenderingPolicy::scaledPixelSize(TextRenderingPolicy::LOGICAL_FONT_SIZE, dpi) :
+                TextRenderingPolicy::legacyImmersiveExifPixelSize(dpi);
+            if (textDrawer.getSize() != fontSize)
+                textDrawer.setSize(fontSize);
+
+            if (!readableFramedExif) {
+                textDrawer.putAlignLeft(canvas, rect, curPar.imageAssetPtr->exifInfo.c_str(),
+                    GlobalVar::currentTheme.FG, true, false);
+                return;
+            }
+
+            const cv::Rect shadowRect{
+                rect.x + TextRenderingPolicy::EXIF_SHADOW_OFFSET,
+                rect.y + TextRenderingPolicy::EXIF_SHADOW_OFFSET,
+                rect.width,
+                rect.height,
+            };
+            textDrawer.putAlignLeft(canvas, shadowRect, curPar.imageAssetPtr->exifInfo.c_str(),
+                TextRenderingPolicy::EXIF_SHADOW_COLOR, false);
+            textDrawer.putAlignLeft(canvas, rect, curPar.imageAssetPtr->exifInfo.c_str(),
+                TextRenderingPolicy::EXIF_TEXT_COLOR, false);
         }
     }
 

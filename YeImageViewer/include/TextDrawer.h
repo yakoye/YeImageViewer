@@ -1,5 +1,6 @@
 #pragma once
 #include "jarkUtils.h"
+#include "TextRenderingPolicy.h"
 
 // https://github.com/nothings/stb
 // 整个工程只能一个源文件定义 STB_TRUETYPE_IMPLEMENTATION， 其他地方只需include
@@ -16,15 +17,19 @@ public:
 
     void setLineGap(float percent);
     void setSize(int newSize);
+    int getSize() const { return fontSize; }
 
     // str : UTF-8
-    void putText(cv::Mat& img, const int x, const int y, const char* str, intUnion color, bool isAdaptiveFG = false);
+    void putText(cv::Mat& img, const int x, const int y, const char* str, intUnion color,
+        bool isAdaptiveFG = false, bool enhanceGlyphCoverage = true);
 
     //Rect {x, y, width, height}
-    void putAlignCenter(cv::Mat& img, cv::Rect rect, const char* str, intUnion color, bool isAdaptiveFG = false);
+    void putAlignCenter(cv::Mat& img, cv::Rect rect, const char* str, intUnion color,
+        bool isAdaptiveFG = false, bool enhanceGlyphCoverage = true);
 
     //Rect {x, y, width, height}
-    void putAlignLeft(cv::Mat& img, cv::Rect rect, const char* str, intUnion color, bool isAdaptiveFG = false);
+    void putAlignLeft(cv::Mat& img, cv::Rect rect, const char* str, intUnion color,
+        bool isAdaptiveFG = false, bool enhanceGlyphCoverage = true);
 
 private:
     bool hasInit = false;
@@ -40,5 +45,6 @@ private:
     rcFileInfo rc;
 
     void Init(unsigned int idi, const wchar_t* type);
-    int putWord(cv::Mat& img, int x, int y, const int codePoint, intUnion color, bool isAdaptiveFG);
+    int putWord(cv::Mat& img, int x, int y, const int codePoint, intUnion color,
+        bool isAdaptiveFG, bool enhanceGlyphCoverage);
 };

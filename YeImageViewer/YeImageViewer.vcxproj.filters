@@ -159,9 +159,6 @@
     <Image Include="file\home.png">
       <Filter>resources</Filter>
     </Image>
-    <Image Include="file\settingRes.png">
-      <Filter>resources</Filter>
-    </Image>
     <Image Include="file\mainRes.png">
       <Filter>resources</Filter>
     </Image>

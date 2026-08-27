@@ -9,6 +9,7 @@
 #include "OverlayLayout.h"
 #include "RotationStore.h"
 #include "SettingLayout.h"
+#include "TextRenderingPolicy.h"
 #include "WheelInput.h"
 #include "StbImageDecoder.h"
 #include "SvgRenderer.h"
@@ -207,39 +208,40 @@ void expectBilinearEnlargement() {
 
 void expectBackgroundRendering() {
     constexpr uint32_t theme = 0xFF202020u;
-    constexpr uint32_t darkGrid = 0xFF282828u;
-    constexpr uint32_t lightGrid = 0xFF3C3C3Cu;
 
     passOrFail("invalid background setting falls back to transparency grid",
         BackgroundRenderer::normalizeMode(99) == BackgroundMode::Transparent);
     passOrFail("transparent background alternates checkerboard cells",
         BackgroundRenderer::canvasPixel(BackgroundMode::Transparent, false, 0, 0,
-            theme, darkGrid, lightGrid) == lightGrid &&
-        BackgroundRenderer::canvasPixel(BackgroundMode::Transparent, false, 16, 0,
-            theme, darkGrid, lightGrid) == darkGrid);
+            theme) == BackgroundRenderer::GRID_LIGHT &&
+        BackgroundRenderer::canvasPixel(BackgroundMode::Transparent, false, 12, 0,
+            theme) == BackgroundRenderer::GRID_DARK &&
+        BackgroundRenderer::GRID_WIDTH == 12 &&
+        BackgroundRenderer::GRID_DARK == 0xFFEBEBEBu &&
+        BackgroundRenderer::GRID_LIGHT == 0xFFF5F5F5u);
     passOrFail("white and black backgrounds use exact opaque colors",
         BackgroundRenderer::canvasPixel(BackgroundMode::White, false, 0, 0,
-            theme, darkGrid, lightGrid) == 0xFFFFFFFFu &&
+            theme) == 0xFFFFFFFFu &&
         BackgroundRenderer::canvasPixel(BackgroundMode::Black, false, 0, 0,
-            theme, darkGrid, lightGrid) == 0xFF000000u);
+            theme) == 0xFF000000u);
     passOrFail("frosted glass exposes the DWM backdrop when active",
         BackgroundRenderer::canvasPixel(BackgroundMode::FrostedGlass, true, 0, 0,
-            theme, darkGrid, lightGrid) == 0x00000000u &&
+            theme) == 0x00000000u &&
         BackgroundRenderer::canvasPixel(BackgroundMode::FrostedGlass, false, 0, 0,
-            theme, darkGrid, lightGrid) == theme);
+            theme) == theme);
 
     constexpr uint32_t halfTransparentColor = 0x80804020u;
     passOrFail("frosted-glass image pixels are premultiplied for DWM",
         BackgroundRenderer::compositeBgra(halfTransparentColor,
             BackgroundMode::FrostedGlass, true, 0, 0,
-            theme, darkGrid, lightGrid) == 0x80402010u);
+            theme) == 0x80402010u);
     passOrFail("semi-transparent pixels blend correctly over white and black",
         BackgroundRenderer::compositeBgra(halfTransparentColor,
             BackgroundMode::White, false, 0, 0,
-            theme, darkGrid, lightGrid) == 0xFFBF9F8Fu &&
+            theme) == 0xFFBF9F8Fu &&
         BackgroundRenderer::compositeBgra(halfTransparentColor,
             BackgroundMode::Black, false, 0, 0,
-            theme, darkGrid, lightGrid) == 0xFF402010u);
+            theme) == 0xFF402010u);
     passOrFail("presentation canvas uses the layered alpha surface",
         BackgroundPolicy::usesPerPixelAlphaSurface());
     passOrFail("configured background only changes the image area during presentation",
@@ -487,15 +489,50 @@ void expectEscapeBehavior() {
 void expectSettingLayout() {
     passOrFail("settings use a compact readable font",
         SettingLayout::FONT_SIZE == 18 &&
+        SettingLayout::ABOUT_TITLE_FONT_SIZE == SettingLayout::FONT_SIZE &&
         SettingLayout::FONT_SIZE * 2 <= SettingLayout::GENERAL_CHECK_BOXES.front().height);
+    passOrFail("four settings tabs evenly fill the full canvas width",
+        SettingLayout::TAB_WIDTH * 4 == SettingLayout::CANVAS_WIDTH);
     passOrFail("settings controls remain separated inside the fixed canvas",
         SettingLayout::generalControlsAreSeparated());
+    passOrFail("general settings use paired two-column rows",
+        SettingLayout::GENERAL_CHECK_BOXES[0].y == SettingLayout::GENERAL_CHECK_BOXES[1].y &&
+        SettingLayout::GENERAL_CHECK_BOXES[0].x < SettingLayout::GENERAL_CHECK_BOXES[1].x &&
+        SettingLayout::GENERAL_RADIOS[0].y == SettingLayout::GENERAL_RADIOS[1].y &&
+        SettingLayout::GENERAL_RADIOS[2].y == SettingLayout::GENERAL_RADIOS[3].y);
     passOrFail("remember-monitor and animation controls have a visible vertical gap",
         SettingLayout::GENERAL_CHECK_BOXES.back().y +
             SettingLayout::GENERAL_CHECK_BOXES.back().height <
             SettingLayout::GENERAL_RADIOS.front().y);
-    passOrFail("wheel shortcut help rows remain separated inside the settings canvas",
-        SettingLayout::helpWheelHintsAreSeparated());
+    passOrFail("help shortcuts use twelve separated two-column cards",
+        SettingLayout::HELP_ITEMS.size() == 12 &&
+        SettingLayout::HELP_ITEMS[0].y == SettingLayout::HELP_ITEMS[1].y &&
+        SettingLayout::HELP_ITEMS[10].y == SettingLayout::HELP_ITEMS[11].y &&
+        SettingLayout::helpItemsAreSeparated());
+}
+
+void expectTextRendering() {
+    passOrFail("logical text size scales continuously with monitor DPI",
+        TextRenderingPolicy::scaledPixelSize(18, 96) == 18 &&
+        TextRenderingPolicy::scaledPixelSize(18, 120) == 23 &&
+        TextRenderingPolicy::scaledPixelSize(18, 144) == 27 &&
+        TextRenderingPolicy::scaledPixelSize(18, 192) == 36);
+    passOrFail("immersive EXIF keeps its legacy size and rendering strategy",
+        TextRenderingPolicy::legacyImmersiveExifPixelSize(96) == 16 &&
+        TextRenderingPolicy::legacyImmersiveExifPixelSize(144) == 24 &&
+        TextRenderingPolicy::legacyImmersiveExifPixelSize(192) == 32 &&
+        !TextRenderingPolicy::usesReadableFramedExif(true));
+    passOrFail("only framed EXIF opts into the clearer text strategy",
+        TextRenderingPolicy::usesReadableFramedExif(false));
+    passOrFail("glyph antialiasing keeps endpoints and strengthens intermediate coverage",
+        TextRenderingPolicy::enhanceCoverage(0) == 0 &&
+        TextRenderingPolicy::enhanceCoverage(64) > 64 &&
+        TextRenderingPolicy::enhanceCoverage(128) > 128 &&
+        TextRenderingPolicy::enhanceCoverage(255) == 255);
+    passOrFail("EXIF text uses a compact dark shadow without covering the image",
+        TextRenderingPolicy::EXIF_SHADOW_OFFSET == 2 &&
+        TextRenderingPolicy::EXIF_SHADOW_COLOR == 0xD9000000u &&
+        TextRenderingPolicy::EXIF_TEXT_COLOR == 0xFFF6F8FEu);
 }
 
 void expectWheelInput() {
@@ -599,6 +636,7 @@ int main(int argc, char* argv[]) {
     expectMonitorPlacement();
     expectEscapeBehavior();
     expectSettingLayout();
+    expectTextRendering();
     expectWheelInput();
     expectRotationPersistence();
     if (argc >= 2) {

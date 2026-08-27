@@ -47,23 +47,12 @@ private:
     static inline std::vector<labelBox> labelList;
 
     TextDrawer textDrawer;
-    cv::Mat winCanvas, settingRes, helpPage, helpPageEN, helpPageDark, helpPageDarkEN;
+    cv::Mat winCanvas;
 
     void Init(int tabIdx = 0) {
         textDrawer.setSize(SettingLayout::FONT_SIZE);
         winCanvas = cv::Mat(winHeight, winWidth, CV_8UC4, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG));
         curTabIdx = tabIdx;
-
-        rcFileInfo rc;
-        rc = jarkUtils::GetResource(IDB_PNG_SETTING_RES, L"PNG");
-        settingRes = cv::imdecode(cv::Mat(1, (int)rc.size, CV_8UC1, (uint8_t*)rc.ptr), cv::IMREAD_UNCHANGED);
-        if (settingRes.channels() == 3)
-            cv::cvtColor(settingRes, settingRes, cv::COLOR_BGR2BGRA);
-        
-        helpPage = settingRes({ 0, 0, 1000, 650 });
-        helpPageEN = settingRes({ 1000, 0, 1000, 650 });
-        helpPageDark = settingRes({ 0, 650, 1000, 650 });
-        helpPageDarkEN = settingRes({ 1000, 650, 1000, 650 });
 
         // GeneralTab
         if (generalTabCheckBoxList.empty()) {
@@ -217,28 +206,49 @@ public:
     }
 
     void refreshHelpTab() {
-        if (GlobalVar::isCurrentUIDarkMode)
-            jarkUtils::overlayImg(winCanvas, GlobalVar::settingParameter.UI_LANG == 0 ? helpPageDark : helpPageDarkEN, 0, 50);
-        else
-            jarkUtils::overlayImg(winCanvas, GlobalVar::settingParameter.UI_LANG == 0 ? helpPage : helpPageEN, 0, 50);
+        cv::rectangle(winCanvas, { 0, tabHeight, winWidth, winHeight - tabHeight },
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
 
-        static constexpr std::array<const char*, 3> wheelHintsZH{
-            "切换图片：Ctrl + 鼠标滚轮 / 窗口左右边缘 / 左右方向键",
-            "放大缩小：普通鼠标滚轮 / 上下方向键",
-            "平移图片：Shift + 鼠标滚轮上下滚动 / 鼠标拖动 / W/A/S/D 键",
+        static constexpr std::array<const char*, 12> helpItemsZH{
+            "切换图片  Ctrl+滚轮 / 左右键 / 两侧边缘",
+            "缩放图片  滚轮 / 上下键",
+            "旋转图片  Q / E / 左上角 / 右上角",
+            "平移图片  Shift+滚轮 / 拖动 / W A S D",
+            "图像信息  单击滚轮 / Tab / I",
+            "全屏显示  双击 / F / F11",
+            "复制图像  Ctrl+C",
+            "打印图像  Ctrl+P",
+            "逐帧浏览  J / K / L",
+            "播放暂停  空格键",
+            "分解动图  Ctrl+S",
+            "退出沉浸  Esc / 单击图片外背景",
         };
-        static constexpr std::array<const char*, 3> wheelHintsEN{
-            "Switch: Ctrl + mouse wheel / left-right edges / Left-Right keys",
-            "Zoom: Mouse wheel / Up-Down keys",
-            "Panning: Shift + mouse wheel vertically / mouse drag / W-A-S-D keys",
+        static constexpr std::array<const char*, 12> helpItemsEN{
+            "Switch  Ctrl+wheel / Left-Right / window edges",
+            "Zoom  Wheel / Up-Down",
+            "Rotate  Q / E / upper corners",
+            "Pan  Shift+wheel / drag / W A S D",
+            "Image info  Wheel click / Tab / I",
+            "Fullscreen  Double-click / F / F11",
+            "Copy image  Ctrl+C",
+            "Print image  Ctrl+P",
+            "Browse frames  J / K / L",
+            "Play or pause  Space",
+            "Split animation  Ctrl+S",
+            "Leave immersive  Esc / click outside image",
         };
-        const auto& hints = GlobalVar::settingParameter.UI_LANG == 0 ? wheelHintsZH : wheelHintsEN;
+        const auto& helpItems = GlobalVar::settingParameter.UI_LANG == 0 ? helpItemsZH : helpItemsEN;
         textDrawer.setSize(SettingLayout::FONT_SIZE);
-        for (std::size_t i = 0; i < SettingLayout::HELP_WHEEL_HINTS.size(); ++i) {
-            const auto& rect = SettingLayout::HELP_WHEEL_HINTS[i];
-            const cv::Rect cvRect{ rect.x, rect.y, rect.width, rect.height };
-            cv::rectangle(winCanvas, cvRect, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
-            textDrawer.putAlignLeft(winCanvas, cvRect, hints[i], GlobalVar::currentTheme.FG);
+        for (std::size_t i = 0; i < SettingLayout::HELP_ITEMS.size(); ++i) {
+            const auto& rect = SettingLayout::HELP_ITEMS[i];
+            const cv::Rect cardRect{ rect.x, rect.y, rect.width, rect.height };
+            cv::rectangle(winCanvas, cardRect,
+                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), -1);
+            cv::rectangle(winCanvas, { rect.x, rect.y, 4, rect.height },
+                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.CHECK), -1);
+            textDrawer.putAlignLeft(winCanvas,
+                { rect.x + 16, rect.y, rect.width - 24, rect.height },
+                helpItems[i], GlobalVar::currentTheme.FG);
         }
     }
 
@@ -247,7 +257,7 @@ public:
         cv::rectangle(winCanvas, { 0, tabHeight, winWidth, winHeight - tabHeight },
             jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
 
-        textDrawer.setSize(42);
+        textDrawer.setSize(SettingLayout::ABOUT_TITLE_FONT_SIZE);
         textDrawer.putAlignCenter(winCanvas, { 100, 100, 800, 80 }, "YeImageViewer", GlobalVar::currentTheme.FG);
         textDrawer.setSize(SettingLayout::FONT_SIZE);
         textDrawer.putAlignCenter(winCanvas, { 100, 190, 800, 45 },
@@ -322,10 +332,11 @@ public:
         // 绘制标签栏
         cv::rectangle(winCanvas, { 0, 0, winWidth, tabHeight }, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), -1);
         cv::rectangle(winCanvas, { curTabIdx * tabWidth, 0, tabWidth, tabHeight }, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
-        textDrawer.putAlignCenter(winCanvas, { 0, 0,150, 50 }, getUIString(2), GlobalVar::currentTheme.FG);
-        textDrawer.putAlignCenter(winCanvas, { 150, 0,150, 50 }, getUIString(3), GlobalVar::currentTheme.FG);
-        textDrawer.putAlignCenter(winCanvas, { 300, 0,150, 50 }, getUIString(4), GlobalVar::currentTheme.FG);
-        textDrawer.putAlignCenter(winCanvas, { 450, 0,150, 50 }, getUIString(5), GlobalVar::currentTheme.FG);
+        for (int tabIndex = 0; tabIndex < 4; ++tabIndex) {
+            textDrawer.putAlignCenter(winCanvas,
+                { tabIndex * tabWidth, 0, tabWidth, tabHeight },
+                getUIString(2 + tabIndex), GlobalVar::currentTheme.FG);
+        }
 
         switch (curTabIdx) {
         case 0:refreshGeneralTab(); break;

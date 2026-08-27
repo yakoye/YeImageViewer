@@ -11,7 +11,9 @@ enum class BackgroundMode : uint32_t {
 
 namespace BackgroundRenderer {
 
-inline constexpr int GRID_WIDTH = 16;
+inline constexpr int GRID_WIDTH = 12;
+inline constexpr uint32_t GRID_DARK = 0xFFEBEBEBu;
+inline constexpr uint32_t GRID_LIGHT = 0xFFF5F5F5u;
 
 constexpr BackgroundMode normalizeMode(uint32_t value) {
     return value <= static_cast<uint32_t>(BackgroundMode::FrostedGlass) ?
@@ -23,9 +25,7 @@ constexpr uint32_t canvasPixel(
     bool frostedGlassActive,
     int x,
     int y,
-    uint32_t themeBackground,
-    uint32_t darkGrid,
-    uint32_t lightGrid) {
+    uint32_t themeBackground) {
     switch (mode) {
     case BackgroundMode::White:
         return 0xFFFFFFFFu;
@@ -35,7 +35,7 @@ constexpr uint32_t canvasPixel(
         return frostedGlassActive ? 0x00000000u : themeBackground;
     case BackgroundMode::Transparent:
     default:
-        return ((x / GRID_WIDTH + y / GRID_WIDTH) & 1) ? darkGrid : lightGrid;
+        return ((x / GRID_WIDTH + y / GRID_WIDTH) & 1) ? GRID_DARK : GRID_LIGHT;
     }
 }
 
@@ -59,9 +59,7 @@ constexpr uint32_t compositeBgra(
     bool frostedGlassActive,
     int x,
     int y,
-    uint32_t themeBackground,
-    uint32_t darkGrid,
-    uint32_t lightGrid) {
+    uint32_t themeBackground) {
     if (mode == BackgroundMode::FrostedGlass && frostedGlassActive) {
         return premultiplyBgra(source);
     }
@@ -70,7 +68,7 @@ constexpr uint32_t compositeBgra(
     if (alpha == 255) return source;
 
     const uint32_t background = canvasPixel(
-        mode, frostedGlassActive, x, y, themeBackground, darkGrid, lightGrid);
+        mode, frostedGlassActive, x, y, themeBackground);
     if (alpha == 0) return background;
 
     const uint32_t inverseAlpha = 255 - alpha;

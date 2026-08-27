@@ -22,7 +22,8 @@ void TextDrawer::setSize(int newSize) {
 }
 
 // str : UTF-8
-void TextDrawer::putText(cv::Mat& img, const int x, const int y, const char* str, intUnion color, bool isAdaptiveFG) {
+void TextDrawer::putText(cv::Mat& img, const int x, const int y, const char* str, intUnion color,
+    bool isAdaptiveFG, bool enhanceGlyphCoverage) {
     if (!hasInit) {
         Init(IDR_TTF_DEFAULT, L"TTF");
         hasInit = true;
@@ -62,13 +63,15 @@ void TextDrawer::putText(cv::Mat& img, const int x, const int y, const char* str
             xOffset = x;
         }
         else {
-            xOffset += putWord(img, xOffset, yOffset, codePoint, color, isAdaptiveFG);
+            xOffset += putWord(img, xOffset, yOffset, codePoint, color,
+                isAdaptiveFG, enhanceGlyphCoverage);
         }
     }
 }
 
 //Rect {x, y, width, height}
-void TextDrawer::putAlignCenter(cv::Mat& img, cv::Rect rect, const char* str, intUnion color, bool isAdaptiveFG) {
+void TextDrawer::putAlignCenter(cv::Mat& img, cv::Rect rect, const char* str, intUnion color,
+    bool isAdaptiveFG, bool enhanceGlyphCoverage) {
     int codePoint = '?';
     int H = 1, W = 0, W_cnt = 0;
     const auto len = strlen(str);
@@ -117,11 +120,12 @@ void TextDrawer::putAlignCenter(cv::Mat& img, cv::Rect rect, const char* str, in
     const int x = rect.x + (rect.width - W) / 2;
     const int y = rect.y + (rect.height - H) / 2;
 
-    putText(img, x, y, str, color, isAdaptiveFG);
+    putText(img, x, y, str, color, isAdaptiveFG, enhanceGlyphCoverage);
 }
 
 //Rect {x, y, width, height}
-void TextDrawer::putAlignLeft(cv::Mat& img, cv::Rect rect, const char* str, intUnion color, bool isAdaptiveFG) {
+void TextDrawer::putAlignLeft(cv::Mat& img, cv::Rect rect, const char* str, intUnion color,
+    bool isAdaptiveFG, bool enhanceGlyphCoverage) {
     if (!hasInit) {
         Init(IDR_TTF_DEFAULT, L"TTF");
         hasInit = true;
@@ -171,7 +175,8 @@ void TextDrawer::putAlignLeft(cv::Mat& img, cv::Rect rect, const char* str, intU
                 continue;
         }
 
-        xOffset += putWord(img, xOffset, yOffset, codePoint, color, isAdaptiveFG);
+        xOffset += putWord(img, xOffset, yOffset, codePoint, color,
+            isAdaptiveFG, enhanceGlyphCoverage);
     }
 }
 
@@ -194,7 +199,8 @@ void TextDrawer::Init(unsigned int idi, const wchar_t* type) {
     asciiCache.resize(256);
 }
 
-int TextDrawer::putWord(cv::Mat& img, int x, int y, const int codePoint, intUnion color, bool isAdaptiveFG) {
+int TextDrawer::putWord(cv::Mat& img, int x, int y, const int codePoint, intUnion color,
+    bool isAdaptiveFG, bool enhanceGlyphCoverage) {
     int c_x0, c_y0, c_x1, c_y1;
     stbtt_GetCodepointBitmapBox(&info, codePoint, scale, scale, &c_x0, &c_y0, &c_x1, &c_y1);
 
@@ -234,7 +240,10 @@ int TextDrawer::putWord(cv::Mat& img, int x, int y, const int codePoint, intUnio
                 color = gray < 128 ? deepTheme.FG : lightTheme.FG;
             }
 
-            int alpha = wordBuffPtr[yy * fontSize + xx] * color[3] / 255;
+            const uint8_t rawCoverage = wordBuffPtr[yy * fontSize + xx];
+            const uint8_t coverage = enhanceGlyphCoverage ?
+                TextRenderingPolicy::enhanceCoverage(rawCoverage) : rawCoverage;
+            int alpha = coverage * color[3] / 255;
             if (alpha)
                 orgColor = {
                     (uint8_t)((orgColor[0] * (255 - alpha) + color[0] * alpha + 255) >> 8),
