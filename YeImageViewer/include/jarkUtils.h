@@ -90,6 +90,7 @@ using std::unordered_map;
 #include <opencv2/highgui.hpp>
 
 #include "stringRes.h"
+#include "BackgroundRenderer.h"
 
 inline const int MIN_VIDEO_BUFF_SIZE = 65536; // 64KiB 视频数据最小尺寸，过小可能是无效数据
 inline const int MAX_VIDEO_FRAMES = 120;      // 最大解码帧数，过大可能导致内存占用过高
@@ -154,7 +155,8 @@ struct SettingParameter {
 
     uint32_t rightClickAction = 0;          // 右键点击行为  0:打开菜单  1:退出程序
 
-    uint32_t reserve[800];
+    uint32_t backgroundMode = static_cast<uint32_t>(BackgroundMode::Transparent);
+    uint32_t reserve[799];
 
     char extCheckedListStr[800];
 
@@ -223,6 +225,9 @@ struct SettingParameter {
 
         // 右键点击行为检查 (0~1)
         if (rightClickAction > 1) rightClickAction = 0;
+
+        // 背景模式检查 (0~3)
+        backgroundMode = static_cast<uint32_t>(BackgroundRenderer::normalizeMode(backgroundMode));
 
         // 确保扩展名列表字符串以空字符结尾
         extCheckedListStr[sizeof(extCheckedListStr) - 1] = 0;
@@ -353,7 +358,8 @@ enum class ShowExtraUI :int {
 
 enum class ContextMenu :int {
     openNewImage = 1000, copyImageInfo, copyImagePath, copyImageData, toggleExifDisplay, openContainerFloder, deleteImage,
-    openFileProperties, printImage, toggleFullScreen, openSetting, openHelp, aboutSoftware, exitSoftware
+    openFileProperties, printImage, toggleFullScreen, openSetting, openHelp, aboutSoftware, exitSoftware,
+    backgroundTransparent = 1100, backgroundWhite, backgroundBlack, backgroundFrostedGlass
 };
 
 struct Action {

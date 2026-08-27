@@ -191,6 +191,7 @@ HRESULT D3D11App::Initialize(HINSTANCE hInstance) {
 
     if (SUCCEEDED(hr)) {
         CreateDeviceResources();
+        ApplyWindowBackgroundMode();
 
         BOOL themeMode = GlobalVar::isCurrentUIDarkMode;
         DwmSetWindowAttribute(m_hWnd, 20, &themeMode, sizeof(BOOL));
@@ -199,6 +200,33 @@ HRESULT D3D11App::Initialize(HINSTANCE hInstance) {
         UpdateWindow(m_hWnd);
     }
     return hr;
+}
+
+void D3D11App::ApplyWindowBackgroundMode() {
+    if (!m_hWnd) {
+        m_isFrostedGlassActive = false;
+        return;
+    }
+
+    const auto mode = BackgroundRenderer::normalizeMode(GlobalVar::settingParameter.backgroundMode);
+    const bool requestFrostedGlass = mode == BackgroundMode::FrostedGlass;
+    const BOOL useAlpha = requestFrostedGlass ? TRUE : FALSE;
+    const DWM_SYSTEMBACKDROP_TYPE backdrop = requestFrostedGlass ?
+        DWMSBT_TRANSIENTWINDOW : DWMSBT_NONE;
+
+    const HRESULT alphaResult = DwmSetWindowAttribute(
+        m_hWnd, DWMWA_REDIRECTIONBITMAP_ALPHA, &useAlpha, sizeof(useAlpha));
+    const HRESULT backdropResult = DwmSetWindowAttribute(
+        m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
+    m_isFrostedGlassActive = requestFrostedGlass &&
+        SUCCEEDED(alphaResult) && SUCCEEDED(backdropResult);
+
+    if (requestFrostedGlass && !m_isFrostedGlassActive) {
+        const BOOL disableAlpha = FALSE;
+        const DWM_SYSTEMBACKDROP_TYPE noBackdrop = DWMSBT_NONE;
+        DwmSetWindowAttribute(m_hWnd, DWMWA_REDIRECTIONBITMAP_ALPHA, &disableAlpha, sizeof(disableAlpha));
+        DwmSetWindowAttribute(m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &noBackdrop, sizeof(noBackdrop));
+    }
 }
 
 HRESULT D3D11App::CreateDeviceResources() {
@@ -498,7 +526,7 @@ LRESULT D3D11App::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 HMENU D3D11App::CreateContextMenu(HWND hwnd) {
     HMENU hMenu = CreatePopupMenu();
     MENUINFO mi = { sizeof(MENUINFO) };
-    mi.fMask = MIM_STYLE | MIM_APPLYTOSUBMENUS;
+    mi.fMask = MIM_STYLE;
     mi.dwStyle = MNS_NOCHECK;
     SetMenuInfo(hMenu, &mi);
 
@@ -515,6 +543,21 @@ HMENU D3D11App::CreateContextMenu(HWND hwnd) {
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::deleteImage, getUIStringW(30));
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::openFileProperties, getUIStringW(36));
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::printImage, getUIStringW(31));
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+    HMENU backgroundMenu = CreatePopupMenu();
+    AppendMenuW(backgroundMenu, MF_STRING, (UINT_PTR)ContextMenu::backgroundTransparent, getUIStringW(43));
+    AppendMenuW(backgroundMenu, MF_STRING, (UINT_PTR)ContextMenu::backgroundWhite, getUIStringW(44));
+    AppendMenuW(backgroundMenu, MF_STRING, (UINT_PTR)ContextMenu::backgroundBlack, getUIStringW(45));
+    AppendMenuW(backgroundMenu, MF_STRING, (UINT_PTR)ContextMenu::backgroundFrostedGlass, getUIStringW(46));
+    const UINT selectedBackground = (UINT)ContextMenu::backgroundTransparent +
+        (UINT)BackgroundRenderer::normalizeMode(GlobalVar::settingParameter.backgroundMode);
+    CheckMenuRadioItem(backgroundMenu,
+        (UINT)ContextMenu::backgroundTransparent,
+        (UINT)ContextMenu::backgroundFrostedGlass,
+        selectedBackground,
+        MF_BYCOMMAND);
+    AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)backgroundMenu, getUIStringW(42));
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::toggleFullScreen, getUIStringW(38));

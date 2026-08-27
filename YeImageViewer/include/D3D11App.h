@@ -34,6 +34,8 @@ protected:
     HRESULT CreateDeviceResources();
     void CreateWindowSizeDependentResources();
     void DiscardDeviceResources();
+    void ApplyWindowBackgroundMode();
+    bool IsFrostedGlassActive() const { return m_isFrostedGlassActive; }
 
     // CPU 画布数据呈现到屏幕
     void PresentCanvas(const uint8_t* data, int width, int height, int stride);
@@ -66,5 +68,6 @@ protected:
     int winWidth = 800;
     int winHeight = 600;
     bool hasInitWinSize = false;
+    bool m_isFrostedGlassActive = false;
     cv::Mat mainCanvas;
 };

@@ -1,4 +1,5 @@
 #include "MotionPhotoUtils.h"
+#include "BackgroundRenderer.h"
 #include "ImageInterpolation.h"
 #include "StbImageDecoder.h"
 #include "SvgRenderer.h"
@@ -194,6 +195,43 @@ void expectBilinearEnlargement() {
         ((alphaEdge >> 24) & 0xFFu) == 128);
 }
 
+void expectBackgroundRendering() {
+    constexpr uint32_t theme = 0xFF202020u;
+    constexpr uint32_t darkGrid = 0xFF282828u;
+    constexpr uint32_t lightGrid = 0xFF3C3C3Cu;
+
+    passOrFail("invalid background setting falls back to transparency grid",
+        BackgroundRenderer::normalizeMode(99) == BackgroundMode::Transparent);
+    passOrFail("transparent background alternates checkerboard cells",
+        BackgroundRenderer::canvasPixel(BackgroundMode::Transparent, false, 0, 0,
+            theme, darkGrid, lightGrid) == lightGrid &&
+        BackgroundRenderer::canvasPixel(BackgroundMode::Transparent, false, 16, 0,
+            theme, darkGrid, lightGrid) == darkGrid);
+    passOrFail("white and black backgrounds use exact opaque colors",
+        BackgroundRenderer::canvasPixel(BackgroundMode::White, false, 0, 0,
+            theme, darkGrid, lightGrid) == 0xFFFFFFFFu &&
+        BackgroundRenderer::canvasPixel(BackgroundMode::Black, false, 0, 0,
+            theme, darkGrid, lightGrid) == 0xFF000000u);
+    passOrFail("frosted glass exposes the DWM backdrop when active",
+        BackgroundRenderer::canvasPixel(BackgroundMode::FrostedGlass, true, 0, 0,
+            theme, darkGrid, lightGrid) == 0x00000000u &&
+        BackgroundRenderer::canvasPixel(BackgroundMode::FrostedGlass, false, 0, 0,
+            theme, darkGrid, lightGrid) == theme);
+
+    constexpr uint32_t halfTransparentColor = 0x80804020u;
+    passOrFail("frosted-glass image pixels are premultiplied for DWM",
+        BackgroundRenderer::compositeBgra(halfTransparentColor,
+            BackgroundMode::FrostedGlass, true, 0, 0,
+            theme, darkGrid, lightGrid) == 0x80402010u);
+    passOrFail("semi-transparent pixels blend correctly over white and black",
+        BackgroundRenderer::compositeBgra(halfTransparentColor,
+            BackgroundMode::White, false, 0, 0,
+            theme, darkGrid, lightGrid) == 0xFFBF9F8Fu &&
+        BackgroundRenderer::compositeBgra(halfTransparentColor,
+            BackgroundMode::Black, false, 0, 0,
+            theme, darkGrid, lightGrid) == 0xFF402010u);
+}
+
 void expectDrawioTextFallback(std::string_view path) {
     const auto source = readFile(path);
     const auto processed = SvgRenderer::preprocess(source);
@@ -268,6 +306,7 @@ int main(int argc, char* argv[]) {
     expectVideoSize("overflowing length", "Item:Semantic: MotionPhoto\nItem:Length: 999999999999999999999999999999", 0);
     expectHdrChannelOrder();
     expectBilinearEnlargement();
+    expectBackgroundRendering();
     if (argc >= 2) {
         expectRealHdrChannelOrder(argv[1]);
     }

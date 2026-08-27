@@ -159,6 +159,7 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="include\BackgroundRenderer.h" />
     <ClInclude Include="include\blpDecoder.h" />
     <ClInclude Include="include\ColorManager.h" />
     <ClInclude Include="include\D3D11App.h" />

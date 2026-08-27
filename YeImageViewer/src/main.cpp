@@ -203,7 +203,6 @@ public:
 
 class YeImageViewerApp : public D3D11App {
 public:
-    static constexpr int BG_GRID_WIDTH = 16;
     static inline bool isLowZoom = false;
 
     OperateQueue operateQueue;
@@ -967,9 +966,71 @@ public:
             operateQueue.push({ ActionENUM::requestExit });
         }break;
 
+        case ContextMenu::backgroundTransparent: {
+            setBackgroundMode(BackgroundMode::Transparent);
+        }break;
+
+        case ContextMenu::backgroundWhite: {
+            setBackgroundMode(BackgroundMode::White);
+        }break;
+
+        case ContextMenu::backgroundBlack: {
+            setBackgroundMode(BackgroundMode::Black);
+        }break;
+
+        case ContextMenu::backgroundFrostedGlass: {
+            setBackgroundMode(BackgroundMode::FrostedGlass);
+        }break;
+
         default:
             break;
         }
+    }
+
+    BackgroundMode currentBackgroundMode() const {
+        return BackgroundRenderer::normalizeMode(GlobalVar::settingParameter.backgroundMode);
+    }
+
+    void setBackgroundMode(BackgroundMode mode) {
+        GlobalVar::settingParameter.backgroundMode = static_cast<uint32_t>(mode);
+        ApplyWindowBackgroundMode();
+        operateQueue.push({ ActionENUM::refresh });
+    }
+
+    uint32_t backgroundPixelAt(int x, int y) const {
+        return BackgroundRenderer::canvasPixel(
+            currentBackgroundMode(), IsFrostedGlassActive(), x, y,
+            GlobalVar::currentTheme.BG,
+            GlobalVar::currentTheme.BLACK_GRID,
+            GlobalVar::currentTheme.WHITE_GRID);
+    }
+
+    void fillCanvasBackground(cv::Mat& canvas) const {
+        const auto mode = currentBackgroundMode();
+        const bool frostedGlassActive = IsFrostedGlassActive();
+        if (mode != BackgroundMode::Transparent) {
+            const uint32_t color = BackgroundRenderer::canvasPixel(
+                mode, frostedGlassActive, 0, 0,
+                GlobalVar::currentTheme.BG,
+                GlobalVar::currentTheme.BLACK_GRID,
+                GlobalVar::currentTheme.WHITE_GRID);
+            for (int y = 0; y < canvas.rows; ++y) {
+                auto row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
+                std::fill(row, row + canvas.cols, color);
+            }
+            return;
+        }
+
+        concurrency::parallel_for(0, canvas.rows, [&](int y) {
+            auto row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
+            for (int x = 0; x < canvas.cols; ++x) {
+                row[x] = BackgroundRenderer::canvasPixel(
+                    mode, false, x, y,
+                    GlobalVar::currentTheme.BG,
+                    GlobalVar::currentTheme.BLACK_GRID,
+                    GlobalVar::currentTheme.WHITE_GRID);
+            }
+        });
     }
 
     void OnResize(UINT width, UINT height) override {
@@ -1003,9 +1064,7 @@ public:
             hasInitWinSize = true;
             curPar.Init(winWidth, winHeight);
 
-            uint32_t* ptrStart = (uint32_t*)mainCanvas.ptr();
-            uint32_t* ptrEnd = ptrStart + winHeight * winWidth;
-            std::fill(ptrStart, ptrEnd, GlobalVar::currentTheme.BG);
+            fillCanvasBackground(mainCanvas);
         }
 
         updateMainCanvas();
@@ -1036,21 +1095,15 @@ public:
         return *((uint32_t*)&srcPx) | (255 << 24);
     }
 
-    inline static uint32_t compositeSrcPx4(intUnion srcPx, int mainX, int mainY) {
-        if (srcPx[3] == 255) return srcPx.u32;
-
-        intUnion bgPx = ((mainX / BG_GRID_WIDTH + mainY / BG_GRID_WIDTH) & 1) ?
-            GlobalVar::currentTheme.BLACK_GRID : GlobalVar::currentTheme.WHITE_GRID;
-        if (srcPx[3] == 0) return bgPx.u32;
-
-        const int alpha = srcPx[3];
-        return 255 << 24 |
-            (((bgPx[2] * (255 - alpha) + srcPx[2] * alpha + 255) & 0xff00) << 8) |
-            ((bgPx[1] * (255 - alpha) + srcPx[1] * alpha + 255) & 0xff00) |
-            ((bgPx[0] * (255 - alpha) + srcPx[0] * alpha + 255) >> 8);
+    inline uint32_t compositeSrcPx4(intUnion srcPx, int mainX, int mainY) const {
+        return BackgroundRenderer::compositeBgra(
+            srcPx.u32, currentBackgroundMode(), IsFrostedGlassActive(), mainX, mainY,
+            GlobalVar::currentTheme.BG,
+            GlobalVar::currentTheme.BLACK_GRID,
+            GlobalVar::currentTheme.WHITE_GRID);
     }
 
-    inline static uint32_t getSrcPx4(const cv::Mat& srcImg, int srcX, int srcY, int mainX, int mainY) {
+    inline uint32_t getSrcPx4(const cv::Mat& srcImg, int srcX, int srcY, int mainX, int mainY) const {
         const intUnion* srcPtr = (intUnion*)srcImg.ptr();
         const int srcW = srcImg.cols;
 
@@ -1101,8 +1154,7 @@ public:
         }
 
         auto rendered = renderer->renderViewport(canvasW, canvasH, transform);
-        uint32_t* canvasBegin = (uint32_t*)canvas.ptr();
-        std::fill(canvasBegin, canvasBegin + (size_t)canvasW * canvasH, GlobalVar::currentTheme.BG);
+        fillCanvasBackground(canvas);
         if (rendered.empty()) {
             return;
         }
@@ -1184,9 +1236,7 @@ public:
         if (xEnd > canvasW) xEnd = canvasW;
         if (yEnd > canvasH) yEnd = canvasH;
 
-        uint32_t* ptrStart = (uint32_t*)canvas.ptr();
-        uint32_t* ptrEnd = ptrStart + canvasH * canvasW;
-        std::fill(ptrStart, ptrEnd, GlobalVar::currentTheme.BG);
+        fillCanvasBackground(canvas);
 
         if (((srcH == 600 and srcW == 800) or (srcH == 800 and srcW == 600)) and 
             (*((uint32_t*)srcImg.ptr()) == deepTheme.BG) or (*((uint32_t*)srcImg.ptr()) == lightTheme.BG)) {
@@ -1393,10 +1443,11 @@ public:
 
         cv::Mat rotationMatrix = cv::getRotationMatrix2D(center, angle, 1.0);
 
+        intUnion background{ backgroundPixelAt(0, 0) };
         cv::Mat rotatedImage;
         cv::warpAffine(image, rotatedImage, rotationMatrix, image.size(),
             cv::INTER_LINEAR, cv::BORDER_CONSTANT, 
-            cv::Scalar(GlobalVar::currentTheme.BG, GlobalVar::currentTheme.BG, GlobalVar::currentTheme.BG));
+            cv::Scalar(background[0], background[1], background[2], background[3]));
 
         return rotatedImage;
     }
@@ -1409,8 +1460,8 @@ public:
         int maxEdge = (int)std::ceil(std::sqrt(winWidth * winWidth + winHeight * winHeight));
         if (maxEdge < 2)
             return;
-        auto tmpCanvas = cv::Mat(maxEdge, maxEdge, CV_8UC4, 
-            cv::Vec4b(GlobalVar::currentTheme.BG, GlobalVar::currentTheme.BG, GlobalVar::currentTheme.BG));
+        auto tmpCanvas = cv::Mat(maxEdge, maxEdge, CV_8UC4);
+        fillCanvasBackground(tmpCanvas);
 
         cv::Mat srcImg;
         if (curPar.imageAssetPtr->format == ImageFormat::None || curPar.imageAssetPtr->format == ImageFormat::Still)
@@ -1441,8 +1492,8 @@ public:
         int maxEdge = (int)std::ceil(std::sqrt(winWidth * winWidth + winHeight * winHeight));
         if (maxEdge < 2)
             return;
-        auto tmpCanvas = cv::Mat(maxEdge, maxEdge, CV_8UC4, 
-            cv::Vec4b(GlobalVar::currentTheme.BG, GlobalVar::currentTheme.BG, GlobalVar::currentTheme.BG));
+        auto tmpCanvas = cv::Mat(maxEdge, maxEdge, CV_8UC4);
+        fillCanvasBackground(tmpCanvas);
 
         cv::Mat srcImg;
         if (curPar.imageAssetPtr->format == ImageFormat::None || curPar.imageAssetPtr->format == ImageFormat::Still)

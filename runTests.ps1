@@ -63,6 +63,57 @@ if ($LASTEXITCODE -ne 0) {
     throw "Unit regression tests failed with exit code $LASTEXITCODE."
 }
 
+if (-not ("YeImageViewerTestNative" -as [type])) {
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class YeImageViewerTestNative
+{
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
+}
+"@
+}
+
+Write-Host "Opening the SVG background-selector fixture..."
+$viewerProcess = $null
+try {
+    $viewerProcess = Start-Process -FilePath $viewer -ArgumentList ('"' + $sharpSvgFixture + '"') -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(6)
+
+    do {
+        Start-Sleep -Milliseconds 200
+        $viewerProcess.Refresh()
+    } while (-not $viewerProcess.HasExited -and $viewerProcess.MainWindowHandle -eq 0 -and [DateTime]::UtcNow -lt $deadline)
+
+    if ($viewerProcess.HasExited -or $viewerProcess.MainWindowHandle -eq 0 -or -not $viewerProcess.Responding) {
+        throw "Background-selector regression failed: viewer did not open a responsive SVG window."
+    }
+
+    $backgroundCommands = @(1100, 1101, 1102, 1103, 1100)
+    foreach ($command in $backgroundCommands) {
+        [void][YeImageViewerTestNative]::SendMessage(
+            [IntPtr]$viewerProcess.MainWindowHandle, 0x0111, [UIntPtr]$command, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 150
+        $viewerProcess.Refresh()
+        if ($viewerProcess.HasExited -or -not $viewerProcess.Responding) {
+            throw "Background-selector regression failed after menu command $command."
+        }
+    }
+
+    Write-Host "PASS SVG background modes switch without exiting or hanging."
+}
+finally {
+    if ($viewerProcess -and -not $viewerProcess.HasExited) {
+        [void]$viewerProcess.CloseMainWindow()
+        if (-not $viewerProcess.WaitForExit(3000)) {
+            Stop-Process -Id $viewerProcess.Id -Force
+            $viewerProcess.WaitForExit()
+        }
+    }
+}
+
 $existingViewer = Get-CimInstance Win32_Process -Filter "Name='YeImageViewer.exe'" |
     Where-Object { $_.ExecutablePath -eq $viewer }
 if ($existingViewer) {

@@ -108,6 +108,11 @@ std::wstring_view UIStringTableW[STRING_MAX_NUM][2] = {
     {L"设置", L"Settings"},
     {L"打印", L"Print"},  // 40
     {L"文件关联已完成，但缩略图扩展注册失败。部分格式可能无法在资源管理器中显示 YeImageViewer 缩略图。", L"Association completed, but thumbnail extension registration failed. Some formats may not show YeImageViewer thumbnails in File Explorer."},
+    {L"背景颜色", L"Background"},
+    {L"透明", L"Transparent"},
+    {L"白色", L"White"},
+    {L"黑色", L"Black"},
+    {L"毛玻璃", L"Frosted glass"},
 };
 
 // 获取字符串
