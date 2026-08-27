@@ -276,6 +276,15 @@ std::vector<cv::Mat> DecodeVideoFrames(const uint8_t* videoBuffer, size_t size, 
         return frames;
     }
 
+    // Some vendor motion photos contain an obfuscated or otherwise unsupported
+    // video stream. FFmpeg can identify the stream dimensions while leaving the
+    // pixel format unknown; passing AV_PIX_FMT_NONE to sws_getContext aborts the
+    // whole process with an assertion instead of returning a decode error.
+    if (codecCtx->pix_fmt == AV_PIX_FMT_NONE) {
+        JARK_LOG("Unknown video pixel format");
+        return frames;
+    }
+
     if (codecCtx->width <= 0 || codecCtx->height <= 0 ||
         av_image_check_size(static_cast<unsigned int>(codecCtx->width), static_cast<unsigned int>(codecCtx->height), 0, nullptr) < 0) {
         JARK_LOG("Invalid video frame size: {}x{}", codecCtx->width, codecCtx->height);
