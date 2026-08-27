@@ -13,7 +13,7 @@
 
 **YeImageViewer** 是一款简约、快速的原生 Windows 图片查看器，支持常见静态图、动图、RAW、iOS Live Photo 和 Android Motion Photo，并提供 EXIF 查看、打印、简单编辑和文件关联功能。
 
-当前版本：**v1.36.6** · [修改记录](CHANGELOG.md)
+当前版本：**v1.36.7** · [修改记录](CHANGELOG.md)
 
 本项目基于 [JarkViewer](https://github.com/jark006/JarkViewer) 开发，并遵循 GNU GPL v3 许可证。感谢上游作者 JARK006 与所有贡献者。
 

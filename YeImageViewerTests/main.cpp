@@ -7,6 +7,7 @@
 #include "PresentationLayout.h"
 #include "OverlayLayout.h"
 #include "RotationStore.h"
+#include "SettingLayout.h"
 #include "StbImageDecoder.h"
 #include "SvgRenderer.h"
 
@@ -455,6 +456,18 @@ void expectEscapeBehavior() {
         EscapeBehavior::resolve(false, false, true) == EscapeBehavior::Action::CloseImage);
 }
 
+void expectSettingLayout() {
+    passOrFail("settings use a compact readable font",
+        SettingLayout::FONT_SIZE == 18 &&
+        SettingLayout::FONT_SIZE * 2 <= SettingLayout::GENERAL_CHECK_BOXES.front().height);
+    passOrFail("settings controls remain separated inside the fixed canvas",
+        SettingLayout::generalControlsAreSeparated());
+    passOrFail("remember-monitor and animation controls have a visible vertical gap",
+        SettingLayout::GENERAL_CHECK_BOXES.back().y +
+            SettingLayout::GENERAL_CHECK_BOXES.back().height <
+            SettingLayout::GENERAL_RADIOS.front().y);
+}
+
 void expectDrawioTextFallback(std::string_view path) {
     const auto source = readFile(path);
     const auto processed = SvgRenderer::preprocess(source);
@@ -535,6 +548,7 @@ int main(int argc, char* argv[]) {
     expectPresentationLayout();
     expectMonitorPlacement();
     expectEscapeBehavior();
+    expectSettingLayout();
     expectRotationPersistence();
     if (argc >= 2) {
         expectRealHdrChannelOrder(argv[1]);

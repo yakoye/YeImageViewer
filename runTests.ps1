@@ -40,12 +40,19 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.6.0"
+$expectedFileVersion = "1.36.7.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
 }
 Write-Host "PASS viewer file version is $expectedFileVersion."
+
+$expectedCommitId = (& git -C $repoRoot rev-parse --short=12 HEAD).Trim()
+$viewerAscii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($viewer))
+if (-not $viewerAscii.Contains($expectedCommitId)) {
+    throw "Viewer build metadata does not contain current commit ID $expectedCommitId."
+}
+Write-Host "PASS viewer embeds current commit ID $expectedCommitId."
 
 Write-Host "Running unit regression tests..."
 $expectedHdrHash = "1A1A661E0A22BECBE019B6C095004315351F28600D9BD7600BD933BEB351E5D5"
@@ -85,6 +92,8 @@ using System.Runtime.InteropServices;
 
 public static class YeImageViewerTestNativeV1365
 {
+    public delegate bool EnumWindowsCallback(IntPtr window, IntPtr parameter);
+
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left, Top, Right, Bottom; }
 
@@ -97,11 +106,62 @@ public static class YeImageViewerTestNativeV1365
         public uint Flags;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct GUITHREADINFO
+    {
+        public int Size;
+        public uint Flags;
+        public IntPtr Active;
+        public IntPtr Focus;
+        public IntPtr Capture;
+        public IntPtr MenuOwner;
+        public IntPtr MoveSize;
+        public IntPtr Caret;
+        public RECT CaretRect;
+    }
+
     [DllImport("user32.dll")]
     public static extern IntPtr SendMessage(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll")]
     public static extern bool IsZoomed(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowEnabled(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr window, IntPtr processId);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowThreadProcessId")]
+    public static extern uint GetWindowThreadProcessIdForEnum(IntPtr window, out uint processId);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetGUIThreadInfo(uint threadId, ref GUITHREADINFO info);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr window, StringBuilder className, int maximumLength);
+
+    public static IntPtr FindProcessWindow(uint processId, string expectedClassName)
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr window, IntPtr parameter) {
+            uint ownerProcessId;
+            GetWindowThreadProcessIdForEnum(window, out ownerProcessId);
+            if (ownerProcessId == processId) {
+                StringBuilder className = new StringBuilder(256);
+                GetClassName(window, className, className.Capacity);
+                if (className.ToString() == expectedClassName) {
+                    found = window;
+                    return false;
+                }
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
@@ -175,6 +235,19 @@ try {
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0200, [UIntPtr]::Zero, $freshCenterPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0201, [UIntPtr]1, $freshCenterPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0202, [UIntPtr]0, $freshCenterPosition)
+    Start-Sleep -Milliseconds 250
+    $freshImageClickStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($freshWindow, -16).ToInt64()
+    if (($freshImageClickStyle -band 0x00C00000) -ne 0) {
+        throw "Fresh-install regression failed: clicking the image unexpectedly left presentation mode."
+    }
+    Write-Host "PASS clicking the image keeps presentation mode available for dragging."
+
+    $freshBackgroundX = 120
+    $freshBackgroundY = 120
+    $freshBackgroundPosition = [IntPtr](($freshBackgroundY -shl 16) -bor ($freshBackgroundX -band 0xFFFF))
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0200, [UIntPtr]::Zero, $freshBackgroundPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0201, [UIntPtr]1, $freshBackgroundPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0202, [UIntPtr]0, $freshBackgroundPosition)
     Start-Sleep -Milliseconds 500
     $freshFramedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($freshWindow, -16).ToInt64()
     $freshFramedRect = New-Object YeImageViewerTestNativeV1365+RECT
@@ -183,8 +256,20 @@ try {
     $freshFramedHeight = $freshFramedRect.Bottom - $freshFramedRect.Top
     if (($freshFramedStyle -band 0x00C00000) -eq 0 -or
         $freshFramedWidth -ge $freshWorkWidth -or $freshFramedHeight -ge $freshWorkHeight) {
-        throw "Fresh-install regression failed: clicking the image did not return to an image-sized framed window."
+        throw "Fresh-install regression failed: clicking the background did not return to an image-sized framed window."
     }
+    if (-not [YeImageViewerTestNativeV1365]::IsWindowEnabled($freshWindow)) {
+        throw "Fresh-install regression failed: framed window remained disabled after leaving presentation mode."
+    }
+    $freshThreadId = [YeImageViewerTestNativeV1365]::GetWindowThreadProcessId($freshWindow, [IntPtr]::Zero)
+    $freshThreadInfo = New-Object YeImageViewerTestNativeV1365+GUITHREADINFO
+    $freshThreadInfo.Size = [Runtime.InteropServices.Marshal]::SizeOf($freshThreadInfo)
+    if (-not [YeImageViewerTestNativeV1365]::GetGUIThreadInfo($freshThreadId, [ref]$freshThreadInfo) -or
+        $freshThreadInfo.Active -ne $freshWindow -or $freshThreadInfo.Focus -ne $freshWindow -or
+        $freshThreadInfo.Capture -ne [IntPtr]::Zero) {
+        throw "Fresh-install regression failed: framed window did not restore active mouse and keyboard interaction."
+    }
+    Write-Host "PASS background click restores an active, enabled framed window."
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0100, [UIntPtr]0x27, [IntPtr]::Zero)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0101, [UIntPtr]0x27, [IntPtr]::Zero)
@@ -206,12 +291,44 @@ try {
         $freshReturnedZoomMatch.Groups[1].Value -ne $freshInitialZoomMatch.Groups[1].Value) {
         throw "Fresh-install regression failed: returning to the first image changed its immersive zoom percentage."
     }
-    Write-Host "PASS image click anchors the frame while browsing preserves per-image zoom."
+    Write-Host "PASS background exit anchors the frame while browsing preserves per-image zoom."
 
-    [void]$freshProcess.CloseMainWindow()
-    if (-not $freshProcess.WaitForExit(3000)) {
-        throw "Rotation restart regression failed: initial fresh viewer did not close."
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0100, [UIntPtr]0x71, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 300
+    $unexpectedF2Window = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+        [uint32]$freshProcess.Id, "YeImageViewerSettingWnd")
+    if ($unexpectedF2Window -ne [IntPtr]::Zero) {
+        throw "Settings-shortcut regression failed: F2 still opened Settings."
     }
+    Write-Host "PASS F2 no longer opens Settings."
+
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0111, [UIntPtr]1010, [IntPtr]::Zero)
+    $settingDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $settingWindow = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$freshProcess.Id, "YeImageViewerSettingWnd")
+    } while ($settingWindow -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $settingDeadline)
+    if ($settingWindow -eq [IntPtr]::Zero) {
+        throw "Settings-layout regression failed: Settings window did not open."
+    }
+    $settingRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($settingWindow, [ref]$settingRect)
+    $settingDpi = [YeImageViewerTestNativeV1365]::GetDpiForWindow($settingWindow)
+    $expectedSettingWidth = [int][Math]::Round(1000 * 96.0 / $settingDpi)
+    $expectedSettingHeight = [int][Math]::Round(700 * 96.0 / $settingDpi)
+    if (($settingRect.Right - $settingRect.Left) -ne $expectedSettingWidth -or
+        ($settingRect.Bottom - $settingRect.Top) -ne $expectedSettingHeight -or
+        -not [YeImageViewerTestNativeV1365]::IsWindowEnabled($settingWindow)) {
+        throw "Settings-layout regression failed: Settings canvas dimensions or interaction state changed."
+    }
+    Write-Host "PASS Settings opens with the tested compact 1000x700 layout."
+
+    [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0112, [UIntPtr]0xF060, [IntPtr]::Zero)
+    if (-not $freshProcess.WaitForExit(3000)) {
+        throw "Window-close regression failed: restored title-bar close left a residual process."
+    }
+    Write-Host "PASS restored title-bar close exits without a residual process."
     $freshProcess = Start-Process -FilePath $freshViewer -ArgumentList ('"' + $hdrFixture + '"') -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds(6)
     do {

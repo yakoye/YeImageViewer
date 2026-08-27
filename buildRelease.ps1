@@ -10,9 +10,16 @@ if (-not $installationPath) {
 
 $msbuild = Join-Path $installationPath "MSBuild\Current\Bin\amd64\MSBuild.exe"
 $solution = Join-Path $PSScriptRoot "YeImageViewer.slnx"
+$gitCommitId = (& git -C $PSScriptRoot rev-parse --short=12 HEAD 2>$null)
+if ($LASTEXITCODE -ne 0 -or -not $gitCommitId) {
+    $gitCommitId = "unknown"
+}
+else {
+    $gitCommitId = $gitCommitId.Trim()
+}
 
 $psi = [System.Diagnostics.ProcessStartInfo]::new($msbuild)
-@($solution, "/m", "/p:Configuration=Release", "/p:Platform=x64", "/v:m") | ForEach-Object {
+@($solution, "/m", "/p:Configuration=Release", "/p:Platform=x64", "/p:GitCommitId=$gitCommitId", "/v:m") | ForEach-Object {
     [void]$psi.ArgumentList.Add($_)
 }
 

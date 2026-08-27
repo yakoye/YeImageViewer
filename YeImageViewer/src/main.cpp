@@ -24,8 +24,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.6";
-constinit int appVersionCode = 13606; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.7";
+constinit int appVersionCode = 13607; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -443,6 +443,8 @@ public:
         presentationMode = false;
         framedWindowAnchored = true;
         presentationClickCandidate = false;
+        mouseIsPressing = false;
+        ReleaseCapture();
         SetPresentationBackdrop(false);
         SetWindowLongPtrW(m_hWnd, GWL_STYLE, presentationWindowedStyle);
         SetWindowLongPtrW(m_hWnd, GWL_EXSTYLE, presentationWindowedExtendedStyle);
@@ -463,7 +465,12 @@ public:
         const int x = monitorInfo.rcWork.left + (workWidth - outerWidth) / 2;
         const int y = monitorInfo.rcWork.top + (workHeight - outerHeight) / 2;
         SetWindowPos(m_hWnd, HWND_TOP, x, y, outerWidth, outerHeight,
-            SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        EnableWindow(m_hWnd, TRUE);
+        BringWindowToTop(m_hWnd);
+        SetActiveWindow(m_hWnd);
+        SetForegroundWindow(m_hWnd);
+        SetFocus(m_hWnd);
 
         curPar.slideCur = curPar.slideTarget = {
             windowed.initialSlideX,
@@ -618,10 +625,11 @@ public:
         {
         case WM_LBUTTONDOWN: {//左键
             if (presentationMode && cursorPos == CursorPos::centerArea) {
-                presentationClickCandidate = isPointInsideCurrentImage(x, y);
+                const bool insideImage = isPointInsideCurrentImage(x, y);
+                presentationClickCandidate = !insideImage;
                 presentationPressPos = { x, y };
                 mousePressPos = { x, y };
-                mouseIsPressing = presentationClickCandidate;
+                mouseIsPressing = insideImage;
                 return;
             }
 
@@ -690,7 +698,7 @@ public:
                 const int deltaX = x - presentationPressPos.x;
                 const int deltaY = y - presentationPressPos.y;
                 const bool isClick = deltaX * deltaX + deltaY * deltaY <= 25 &&
-                    isPointInsideCurrentImage(x, y);
+                    !isPointInsideCurrentImage(x, y);
                 presentationClickCandidate = false;
                 mouseIsPressing = false;
                 if (isClick) {
@@ -1082,10 +1090,6 @@ public:
 
             case VK_F1: {
                 operateQueue.push({ ActionENUM::setting, 0 });
-            }break;
-
-            case VK_F2: {
-                operateQueue.push({ ActionENUM::setting, 1 });
             }break;
 
             case VK_F3: {
@@ -2455,7 +2459,7 @@ public:
         } break;
 
         case ActionENUM::requestExit: {
-            PostMessageW(m_hWnd, WM_DESTROY, 0, 0);
+            PostMessageW(m_hWnd, WM_CLOSE, 0, 0);
         } break;
         }
 

@@ -3,6 +3,8 @@
 #include "MatWindow.h"
 #include "TextDrawer.h"
 #include "FileAssociationManager.h"
+#include "SettingLayout.h"
+#include "BuildInfo.h"
 
 // TODO: 为 YeImageViewer 增加独立的更新检查。
 
@@ -27,10 +29,10 @@ struct generalTabRadio {
 
 class Setting : public MatWindow {
 private:
-    static const int winWidth = 1000;
-    static const int winHeight = 700; // 固定UI尺寸适应任意分辨率和DPI，最大700为了照顾1366*768的屏幕
-    static const int tabHeight = 50;
-    static const int tabWidth = 150;
+    static const int winWidth = SettingLayout::CANVAS_WIDTH;
+    static const int winHeight = SettingLayout::CANVAS_HEIGHT; // 固定UI尺寸适应任意分辨率和DPI，最大700为了照顾1366*768的屏幕
+    static const int tabHeight = SettingLayout::TAB_HEIGHT;
+    static const int tabWidth = SettingLayout::TAB_WIDTH;
 
     static const int DEBUG_COLOR = 0xFFFF8080;
 
@@ -48,7 +50,7 @@ private:
     cv::Mat winCanvas, settingRes, helpPage, helpPageEN, helpPageDark, helpPageDarkEN;
 
     void Init(int tabIdx = 0) {
-        textDrawer.setSize(24);
+        textDrawer.setSize(SettingLayout::FONT_SIZE);
         winCanvas = cv::Mat(winHeight, winWidth, CV_8UC4, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG));
         curTabIdx = tabIdx;
 
@@ -65,22 +67,23 @@ private:
 
         // GeneralTab
         if (generalTabCheckBoxList.empty()) {
-            generalTabCheckBoxList = {
-                { {50, 100, 450, 50}, 12, &GlobalVar::settingParameter.isAllowRotateAnimation },
-                { {50, 150, 450, 50}, 13, &GlobalVar::settingParameter.isAllowZoomAnimation },
-                { {50, 200, 450, 50}, 14, &GlobalVar::settingParameter.isNoteBeforeDelete },
-                { {50, 250, 450, 50}, 15, &GlobalVar::settingParameter.enableColorManagement },
-                { {50, 300, 450, 50}, 54, &GlobalVar::settingParameter.isOneToOnePreferred },
-                { {50, 350, 450, 50}, 55, &GlobalVar::settingParameter.escapeClosesImage },
-                { {50, 400, 450, 50}, 56, &GlobalVar::settingParameter.rememberLastMonitor },
+            const auto toCvRect = [](const SettingLayout::Rect& rect) {
+                return cv::Rect{ rect.x, rect.y, rect.width, rect.height };
             };
-        }
-        if (generalTabRadioList.empty()) {
+            generalTabCheckBoxList = {
+                { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[0]), 12, &GlobalVar::settingParameter.isAllowRotateAnimation },
+                { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[1]), 13, &GlobalVar::settingParameter.isAllowZoomAnimation },
+                { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[2]), 14, &GlobalVar::settingParameter.isNoteBeforeDelete },
+                { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[3]), 15, &GlobalVar::settingParameter.enableColorManagement },
+                { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[4]), 54, &GlobalVar::settingParameter.isOneToOnePreferred },
+                { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[5]), 55, &GlobalVar::settingParameter.escapeClosesImage },
+                { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[6]), 56, &GlobalVar::settingParameter.rememberLastMonitor },
+            };
             generalTabRadioList = {
-                {{50, 400, 600, 50}, {20, 21, 22, 23}, &GlobalVar::settingParameter.switchImageAnimationMode },
-                {{50, 450, 600, 50}, {24, 25, 26, 27}, &GlobalVar::settingParameter.UI_Mode },
-                {{50, 500, 450, 50}, {28, 30, 31}, &GlobalVar::settingParameter.UI_LANG },
-                {{50, 550, 450, 50}, {36, 37, 38}, &GlobalVar::settingParameter.rightClickAction },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[0]), {20, 21, 22, 23}, &GlobalVar::settingParameter.switchImageAnimationMode },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[1]), {24, 25, 26, 27}, &GlobalVar::settingParameter.UI_Mode },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[2]), {28, 30, 31}, &GlobalVar::settingParameter.UI_LANG },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[3]), {36, 37, 38}, &GlobalVar::settingParameter.rightClickAction },
             };
         }
 
@@ -132,13 +135,13 @@ public:
             cv::rectangle(winCanvas, cbox.rect, jarkUtils::to_cv_scalar(DEBUG_COLOR), 1);
 #endif
             cv::Rect rect({ cbox.rect.x + 8, cbox.rect.y + 8, cbox.rect.height - 16, cbox.rect.height - 16 }); //方形
-            cv::rectangle(winCanvas, rect, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.FG_DEEP), 4);
+            cv::rectangle(winCanvas, rect, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.FG_DEEP), 3);
             if (*cbox.valuePtr) {
                 rect = { cbox.rect.x + 14, cbox.rect.y + 14, cbox.rect.height - 28, cbox.rect.height - 28 }; //小方形
                 cv::rectangle(winCanvas, rect, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.CHECK), -1);
             }
 
-            rect = { cbox.rect.x + cbox.rect.height, cbox.rect.y+8, cbox.rect.width - cbox.rect.height, cbox.rect.height };
+            rect = { cbox.rect.x + cbox.rect.height, cbox.rect.y, cbox.rect.width - cbox.rect.height, cbox.rect.height };
             textDrawer.putAlignLeft(winCanvas, rect, getUIString(cbox.stringID), GlobalVar::currentTheme.FG);
         }
 
@@ -225,9 +228,9 @@ public:
         cv::rectangle(winCanvas, { 0, tabHeight, winWidth, winHeight - tabHeight },
             jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
 
-        textDrawer.setSize(48);
+        textDrawer.setSize(42);
         textDrawer.putAlignCenter(winCanvas, { 100, 100, 800, 80 }, "YeImageViewer", GlobalVar::currentTheme.FG);
-        textDrawer.setSize(24);
+        textDrawer.setSize(SettingLayout::FONT_SIZE);
         textDrawer.putAlignCenter(winCanvas, { 100, 190, 800, 45 },
             jarkUtils::wstringToUtf8(appVersion).c_str(), GlobalVar::currentTheme.VER);
         textDrawer.putAlignCenter(winCanvas, { 100, 250, 800, 45 },
@@ -241,8 +244,10 @@ public:
             isChinese ? "访问上游 JarkViewer 项目" : "Open upstream JarkViewer project",
             GlobalVar::currentTheme.FG);
 
-        textDrawer.putAlignCenter(winCanvas, { 100, 535, 800, 35 }, getUIString(19), GlobalVar::currentTheme.VER);
-        textDrawer.putAlignCenter(winCanvas, { 100, 575, 800, 35 }, jarkUtils::COMPILE_DATE_TIME, GlobalVar::currentTheme.VER);
+        const auto buildTimeText = std::format("{}: {}", getUIString(19), jarkUtils::COMPILE_DATE_TIME);
+        const auto commitText = std::format("Commit ID: {}", BuildInfo::GIT_COMMIT_ID);
+        textDrawer.putAlignCenter(winCanvas, { 100, 535, 800, 35 }, buildTimeText.c_str(), GlobalVar::currentTheme.VER);
+        textDrawer.putAlignCenter(winCanvas, { 100, 575, 800, 35 }, commitText.c_str(), GlobalVar::currentTheme.VER);
 
 #ifndef NDEBUG
         cv::rectangle(winCanvas, repositoryBtnRect, jarkUtils::to_cv_scalar(DEBUG_COLOR), 1);
@@ -294,6 +299,7 @@ public:
     }
 
     void drawingUI() override {
+        textDrawer.setSize(SettingLayout::FONT_SIZE);
         // 绘制标签栏
         cv::rectangle(winCanvas, { 0, 0, winWidth, tabHeight }, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), -1);
         cv::rectangle(winCanvas, { curTabIdx * tabWidth, 0, tabWidth, tabHeight }, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);

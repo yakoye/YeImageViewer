@@ -12,6 +12,7 @@ void TextDrawer::setLineGap(float percent) {
 
 void TextDrawer::setSize(int newSize) {
     fontSize = newSize > 2048 ? 2048 : (newSize < 16 ? 16 : newSize);
+    scale = 0;
 
     auto newBufferSize = 2ULL * fontSize * fontSize;
     wordBuff.resize(newBufferSize);
