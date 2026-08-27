@@ -1,0 +1,9 @@
+<!-- Icon geometry adapted from IconPark (Apache-2.0). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <rect x="1" y="1" width="46" height="46" rx="10" fill="#202124" fill-opacity="0.78"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M41.5 10H35.5M27.5 6V14M27.5 10H5.5"/>
+    <path d="M13.5 24H5.5M21.5 20V28M43.5 24H21.5"/>
+    <path d="M41.5 38H35.5M27.5 34V42M27.5 38H5.5"/>
+  </g>
+</svg>

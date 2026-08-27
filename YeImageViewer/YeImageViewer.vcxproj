@@ -163,14 +163,19 @@
     <ClInclude Include="include\blpDecoder.h" />
     <ClInclude Include="include\ColorManager.h" />
     <ClInclude Include="include\D3D11App.h" />
+    <ClInclude Include="include\EscapeBehavior.h" />
     <ClInclude Include="include\exifParse.h" />
     <ClInclude Include="include\FileAssociationNaming.h" />
     <ClInclude Include="include\FileAssociationManager.h" />
     <ClInclude Include="include\ImageDatabase.h" />
     <ClInclude Include="include\ImageInterpolation.h" />
+    <ClInclude Include="include\InitialWindowLayout.h" />
     <ClInclude Include="include\LRU.h" />
     <ClInclude Include="include\MotionPhotoUtils.h" />
+    <ClInclude Include="include\MonitorPlacement.h" />
+    <ClInclude Include="include\OverlayLayout.h" />
     <ClInclude Include="include\Printer.h" />
+    <ClInclude Include="include\RotationStore.h" />
     <ClInclude Include="include\Setting.h" />
     <ClInclude Include="include\stringRes.h" />
     <ClInclude Include="include\SVGPreprocessor.h" />
@@ -191,6 +196,7 @@
     <ClCompile Include="src\exifParse.cpp" />
     <ClCompile Include="src\ImageDatabase.cpp" />
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\RotationStore.cpp" />
     <ClCompile Include="src\jarkUtils.cpp" />
     <ClCompile Include="src\stringRes.cpp" />
     <ClCompile Include="src\StbImageDecoder.cpp" />

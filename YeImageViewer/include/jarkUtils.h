@@ -91,6 +91,8 @@ using std::unordered_map;
 
 #include "stringRes.h"
 #include "BackgroundRenderer.h"
+#include "EscapeBehavior.h"
+#include "OverlayLayout.h"
 
 inline const int MIN_VIDEO_BUFF_SIZE = 65536; // 64KiB 视频数据最小尺寸，过小可能是无效数据
 inline const int MAX_VIDEO_FRAMES = 120;      // 最大解码帧数，过大可能导致内存占用过高
@@ -130,7 +132,7 @@ struct SettingParameter {
 
     uint8_t header[32];
     RECT rect{};                           // 窗口大小位置
-    uint32_t showCmd = SW_MAXIMIZE;        // 窗口模式
+    uint32_t showCmd = SW_NORMAL;          // 窗口模式
 
     uint32_t printerBrightness = 100;      // 亮度调整 (0 ~ 200)
     uint32_t printerContrast = 100;        // 对比度调整 (0 ~ 200)
@@ -139,7 +141,7 @@ struct SettingParameter {
     bool printerBalancedBrightness = false;// 是否均衡亮度 文档优化
 
     bool isOneToOnePreferred = false;      // 打开图片时优先1:1
-    bool reserve2 = false;
+    bool escapeClosesImage = false;          // 普通窗口中按 Esc 是否关闭图片
 
     bool isAllowRotateAnimation = true;
     bool isAllowZoomAnimation = true;
@@ -156,7 +158,12 @@ struct SettingParameter {
     uint32_t rightClickAction = 0;          // 右键点击行为  0:打开菜单  1:退出程序
 
     uint32_t backgroundMode = static_cast<uint32_t>(BackgroundMode::Transparent);
-    uint32_t reserve[799];
+    uint32_t monitorSettingsVersion = 1;
+    bool rememberLastMonitor = true;
+    uint8_t monitorSettingsPadding[3]{};
+    wchar_t lastMonitorDevice[CCHDEVICENAME]{};
+    RECT monitorRelativeRect{};
+    uint32_t reserve[777];
 
     char extCheckedListStr[800];
 
@@ -183,9 +190,7 @@ struct SettingParameter {
 
     // 检查参数
     void ValidateParameters() {
-        // 窗口位置大小检查
-        if (rect.left < 0) rect.left = 0;
-        if (rect.top < 0) rect.top = 0;
+        // 窗口位置允许为负数，以兼容位于主显示器左侧或上方的显示器。
         if (rect.right <= rect.left) {
             rect.right = rect.left + 800; // 默认宽度
         }
@@ -195,7 +200,7 @@ struct SettingParameter {
 
         // 窗口模式检查 - 仅限 SW_MAXIMIZE SW_NORMAL
         if (showCmd != SW_NORMAL && showCmd != SW_MAXIMIZE) {
-            showCmd = SW_MAXIMIZE;
+            showCmd = SW_NORMAL;
         }
 
         // 亮度调整范围检查 (0 ~ 200)
@@ -228,6 +233,15 @@ struct SettingParameter {
 
         // 背景模式检查 (0~3)
         backgroundMode = static_cast<uint32_t>(BackgroundRenderer::normalizeMode(backgroundMode));
+
+        // 首次从旧版设置升级时启用显示器记忆；之后保留用户选择。
+        if (monitorSettingsVersion != 1) {
+            monitorSettingsVersion = 1;
+            rememberLastMonitor = true;
+            lastMonitorDevice[0] = L'\0';
+            monitorRelativeRect = {};
+        }
+        lastMonitorDevice[CCHDEVICENAME - 1] = L'\0';
 
         // 确保扩展名列表字符串以空字符结尾
         extCheckedListStr[sizeof(extCheckedListStr) - 1] = 0;
@@ -349,11 +363,12 @@ enum class ActionENUM:int64_t {
 };
 
 enum class CursorPos :int {
-    centerArea = 0, leftUp, leftDown, leftEdge, rightEdge, rightDown, rightUp, centerTop,
+    centerArea = 0, leftEdge, rightEdge, toolbarPrevious, toolbarNext,
+    toolbarRotateLeft, toolbarRotateRight, toolbarSetting, toolbar, centerTop,
 };
 
 enum class ShowExtraUI :int {
-    none = 0, rotateLeftButton, printer, leftArrow, rightArrow, setting, rotateRightButton, animationBar
+    none = 0, leftArrow, rightArrow, bottomToolbar, animationBar
 };
 
 enum class ContextMenu :int {
@@ -537,6 +552,7 @@ public:
     static void copyImageToClipboard(const cv::Mat& image);
 
     static void ToggleFullScreen(HWND hwnd);
+    static bool IsFullScreen(HWND hwnd);
 
     // 假设 canvas 完全没有透明像素
     static void overlayImg(cv::Mat& canvas, const cv::Mat& img, int xOffset, int yOffset);

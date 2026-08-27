@@ -2,6 +2,20 @@
 
 #include "jarkUtils.h"
 
+namespace {
+
+struct FullScreenState {
+    HWND window = nullptr;
+    bool active = false;
+    DWORD style = 0;
+    DWORD exStyle = 0;
+    WINDOWPLACEMENT placement{ .length = sizeof(WINDOWPLACEMENT) };
+};
+
+FullScreenState fullScreenState;
+
+}
+
 
 std::string jarkUtils::bin2Hex(const void* bytes, const size_t len) {
     auto charList = "0123456789ABCDEF";
@@ -446,43 +460,49 @@ void jarkUtils::copyImageToClipboard(const cv::Mat& image) {
 
 
 void jarkUtils::ToggleFullScreen(HWND hwnd) {
-    static RECT preRect{};
-    static DWORD preStyle = 0;
-    static DWORD preExStyle = 0;
+    if (!hwnd) return;
 
-    static bool isFullScreen = false;
-
-    if (isFullScreen) {
+    if (fullScreenState.active && fullScreenState.window == hwnd) {
         // 退出全屏模式，恢复之前的窗口状态
-        SetWindowLong(hwnd, GWL_STYLE, preStyle);
-        SetWindowLong(hwnd, GWL_EXSTYLE, preExStyle);
-        SetWindowPos(hwnd, nullptr, preRect.left, preRect.top,
-            preRect.right - preRect.left,
-            preRect.bottom - preRect.top,
-            SWP_NOZORDER | SWP_FRAMECHANGED);
+        SetWindowLongPtrW(hwnd, GWL_STYLE, fullScreenState.style);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, fullScreenState.exStyle);
+        SetWindowPlacement(hwnd, &fullScreenState.placement);
+        SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        fullScreenState.active = false;
+        fullScreenState.window = nullptr;
     }
     else {
         // 保存当前窗口状态
-        GetWindowRect(hwnd, &preRect);
-        preStyle = GetWindowLong(hwnd, GWL_STYLE);
-        preExStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+        fullScreenState.window = hwnd;
+        fullScreenState.style = (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE);
+        fullScreenState.exStyle = (DWORD)GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        fullScreenState.placement = { .length = sizeof(WINDOWPLACEMENT) };
+        if (!GetWindowPlacement(hwnd, &fullScreenState.placement)) {
+            fullScreenState.window = nullptr;
+            return;
+        }
 
         // 切换到全屏模式
         HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         MONITORINFO monitorInfo = { sizeof(monitorInfo) };
         GetMonitorInfo(monitor, &monitorInfo);
 
-        SetWindowLong(hwnd, GWL_STYLE, preStyle & ~(WS_CAPTION | WS_THICKFRAME));
-        SetWindowLong(hwnd, GWL_EXSTYLE, preExStyle & ~(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE));
+        SetWindowLongPtrW(hwnd, GWL_STYLE, fullScreenState.style & ~(WS_CAPTION | WS_THICKFRAME));
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, fullScreenState.exStyle &
+            ~(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE));
 
         SetWindowPos(hwnd, HWND_TOP,
             monitorInfo.rcMonitor.left, monitorInfo.rcMonitor.top,
             monitorInfo.rcMonitor.right - monitorInfo.rcMonitor.left,
             monitorInfo.rcMonitor.bottom - monitorInfo.rcMonitor.top,
             SWP_NOZORDER | SWP_FRAMECHANGED);
+        fullScreenState.active = true;
     }
+}
 
-    isFullScreen = !isFullScreen;
+bool jarkUtils::IsFullScreen(HWND hwnd) {
+    return fullScreenState.active && fullScreenState.window == hwnd;
 }
 
 // 假设 canvas 完全没有透明像素

@@ -1,4 +1,5 @@
 #include "D3D11App.h"
+#include "MonitorPlacement.h"
 
 namespace {
 
@@ -67,6 +68,38 @@ private:
     FlushMenuThemesFn flushMenuThemes_ = nullptr;
 };
 
+struct EnumeratedMonitor {
+    HMONITOR handle = nullptr;
+    MONITORINFOEXW info{};
+
+    EnumeratedMonitor() {
+        info.cbSize = sizeof(MONITORINFOEXW);
+    }
+};
+
+BOOL CALLBACK collectMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM data) {
+    auto& monitors = *reinterpret_cast<std::vector<EnumeratedMonitor>*>(data);
+    EnumeratedMonitor item;
+    item.handle = monitor;
+    if (GetMonitorInfoW(monitor, &item.info))
+        monitors.emplace_back(std::move(item));
+    return TRUE;
+}
+
+std::vector<EnumeratedMonitor> enumerateMonitors() {
+    std::vector<EnumeratedMonitor> monitors;
+    EnumDisplayMonitors(nullptr, nullptr, collectMonitor, reinterpret_cast<LPARAM>(&monitors));
+    return monitors;
+}
+
+MonitorPlacement::Rect toPlacementRect(const RECT& rect) {
+    return { rect.left, rect.top, rect.right, rect.bottom };
+}
+
+RECT toWin32Rect(const MonitorPlacement::Rect& rect) {
+    return { rect.left, rect.top, rect.right, rect.bottom };
+}
+
 }
 
 D3D11App::D3D11App() {
@@ -134,28 +167,50 @@ void D3D11App::loadSettings() {
         }
     }
 
-    if (GlobalVar::settingParameter.showCmd == SW_NORMAL) {
-        int screenWidth = (::GetSystemMetrics(SM_CXFULLSCREEN));
-        int screenHeight = (::GetSystemMetrics(SM_CYFULLSCREEN));
+    const auto enumerated = enumerateMonitors();
+    std::vector<MonitorPlacement::Monitor> monitors;
+    monitors.reserve(enumerated.size());
+    for (const auto& item : enumerated) {
+        monitors.push_back({ item.info.szDevice, toPlacementRect(item.info.rcWork),
+            (item.info.dwFlags & MONITORINFOF_PRIMARY) != 0 });
+    }
 
-        if (GlobalVar::settingParameter.rect.left >= screenWidth || GlobalVar::settingParameter.rect.bottom >= screenHeight ||
-            (GlobalVar::settingParameter.rect.right - GlobalVar::settingParameter.rect.left) >= screenWidth ||
-            (GlobalVar::settingParameter.rect.bottom - GlobalVar::settingParameter.rect.top) >= screenHeight) {
-            GlobalVar::settingParameter.rect = { screenWidth / 4, screenHeight / 4, screenWidth * 3 / 4, 100 + screenHeight * 3 / 4 };
+    const auto selection = MonitorPlacement::select(monitors,
+        GlobalVar::settingParameter.rememberLastMonitor,
+        GlobalVar::settingParameter.lastMonitorDevice);
+    if (selection.index != MonitorPlacement::NO_MONITOR) {
+        auto relativeRect = toPlacementRect(GlobalVar::settingParameter.monitorRelativeRect);
+        if (!relativeRect.valid() && toPlacementRect(GlobalVar::settingParameter.rect).valid()) {
+            relativeRect = MonitorPlacement::toRelative(
+                toPlacementRect(GlobalVar::settingParameter.rect), monitors[selection.index].workArea);
         }
+        GlobalVar::settingParameter.rect = toWin32Rect(
+            MonitorPlacement::restore(relativeRect, monitors[selection.index].workArea));
     }
 }
 
 void D3D11App::saveSettings() const {
     WINDOWPLACEMENT wp{ .length = sizeof(WINDOWPLACEMENT) };
 
-    if (GetWindowPlacement(m_hWnd, &wp) && wp.showCmd == SW_NORMAL) {
-        GlobalVar::settingParameter.showCmd = SW_NORMAL;
+    if (GetWindowPlacement(m_hWnd, &wp)) {
+        GlobalVar::settingParameter.showCmd = wp.showCmd == SW_MAXIMIZE ? SW_MAXIMIZE : SW_NORMAL;
         GlobalVar::settingParameter.rect = wp.rcNormalPosition;
-    }
-    else {
-        GlobalVar::settingParameter.showCmd = SW_MAXIMIZE;
-        GlobalVar::settingParameter.rect = {};
+
+        HMONITOR monitor = MonitorFromRect(&wp.rcNormalPosition, MONITOR_DEFAULTTONEAREST);
+        MONITORINFOEXW monitorInfo{};
+        monitorInfo.cbSize = sizeof(MONITORINFOEXW);
+        if (GetMonitorInfoW(monitor, &monitorInfo)) {
+            GlobalVar::settingParameter.monitorRelativeRect = toWin32Rect(
+                MonitorPlacement::toRelative(toPlacementRect(wp.rcNormalPosition),
+                    toPlacementRect(monitorInfo.rcWork)));
+            if (GlobalVar::settingParameter.rememberLastMonitor) {
+                wcsncpy_s(GlobalVar::settingParameter.lastMonitorDevice,
+                    monitorInfo.szDevice, _TRUNCATE);
+            }
+            else {
+                GlobalVar::settingParameter.lastMonitorDevice[0] = L'\0';
+            }
+        }
     }
 
     memcpy(GlobalVar::settingParameter.header, GlobalVar::settingHeader.data(), GlobalVar::settingHeader.length());
@@ -182,7 +237,9 @@ HRESULT D3D11App::Initialize(HINSTANCE hInstance) {
     wcex.hIcon = LoadIconW(GetModuleHandleW(NULL), MAKEINTRESOURCE(IDI_YEIMAGEVIEWER));
     RegisterClassExW(&wcex);
 
-    RECT window_rect = GlobalVar::settingParameter.showCmd == SW_NORMAL ? GlobalVar::settingParameter.rect : RECT{ 0, 0, 800, 600 };
+    RECT window_rect = GlobalVar::settingParameter.rect;
+    if (window_rect.right <= window_rect.left || window_rect.bottom <= window_rect.top)
+        window_rect = { 0, 0, 800, 600 };
     DWORD window_style = WS_OVERLAPPEDWINDOW;
     m_hWnd = CreateWindowExW(0, L"D3D11WndClass", m_wndCaption.c_str(), window_style,
         window_rect.left, window_rect.top, window_rect.right - window_rect.left, window_rect.bottom - window_rect.top,
@@ -196,10 +253,15 @@ HRESULT D3D11App::Initialize(HINSTANCE hInstance) {
         BOOL themeMode = GlobalVar::isCurrentUIDarkMode;
         DwmSetWindowAttribute(m_hWnd, 20, &themeMode, sizeof(BOOL));
         DragAcceptFiles(m_hWnd, TRUE);
-        ShowWindow(m_hWnd, GlobalVar::settingParameter.showCmd == SW_NORMAL ? SW_NORMAL : SW_MAXIMIZE);
-        UpdateWindow(m_hWnd);
     }
     return hr;
+}
+
+void D3D11App::ShowInitialWindow() {
+    if (!m_hWnd)
+        return;
+    ShowWindow(m_hWnd, SW_NORMAL);
+    UpdateWindow(m_hWnd);
 }
 
 void D3D11App::ApplyWindowBackgroundMode() {

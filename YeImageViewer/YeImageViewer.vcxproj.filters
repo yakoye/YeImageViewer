@@ -33,7 +33,22 @@
     <ClInclude Include="include\ImageInterpolation.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\InitialWindowLayout.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\RotationStore.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\OverlayLayout.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\MonitorPlacement.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\D3D11App.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\EscapeBehavior.h">
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\printer.h">
@@ -84,6 +99,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\RotationStore.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\D3D11App.cpp">

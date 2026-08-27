@@ -6,6 +6,8 @@
 #include "SvgRenderer.h"
 #include "Printer.h"
 #include "Setting.h"
+#include "RotationStore.h"
+#include "InitialWindowLayout.h"
 
 #include "D3D11App.h"
 #include <ppl.h>
@@ -21,10 +23,10 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.35";
-constinit int appVersionCode = 13500; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.5";
+constinit int appVersionCode = 13605; // 主版本*10000 + 次版本*100 + 修订版本
 
-std::wstring_view RepositoryLink = L"https://github.com/jark006/JarkViewer";
+std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
 
 static constexpr auto generate_zoom_list() {
@@ -78,14 +80,14 @@ struct CurImageParameter {
         Init();
     }
 
-    void Init(int winWidth = 0, int winHeight = 0) {
+    void Init(int winWidth = 0, int winHeight = 0, int initialRotation = 0, bool preventUpscale = false) {
 
         curFrameIdx = 0;
         curFrameDelay = 0;
 
         slideCur = 0;
         slideTarget = 0;
-        rotation = 0;
+        rotation = initialRotation & 3;
         isAnimationPause = false;
 
         if (imageAssetPtr) {
@@ -105,9 +107,11 @@ struct CurImageParameter {
             }
 
             //适应显示窗口宽高的缩放比例
-            int64_t zoomFitWindow = std::min(winWidth * ZOOM_BASE / width, winHeight * ZOOM_BASE / height);
-            zoomTarget = (height > winHeight || width > winWidth) ? zoomFitWindow :
-                (GlobalVar::settingParameter.isOneToOnePreferred ? ZOOM_BASE : zoomFitWindow);
+            const int displayWidth = (rotation == 0 || rotation == 2) ? width : height;
+            const int displayHeight = (rotation == 0 || rotation == 2) ? height : width;
+            int64_t zoomFitWindow = std::min(winWidth * ZOOM_BASE / displayWidth, winHeight * ZOOM_BASE / displayHeight);
+            zoomTarget = (displayHeight > winHeight || displayWidth > winWidth) ? zoomFitWindow :
+                ((preventUpscale || GlobalVar::settingParameter.isOneToOnePreferred) ? ZOOM_BASE : zoomFitWindow);
             zoomCur = zoomTarget;
 
             zoomList = std::vector<int64_t>(ZOOM_LIST.begin(), ZOOM_LIST.end());
@@ -139,7 +143,7 @@ struct CurImageParameter {
     }
 
     void updateZoomList(int winWidth = 0, int winHeight = 0) {
-        if (winHeight == 0 || winWidth == 0 || imageAssetPtr == nullptr)
+        if (winHeight <= 0 || winWidth <= 0 || width <= 0 || height <= 0 || imageAssetPtr == nullptr)
             return;
 
         //适应显示窗口宽高的缩放比例
@@ -178,7 +182,21 @@ struct CurImageParameter {
 
 class ExtraUIRes {
 public:
-    cv::Mat mainRes, leftArrow, rightArrow, leftRotate, rightRotate, printer, setting, animationBarPlaying, animationBarPausing;
+    cv::Mat mainRes, leftArrow, rightArrow, leftRotate, rightRotate, setting, animationBarPlaying, animationBarPausing;
+
+    static cv::Mat loadSvgIcon(int resourceId) {
+        const auto rc = jarkUtils::GetResource(resourceId, L"SVG");
+        if (!rc.ptr || rc.size == 0)
+            return {};
+        const auto renderer = SvgRenderer::create(std::span<const uint8_t>(
+            static_cast<const uint8_t*>(rc.ptr), rc.size));
+        if (!renderer)
+            return {};
+        auto bitmap = renderer->renderToBitmap(OverlayLayout::ICON_SIZE, OverlayLayout::ICON_SIZE);
+        if (bitmap.empty())
+            return {};
+        return cv::Mat(bitmap.height, bitmap.width, CV_8UC4, bitmap.bgra.data()).clone();
+    }
 
     ExtraUIRes() {
         rcFileInfo rc;
@@ -186,14 +204,11 @@ public:
         rc = jarkUtils::GetResource(IDB_PNG_MAIN_RES, L"PNG");
         mainRes = cv::imdecode(cv::Mat(1, (int)rc.size, CV_8UC1, (uint8_t*)rc.ptr), cv::IMREAD_UNCHANGED);
 
-        leftRotate = mainRes({ 0, 0, 50, 50 });
-        rightRotate = mainRes({ 50, 0, 50, 50 });
-
-        printer = mainRes({ 0, 50, 50, 50 });
-        setting = mainRes({ 50, 50, 50, 50 });
-
-        leftArrow = mainRes({ 100, 0, 50, 100 });
-        rightArrow = mainRes({ 150, 0, 50, 100 });
+        leftArrow = loadSvgIcon(IDR_SVG_PREVIOUS_ICON);
+        rightArrow = loadSvgIcon(IDR_SVG_NEXT_ICON);
+        leftRotate = loadSvgIcon(IDR_SVG_ROTATE_LEFT_ICON);
+        rightRotate = loadSvgIcon(IDR_SVG_ROTATE_RIGHT_ICON);
+        setting = loadSvgIcon(IDR_SVG_SETTINGS_ICON);
 
         animationBarPlaying = mainRes({ 0, 100, 200, 50 });
         animationBarPausing = mainRes({ 0, 150, 200, 50 });
@@ -216,6 +231,7 @@ public:
     bool showExif = false;
     Cood mousePos, mousePressPos;
     ImageDatabase imgDB;
+    RotationStore rotationStore;
 
     int curFileIdx = -1;         // 文件在路径列表的索引
     vector<wstring> imgFileList; // 工作目录下所有图像文件路径
@@ -227,6 +243,10 @@ public:
 
     YeImageViewerApp() {
         m_wndCaption = std::format(L"{} {}", appName, appVersion);
+        auto rotationPath = std::filesystem::path(GlobalVar::settingPath);
+        rotationPath.replace_filename(L"YeImageViewer.rotations.db");
+        rotationStore.setStoragePath(std::move(rotationPath));
+        rotationStore.load();
 
         HDC hdc = GetDC(nullptr);
         UINT dpi = hdc ? GetDeviceCaps(hdc, LOGPIXELSX) : 96; // 100%: 96 150%: 144 200%: 192
@@ -239,6 +259,47 @@ public:
     ~YeImageViewerApp() {
     }
 
+    bool hasCurrentImagePath() const {
+        return curFileIdx >= 0 && curFileIdx < static_cast<int>(imgFileList.size()) &&
+            imgFileList[curFileIdx] != m_wndCaption;
+    }
+
+    void initCurrentImageParameters() {
+        const bool isRealImage = hasCurrentImagePath();
+        const int savedRotation = isRealImage ? rotationStore.get(imgFileList[curFileIdx]) : 0;
+        curPar.Init(winWidth, winHeight, savedRotation, isRealImage);
+    }
+
+    void persistCurrentRotation() {
+        if (!hasCurrentImagePath())
+            return;
+        rotationStore.set(imgFileList[curFileIdx], curPar.rotation);
+        rotationStore.save();
+    }
+
+    void applyDefaultWindowSize() {
+        MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
+        if (!GetMonitorInfoW(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST), &monitorInfo))
+            return;
+        const int workWidth = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
+        const int workHeight = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
+        const auto layout = InitialWindowLayout::calculate(
+            1, 1, workWidth, workHeight);
+
+        RECT outerRect{ 0, 0, layout.clientWidth, layout.clientHeight };
+        const auto style = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_STYLE));
+        const auto extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_EXSTYLE));
+        if (!AdjustWindowRectExForDpi(&outerRect, style, FALSE, extendedStyle, GetDpiForWindow(m_hWnd)))
+            AdjustWindowRectEx(&outerRect, style, FALSE, extendedStyle);
+
+        const int outerWidth = outerRect.right - outerRect.left;
+        const int outerHeight = outerRect.bottom - outerRect.top;
+        const int x = monitorInfo.rcWork.left + (workWidth - outerWidth) / 2;
+        const int y = monitorInfo.rcWork.top + (workHeight - outerHeight) / 2;
+        SetWindowPos(m_hWnd, nullptr, x, y, outerWidth, outerHeight,
+            SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+
     HRESULT InitWindow(HINSTANCE hInstance) {
         if (!SUCCEEDED(D3D11App::Initialize(hInstance)))
             return S_FALSE;
@@ -246,6 +307,7 @@ public:
         if (m_pD3DDevice == nullptr)
             return S_FALSE;
 
+        applyDefaultWindowSize();
         imgDB.setColorManagementWindow(m_hWnd);
 
         return S_OK;
@@ -263,7 +325,7 @@ public:
             curFileIdx = 0;
             imgDB.put(m_wndCaption, { ImageFormat::Still, imgDB.getHomeMat(), {}, {}, getUIString(32) });
             curPar.imageAssetPtr = imgDB.getSafePtr(imgFileList[curFileIdx], imgFileList[curFileIdx]);
-            curPar.Init(winWidth, winHeight);
+            initCurrentImageParameters();
             return;
         }
 
@@ -324,7 +386,7 @@ public:
         }
 
         curPar.imageAssetPtr = imgDB.getSafePtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + 1) % imgFileList.size()]);
-        curPar.Init(winWidth, winHeight);
+        initCurrentImageParameters();
     }
 
     inline void handleAnimationControl(int x, int y) {
@@ -398,17 +460,15 @@ public:
 
             mousePressPos = { x, y };
 
-            if (cursorPos == CursorPos::leftEdge)
+            if (cursorPos == CursorPos::leftEdge || cursorPos == CursorPos::toolbarPrevious)
                 operateQueue.push({ ActionENUM::preImg });
-            else if (cursorPos == CursorPos::rightEdge)
+            else if (cursorPos == CursorPos::rightEdge || cursorPos == CursorPos::toolbarNext)
                 operateQueue.push({ ActionENUM::nextImg });
-            else if (cursorPos == CursorPos::leftUp)
+            else if (cursorPos == CursorPos::toolbarRotateLeft)
                 operateQueue.push({ ActionENUM::rotateLeft });
-            else if (cursorPos == CursorPos::rightUp)
+            else if (cursorPos == CursorPos::toolbarRotateRight)
                 operateQueue.push({ ActionENUM::rotateRight });
-            else if (cursorPos == CursorPos::leftDown)
-                operateQueue.push({ ActionENUM::printImage });
-            else if (cursorPos == CursorPos::rightDown)
+            else if (cursorPos == CursorPos::toolbarSetting)
                 operateQueue.push({ ActionENUM::setting, 0 });
             else if (cursorPos == CursorPos::centerTop) {
                 handleAnimationControl(x, y);
@@ -485,59 +545,34 @@ public:
             cursorPos = CursorPos::centerArea;
         }
         else {
-            if (winWidth >= 500) {
-                if (0 <= x && x < 50) {
-                    if (0 <= y && y < (winHeight / 4)) {
-                        cursorPos = CursorPos::leftUp;
-                    }
-                    else if ((winHeight / 4) <= y && y < (winHeight * 3 / 4)) {
-                        cursorPos = CursorPos::leftEdge;
-                    }
-                    else if ((winHeight * 3 / 4) <= y && y < (winHeight)) {
-                        cursorPos = CursorPos::leftDown;
-                    }
-                }
-                else if (((winWidth - 50) < x && x <= winWidth)) {
-                    if (0 <= y && y < (winHeight / 4)) {
-                        cursorPos = CursorPos::rightUp;
-                    }
-                    else if ((winHeight / 4) <= y && y < (winHeight * 3 / 4)) {
-                        cursorPos = CursorPos::rightEdge;
-                    }
-                    else if ((winHeight * 3 / 4) <= y && y < (winHeight)) {
-                        cursorPos = CursorPos::rightDown;
-                    }
-                }
-                else {
-                    cursorPos = CursorPos::centerArea;
-                }
-            }
-            else {
-                if (0 <= x && x < (winWidth / 4)) {
-                    if (0 <= y && y < (winHeight / 4)) {
-                        cursorPos = CursorPos::leftUp;
-                    }
-                    else if ((winHeight / 4) <= y && y < (winHeight * 3 / 4)) {
-                        cursorPos = CursorPos::leftEdge;
-                    }
-                    else if ((winHeight * 3 / 4) <= y && y < (winHeight)) {
-                        cursorPos = CursorPos::leftDown;
-                    }
-                }
-                else if ((winWidth * 3 / 4) < x && x <= winWidth) {
-                    if (0 <= y && y < (winHeight / 4)) {
-                        cursorPos = CursorPos::rightUp;
-                    }
-                    else if ((winHeight / 4) <= y && y < (winHeight * 3 / 4)) {
-                        cursorPos = CursorPos::rightEdge;
-                    }
-                    else if ((winHeight * 3 / 4) <= y && y < (winHeight)) {
-                        cursorPos = CursorPos::rightDown;
-                    }
-                }
-                else {
-                    cursorPos = CursorPos::centerArea;
-                }
+            switch (OverlayLayout::hitTest(winWidth, winHeight, x, y)) {
+            case OverlayLayout::Hit::EdgePreviousImage:
+                cursorPos = CursorPos::leftEdge;
+                break;
+            case OverlayLayout::Hit::EdgeNextImage:
+                cursorPos = CursorPos::rightEdge;
+                break;
+            case OverlayLayout::Hit::ToolbarPreviousImage:
+                cursorPos = CursorPos::toolbarPrevious;
+                break;
+            case OverlayLayout::Hit::ToolbarNextImage:
+                cursorPos = CursorPos::toolbarNext;
+                break;
+            case OverlayLayout::Hit::RotateLeft:
+                cursorPos = CursorPos::toolbarRotateLeft;
+                break;
+            case OverlayLayout::Hit::RotateRight:
+                cursorPos = CursorPos::toolbarRotateRight;
+                break;
+            case OverlayLayout::Hit::Settings:
+                cursorPos = CursorPos::toolbarSetting;
+                break;
+            case OverlayLayout::Hit::Toolbar:
+                cursorPos = CursorPos::toolbar;
+                break;
+            default:
+                cursorPos = CursorPos::centerArea;
+                break;
             }
 
             if (y < 50 && abs(x - winWidth / 2) < 100) {
@@ -546,51 +581,31 @@ public:
         }
 
         if (cursorPosLast != cursorPos) {
-            switch (cursorPos)
-            {
-            case CursorPos::leftUp:
-                extraUIFlag = ShowExtraUI::rotateLeftButton;
-                operateQueue.push({ ActionENUM::refresh });
-                break;
-
-            case CursorPos::leftDown:
-                extraUIFlag = ShowExtraUI::printer;
-                operateQueue.push({ ActionENUM::refresh });
-                break;
-
+            switch (cursorPos) {
             case CursorPos::leftEdge:
                 extraUIFlag = ShowExtraUI::leftArrow;
-                operateQueue.push({ ActionENUM::refresh });
                 break;
-
             case CursorPos::centerTop:
-                if (curPar.imageAssetPtr->format == ImageFormat::Animated) {
-                    extraUIFlag = ShowExtraUI::animationBar;
-                    operateQueue.push({ ActionENUM::refresh });
-                }
+                extraUIFlag = curPar.imageAssetPtr->format == ImageFormat::Animated ?
+                    ShowExtraUI::animationBar : ShowExtraUI::none;
                 break;
-
             case CursorPos::centerArea:
                 extraUIFlag = ShowExtraUI::none;
-                operateQueue.push({ ActionENUM::refresh });
                 break;
-
             case CursorPos::rightEdge:
                 extraUIFlag = ShowExtraUI::rightArrow;
-                operateQueue.push({ ActionENUM::refresh });
                 break;
-
-            case CursorPos::rightDown:
-                extraUIFlag = ShowExtraUI::setting;
-                operateQueue.push({ ActionENUM::refresh });
-                break;
-
-            case CursorPos::rightUp:
-                extraUIFlag = ShowExtraUI::rotateRightButton;
-                operateQueue.push({ ActionENUM::refresh });
+            case CursorPos::toolbarRotateLeft:
+            case CursorPos::toolbarRotateRight:
+            case CursorPos::toolbarSetting:
+            case CursorPos::toolbarPrevious:
+            case CursorPos::toolbarNext:
+            case CursorPos::toolbar:
+                extraUIFlag = ShowExtraUI::bottomToolbar;
                 break;
             }
 
+            operateQueue.push({ ActionENUM::refresh });
             cursorPosLast = cursorPos;
         }
 
@@ -617,16 +632,38 @@ public:
 
         case CursorPos::leftEdge:
         case CursorPos::rightEdge:
+        case CursorPos::toolbarPrevious:
+        case CursorPos::toolbarNext:
             operateQueue.push({ zDelta < 0 ? ActionENUM::nextImg : ActionENUM::preImg });
             break;
 
-        case CursorPos::leftDown:
-        case CursorPos::rightDown:
+        case CursorPos::toolbarSetting:
+        case CursorPos::toolbar:
+        case CursorPos::centerTop:
             break;
 
-        case CursorPos::leftUp:
-        case CursorPos::rightUp:
+        case CursorPos::toolbarRotateLeft:
+        case CursorPos::toolbarRotateRight:
             operateQueue.push({ zDelta < 0 ? ActionENUM::rotateRight : ActionENUM::rotateLeft });
+            break;
+        }
+    }
+
+    void handleEscapeKey() {
+        const auto action = EscapeBehavior::resolve(
+            jarkUtils::IsFullScreen(m_hWnd), IsZoomed(m_hWnd),
+            GlobalVar::settingParameter.escapeClosesImage);
+        switch (action) {
+        case EscapeBehavior::Action::ExitFullScreen:
+            jarkUtils::ToggleFullScreen(m_hWnd);
+            break;
+        case EscapeBehavior::Action::RestoreWindow:
+            ShowWindow(m_hWnd, SW_RESTORE);
+            break;
+        case EscapeBehavior::Action::CloseImage:
+            operateQueue.push({ ActionENUM::requestExit });
+            break;
+        case EscapeBehavior::Action::Ignore:
             break;
         }
     }
@@ -820,7 +857,7 @@ public:
             case VK_SPACE: {
                 if (curPar.imageAssetPtr->format == ImageFormat::Still && !curPar.imageAssetPtr->frames.empty()) {
                     curPar.imageAssetPtr->format = ImageFormat::Animated;
-                    curPar.Init(winWidth, winHeight);
+                    initCurrentImageParameters();
                     operateQueue.push({ ActionENUM::refresh });
                 }
                 else if (curPar.imageAssetPtr->format == ImageFormat::Animated) {
@@ -854,7 +891,7 @@ public:
             }break;
 
             case VK_ESCAPE: { // ESC
-                operateQueue.push({ ActionENUM::requestExit });
+                handleEscapeKey();
             }break;
 
             case VK_DELETE: { //DELETE
@@ -1062,7 +1099,7 @@ public:
         }
         else {
             hasInitWinSize = true;
-            curPar.Init(winWidth, winHeight);
+            initCurrentImageParameters();
 
             fillCanvasBackground(mainCanvas);
         }
@@ -1751,34 +1788,29 @@ public:
 
         switch (extraUIFlag)
         {
-        case ShowExtraUI::rotateLeftButton: {
-            auto& img = extraUIRes.leftRotate;
-            jarkUtils::overlayImg(canvas, img, 0, (canvasHeight / 4 - img.rows) / 2);
-        } break;
-
         case ShowExtraUI::leftArrow: {
             auto& img = extraUIRes.leftArrow;
-            jarkUtils::overlayImg(canvas, img, 0, (canvasHeight - img.rows) / 2);
-        } break;
-
-        case ShowExtraUI::printer: {
-            auto& img = extraUIRes.printer;
-            jarkUtils::overlayImg(canvas, img, 0, (canvasHeight * 7 / 4 - img.rows) / 2);
-        } break;
-
-        case ShowExtraUI::setting: {
-            auto& img = extraUIRes.setting;
-            jarkUtils::overlayImg(canvas, img, canvasWidth - img.cols, (canvasHeight * 7 / 4 - img.rows) / 2);
+            const auto rect = OverlayLayout::previousImageIconRect(canvasWidth, canvasHeight);
+            jarkUtils::overlayImg(canvas, img, rect.x, rect.y);
         } break;
 
         case ShowExtraUI::rightArrow: {
             auto& img = extraUIRes.rightArrow;
-            jarkUtils::overlayImg(canvas, img, canvasWidth - img.cols, (canvasHeight - img.rows) / 2);
+            const auto rect = OverlayLayout::nextImageIconRect(canvasWidth, canvasHeight);
+            jarkUtils::overlayImg(canvas, img, rect.x, rect.y);
         } break;
 
-        case ShowExtraUI::rotateRightButton: {
-            auto& img = extraUIRes.rightRotate;
-            jarkUtils::overlayImg(canvas, img, canvasWidth - img.cols, (canvasHeight / 4 - img.rows) / 2);
+        case ShowExtraUI::bottomToolbar: {
+            const auto previous = OverlayLayout::toolbarPreviousRect(canvasWidth, canvasHeight);
+            const auto next = OverlayLayout::toolbarNextRect(canvasWidth, canvasHeight);
+            const auto rotateLeft = OverlayLayout::rotateLeftRect(canvasWidth, canvasHeight);
+            const auto rotateRight = OverlayLayout::rotateRightRect(canvasWidth, canvasHeight);
+            const auto settings = OverlayLayout::settingsRect(canvasWidth, canvasHeight);
+            jarkUtils::overlayImg(canvas, extraUIRes.leftArrow, previous.x, previous.y);
+            jarkUtils::overlayImg(canvas, extraUIRes.rightArrow, next.x, next.y);
+            jarkUtils::overlayImg(canvas, extraUIRes.leftRotate, rotateLeft.x, rotateLeft.y);
+            jarkUtils::overlayImg(canvas, extraUIRes.rightRotate, rotateRight.x, rotateRight.y);
+            jarkUtils::overlayImg(canvas, extraUIRes.setting, settings.x, settings.y);
         } break;
 
         case ShowExtraUI::animationBar: {
@@ -1821,7 +1853,7 @@ public:
                     curPar.imageAssetPtr = imgDB.getSafePtr(currentPath, nextPath);
                 }
 
-                curPar.Init(winWidth, winHeight);
+                initCurrentImageParameters();
                 operateQueue.push({ ActionENUM::refresh });
             }
         }
@@ -1947,7 +1979,7 @@ public:
             if (--curFileIdx < 0)
                 curFileIdx = (int)imgFileList.size() - 1;
             curPar.imageAssetPtr = imgDB.getSafePtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + imgFileList.size() - 1) % imgFileList.size()]);
-            curPar.Init(winWidth, winHeight);
+            initCurrentImageParameters();
 
             if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
                 mainCanvasSlideToPreAnimationVertical();      // 竖直滑动
@@ -1981,7 +2013,7 @@ public:
             if (++curFileIdx >= (int)imgFileList.size())
                 curFileIdx = 0;
             curPar.imageAssetPtr = imgDB.getSafePtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + 1) % imgFileList.size()]);
-            curPar.Init(winWidth, winHeight);
+            initCurrentImageParameters();
 
             if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
                 mainCanvasSlideToNextAnimationVertical();   // 竖直滑动
@@ -2014,7 +2046,7 @@ public:
 
             curFileIdx = 0;
             curPar.imageAssetPtr = imgDB.getSafePtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + imgFileList.size() - 1) % imgFileList.size()]);
-            curPar.Init(winWidth, winHeight);
+            initCurrentImageParameters();
 
             if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
                 mainCanvasSlideToPreAnimationVertical();      // 竖直滑动
@@ -2047,7 +2079,7 @@ public:
 
             curFileIdx = (int)imgFileList.size() - 1;
             curPar.imageAssetPtr = imgDB.getSafePtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + 1) % imgFileList.size()]);
-            curPar.Init(winWidth, winHeight);
+            initCurrentImageParameters();
 
             if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
                 mainCanvasSlideToNextAnimationVertical();   // 竖直滑动
@@ -2120,6 +2152,7 @@ public:
             curPar.rotation = (curPar.rotation + 1) & 0b11;
             curPar.slideTargetRotateLeft();
             curPar.updateZoomList(winWidth, winHeight);
+            persistCurrentRotation();
         } break;
 
         case ActionENUM::rotateRight: {
@@ -2129,6 +2162,7 @@ public:
             curPar.rotation = (curPar.rotation + 4 - 1) & 0b11;
             curPar.slideTargetRotateRight();
             curPar.updateZoomList(winWidth, winHeight);
+            persistCurrentRotation();
         } break;
 
         case ActionENUM::deleteImg: {
@@ -2166,6 +2200,9 @@ public:
                 break;
             }
 
+            rotationStore.erase(target);
+            rotationStore.save();
+
             imgFileList.erase(imgFileList.begin() + curFileIdx);
 
             if (imgFileList.empty()) {
@@ -2180,7 +2217,7 @@ public:
             curPar.imageAssetPtr = imgDB.getSafePtr(
                 imgFileList[curFileIdx],
                 imgFileList[(curFileIdx + 1) % imgFileList.size()]);
-            curPar.Init(winWidth, winHeight);
+            initCurrentImageParameters();
         } break;
 
         case ActionENUM::requestExit: {
@@ -2284,7 +2321,7 @@ public:
                     // 动态帧播放完，若有主图，则是当前实况图像
                     if (!curPar.imageAssetPtr->primaryFrame.empty()) {
                         curPar.imageAssetPtr->format = ImageFormat::Still;
-                        curPar.Init(winWidth, winHeight);
+                        initCurrentImageParameters();
                         operateQueue.push({ ActionENUM::refresh });
                     }
                 }
@@ -2344,6 +2381,7 @@ int WINAPI wWinMain(
     YeImageViewerApp app;
     if (SUCCEEDED(app.InitWindow(hInstance))) {
         app.initOpenFile(filePath);
+        app.ShowInitialWindow();
         app.Run();
     }
     else {

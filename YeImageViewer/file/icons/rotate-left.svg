@@ -1,0 +1,5 @@
+<!-- Icon geometry adapted from IconPark (Apache-2.0). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <rect x="1" y="1" width="46" height="46" rx="10" fill="#202124" fill-opacity="0.78"/>
+  <path d="M11.272 36.728A18 18 0 1 0 11.272 11.272C9.614 12.93 6 17 6 17M6 9V17H14" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

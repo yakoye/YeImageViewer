@@ -1,11 +1,17 @@
 #include "MotionPhotoUtils.h"
+#include "MonitorPlacement.h"
 #include "BackgroundRenderer.h"
+#include "EscapeBehavior.h"
 #include "ImageInterpolation.h"
+#include "InitialWindowLayout.h"
+#include "OverlayLayout.h"
+#include "RotationStore.h"
 #include "StbImageDecoder.h"
 #include "SvgRenderer.h"
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -232,6 +238,184 @@ void expectBackgroundRendering() {
             theme, darkGrid, lightGrid) == 0xFF402010u);
 }
 
+void expectOverlayLayout() {
+    constexpr int width = 800;
+    constexpr int height = 600;
+    constexpr auto toolbarPrevious = OverlayLayout::toolbarPreviousRect(width, height);
+    constexpr auto toolbarNext = OverlayLayout::toolbarNextRect(width, height);
+    constexpr auto leftRotate = OverlayLayout::rotateLeftRect(width, height);
+    constexpr auto rightRotate = OverlayLayout::rotateRightRect(width, height);
+    constexpr auto settings = OverlayLayout::settingsRect(width, height);
+    constexpr auto previous = OverlayLayout::previousImageIconRect(width, height);
+    constexpr auto next = OverlayLayout::nextImageIconRect(width, height);
+
+    passOrFail("bottom toolbar uses five equal compact icons",
+        OverlayLayout::ICON_SIZE == 30 &&
+        toolbarPrevious.width == 30 && toolbarNext.width == 30 &&
+        leftRotate.width == 30 && leftRotate.height == 30 &&
+        rightRotate.width == 30 && settings.width == 30);
+    passOrFail("bottom toolbar is a horizontal row near the lower-right edge",
+        toolbarPrevious.x == 618 && toolbarNext.x == 654 &&
+        leftRotate.x == 690 && rightRotate.x == 726 && settings.x == 762 &&
+        toolbarPrevious.y == 564 && toolbarNext.y == 564 &&
+        leftRotate.y == 564 && rightRotate.y == 564 && settings.y == 564 &&
+        settings.x + settings.width == width - 8 &&
+        settings.y + settings.height == height - 6);
+    passOrFail("edge navigation icons match the toolbar icon style and size",
+        previous.width == 30 && previous.height == 30 &&
+        next.width == 30 && next.height == 30 &&
+        previous.y == 285 && next.y == 285);
+    passOrFail("toolbar hit testing maps all five actions and keeps gaps visible",
+        OverlayLayout::hitTest(width, height, 625, 575) == OverlayLayout::Hit::ToolbarPreviousImage &&
+        OverlayLayout::hitTest(width, height, 660, 575) == OverlayLayout::Hit::ToolbarNextImage &&
+        OverlayLayout::hitTest(width, height, 700, 575) == OverlayLayout::Hit::RotateLeft &&
+        OverlayLayout::hitTest(width, height, 735, 575) == OverlayLayout::Hit::RotateRight &&
+        OverlayLayout::hitTest(width, height, 775, 575) == OverlayLayout::Hit::Settings &&
+        OverlayLayout::hitTest(width, height, 722, 575) == OverlayLayout::Hit::Toolbar);
+    passOrFail("lower-left printing hotspot is removed",
+        OverlayLayout::hitTest(width, height, 5, 590) == OverlayLayout::Hit::None);
+    passOrFail("wide previous and next edge hit areas are preserved",
+        OverlayLayout::hitTest(width, height, 40, 300) == OverlayLayout::Hit::EdgePreviousImage &&
+        OverlayLayout::hitTest(width, height, 760, 300) == OverlayLayout::Hit::EdgeNextImage);
+}
+
+void expectInitialWindowLayout() {
+    const auto small = InitialWindowLayout::calculate(640, 480, 1920, 1080);
+    passOrFail("small images open at 100 percent",
+        small.scale == 1.0 && small.renderedImageWidth == 640 && small.renderedImageHeight == 480 &&
+        small.clientWidth == 1296 && small.clientHeight == 972);
+
+    const auto tiny = InitialWindowLayout::calculate(100, 50, 1920, 1080);
+    passOrFail("tiny images stay at 100 percent inside the fixed window",
+        tiny.scale == 1.0 && tiny.renderedImageWidth == 100 && tiny.renderedImageHeight == 50 &&
+        tiny.clientWidth == 1296 && tiny.clientHeight == 972);
+
+    const auto large = InitialWindowLayout::calculate(3000, 2000, 1920, 1080);
+    passOrFail("the initial window is fixed at 90 percent height with a 4:3 ratio",
+        std::abs(large.scale - 1296.0 / 3000.0) < 0.000001 &&
+        large.renderedImageWidth == 1296 && large.renderedImageHeight == 864 &&
+        large.clientWidth == 1296 && large.clientHeight == 972);
+
+    const auto portrait = InitialWindowLayout::calculate(2000, 3000, 1920, 1080);
+    passOrFail("portrait images fit inside the same fixed landscape window",
+        std::abs(portrait.scale - 972.0 / 3000.0) < 0.000001 &&
+        portrait.renderedImageWidth == 648 && portrait.renderedImageHeight == 972 &&
+        portrait.clientWidth == 1296 && portrait.clientHeight == 972);
+
+    const auto square = InitialWindowLayout::calculate(2000, 2000, 1920, 1080);
+    passOrFail("square images fit inside the same fixed landscape window",
+        square.renderedImageWidth == 972 && square.renderedImageHeight == 972 &&
+        square.clientWidth == 1296 && square.clientHeight == 972);
+
+    const auto portraitMonitor = InitialWindowLayout::calculate(1000, 1000, 1080, 1920);
+    passOrFail("a portrait monitor caps width and preserves the 4:3 window ratio",
+        portraitMonitor.clientWidth == 972 && portraitMonitor.clientHeight == 729 &&
+        portraitMonitor.renderedImageWidth == 729 && portraitMonitor.renderedImageHeight == 729);
+}
+
+void expectMonitorPlacement() {
+    const std::vector<MonitorPlacement::Monitor> monitors{
+        { L"\\\\.\\DISPLAY1", { 0, 0, 1920, 1040 }, true },
+        { L"\\\\.\\DISPLAY2", { -1280, 0, 0, 1024 }, false },
+    };
+
+    const auto remembered = MonitorPlacement::select(monitors, true, L"\\\\.\\display2");
+    passOrFail("remembered monitor selection is device-name based and case-insensitive",
+        remembered.index == 1 && remembered.matchedRememberedMonitor);
+
+    const auto disabled = MonitorPlacement::select(monitors, false, L"\\\\.\\DISPLAY2");
+    const auto disconnected = MonitorPlacement::select(monitors, true, L"\\\\.\\DISPLAY9");
+    passOrFail("disabled or disconnected monitor memory falls back to the primary monitor",
+        disabled.index == 0 && !disabled.matchedRememberedMonitor &&
+        disconnected.index == 0 && !disconnected.matchedRememberedMonitor);
+
+    const MonitorPlacement::Rect secondaryWindow{ -1180, 100, -380, 700 };
+    const auto relative = MonitorPlacement::toRelative(secondaryWindow, monitors[1].workArea);
+    const auto restored = MonitorPlacement::restore(relative, monitors[1].workArea);
+    passOrFail("window coordinates round-trip on a monitor left of the primary display",
+        relative.left == 100 && relative.top == 100 && relative.right == 900 && relative.bottom == 700 &&
+        restored.left == secondaryWindow.left && restored.top == secondaryWindow.top &&
+        restored.right == secondaryWindow.right && restored.bottom == secondaryWindow.bottom);
+
+    const auto clamped = MonitorPlacement::restore({ 1800, 900, 3000, 1800 }, monitors[0].workArea);
+    passOrFail("restored windows are clamped inside the selected monitor work area",
+        clamped.left == 720 && clamped.top == 140 && clamped.right == 1920 && clamped.bottom == 1040);
+}
+
+void expectToolbarIcons(const std::vector<std::string>& paths) {
+    bool allValid = paths.size() == 5;
+    for (const auto& path : paths) {
+        const auto source = readFile(path);
+        const auto renderer = SvgRenderer::create(source);
+        if (!renderer) {
+            allValid = false;
+            continue;
+        }
+        const auto bitmap = renderer->renderToBitmap(OverlayLayout::ICON_SIZE, OverlayLayout::ICON_SIZE);
+        size_t visiblePixels = 0;
+        size_t lightPixels = 0;
+        for (size_t offset = 0; offset + 3 < bitmap.bgra.size(); offset += 4) {
+            visiblePixels += bitmap.bgra[offset + 3] > 0;
+            lightPixels += bitmap.bgra[offset + 3] > 128 &&
+                bitmap.bgra[offset] > 200 && bitmap.bgra[offset + 1] > 200 && bitmap.bgra[offset + 2] > 200;
+        }
+        allValid = allValid && bitmap.width == 30 && bitmap.height == 30 &&
+            visiblePixels > 400 && lightPixels > 10;
+    }
+    passOrFail("all five IconPark toolbar SVG resources render at the common size", allValid);
+}
+
+void expectRotationPersistence() {
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto databasePath = std::filesystem::temp_directory_path() /
+        (L"YeImageViewerRotationStore-" + std::to_wstring(unique) + L".db");
+    const std::wstring originalPath = L"C:\\Images\\Example.PNG";
+    const std::wstring samePathDifferentCase = L"c:\\images\\example.png";
+
+    RotationStore first(databasePath);
+    first.set(originalPath, 1);
+    const bool firstSave = first.save();
+
+    RotationStore afterRestart(databasePath);
+    const bool firstReload = afterRestart.load();
+    passOrFail("rotation survives a store restart and path matching is case-insensitive",
+        firstSave && firstReload && afterRestart.get(samePathDifferentCase) == 1);
+
+    afterRestart.set(samePathDifferentCase, 3);
+    const bool secondSave = afterRestart.save();
+    RotationStore afterSecondRestart(databasePath);
+    passOrFail("updated rotation survives a second restart",
+        secondSave && afterSecondRestart.load() && afterSecondRestart.get(originalPath) == 3);
+
+    afterSecondRestart.set(originalPath, 0);
+    const bool resetSave = afterSecondRestart.save();
+    RotationStore afterReset(databasePath);
+    passOrFail("returning to the original orientation removes the persisted override",
+        resetSave && afterReset.load() && afterReset.get(originalPath) == 0 && afterReset.size() == 0);
+
+    {
+        std::ofstream corrupt(databasePath, std::ios::binary | std::ios::trunc);
+        corrupt << "not a rotation database";
+    }
+    RotationStore corrupted(databasePath);
+    passOrFail("a malformed rotation database fails safely without returning stale data",
+        !corrupted.load() && corrupted.get(originalPath) == 0);
+
+    std::error_code ignored;
+    std::filesystem::remove(databasePath, ignored);
+}
+
+void expectEscapeBehavior() {
+    passOrFail("Escape exits fullscreen before considering close preference",
+        EscapeBehavior::resolve(true, true, true) == EscapeBehavior::Action::ExitFullScreen);
+    passOrFail("Escape restores a maximized window before considering close preference",
+        EscapeBehavior::resolve(false, true, true) == EscapeBehavior::Action::RestoreWindow);
+    passOrFail("Escape does not close a normal window by default",
+        EscapeBehavior::resolve(false, false, false) == EscapeBehavior::Action::Ignore);
+    passOrFail("Escape closes a normal window only when explicitly enabled",
+        EscapeBehavior::resolve(false, false, true) == EscapeBehavior::Action::CloseImage);
+}
+
 void expectDrawioTextFallback(std::string_view path) {
     const auto source = readFile(path);
     const auto processed = SvgRenderer::preprocess(source);
@@ -307,6 +491,11 @@ int main(int argc, char* argv[]) {
     expectHdrChannelOrder();
     expectBilinearEnlargement();
     expectBackgroundRendering();
+    expectOverlayLayout();
+    expectInitialWindowLayout();
+    expectMonitorPlacement();
+    expectEscapeBehavior();
+    expectRotationPersistence();
     if (argc >= 2) {
         expectRealHdrChannelOrder(argv[1]);
     }
@@ -321,6 +510,13 @@ int main(int argc, char* argv[]) {
     else {
         failedTests += 4;
         std::cerr << "FAIL SVG regression fixture paths were not provided\n";
+    }
+    if (argc >= 9) {
+        expectToolbarIcons({ argv[4], argv[5], argv[6], argv[7], argv[8] });
+    }
+    else {
+        ++failedTests;
+        std::cerr << "FAIL toolbar icon paths were not provided\n";
     }
 
     std::cout << passedTests << " passed, " << failedTests << " failed\n";

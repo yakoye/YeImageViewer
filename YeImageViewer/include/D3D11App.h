@@ -9,6 +9,7 @@ public:
     virtual ~D3D11App();
 
     virtual HRESULT Initialize(HINSTANCE hInstance);
+    void ShowInitialWindow();
     virtual void DrawScene() = 0;
 
     void Run();

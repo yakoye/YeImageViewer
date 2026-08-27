@@ -71,6 +71,8 @@ private:
                 { {50, 200, 450, 50}, 14, &GlobalVar::settingParameter.isNoteBeforeDelete },
                 { {50, 250, 450, 50}, 15, &GlobalVar::settingParameter.enableColorManagement },
                 { {50, 300, 450, 50}, 54, &GlobalVar::settingParameter.isOneToOnePreferred },
+                { {50, 350, 450, 50}, 55, &GlobalVar::settingParameter.escapeClosesImage },
+                { {50, 400, 450, 50}, 56, &GlobalVar::settingParameter.rememberLastMonitor },
             };
         }
         if (generalTabRadioList.empty()) {

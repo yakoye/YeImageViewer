@@ -13,6 +13,8 @@
 
 **YeImageViewer** is a minimal, fast native Windows image viewer. It supports common still images, animations, RAW files, iOS Live Photos, and Android Motion Photos, together with EXIF display, printing, simple editing, and file associations.
 
+Current version: **v1.36.5** · [Changelog](CHANGELOG.md)
+
 This project is based on [JarkViewer](https://github.com/jark006/JarkViewer) and is licensed under GNU GPL v3. Thanks to upstream author JARK006 and all contributors.
 
 ![Preview](preview.png)
@@ -21,14 +23,18 @@ This project is based on [JarkViewer](https://github.com/jark006/JarkViewer) and
 
 1. Switch images: click or scroll at the left/right edge, or press `Left` / `Right`
 2. Zoom: scroll in the window center, or press `Up` / `Down`
-3. Rotate: click or scroll at the upper corners, or press `Q` / `E`
+3. Rotate: use the bottom-right toolbar, or press `Q` / `E`
 4. Pan: drag with the mouse, or press `W` / `A` / `S` / `D`
 5. Image information: click the mouse wheel, or press `Tab` / `I`
 6. Fullscreen: double-click, or press `F` / `F11`
 7. Copy image: `Ctrl + C`
-8. Print image: click the lower-left corner, or press `Ctrl + P`
-9. Browse frames: use the top controls, or press `J` / `K` / `L`
-10. Split an animation into frames: `Ctrl + S`
+8. Print image: use the context menu, or press `Ctrl + P`
+9. Settings: use the bottom-right toolbar, or press `F1`
+10. Browse frames: use the top controls, or press `J` / `K` / `L`
+11. Split an animation into frames: `Ctrl + S`
+
+The main window defaults to a 4:3 ratio at 90% of the current monitor work-area height, capped at 90% of its width when necessary. Small images remain at 100%; larger images only scale down to fit. Rotation is remembered per image path.
+“Remember Last Monitor” is enabled by default; if that monitor is disconnected, the window falls back to the primary display.
 
 ## Format support
 

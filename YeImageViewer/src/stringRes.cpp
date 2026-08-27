@@ -62,6 +62,8 @@ std::string_view UIStringTable[STRING_MAX_NUM][2] = {
     {"\n\nAI生图提示词 ComfyUI工作流.json\n", "\n\nAI-generated image prompt ComfyUI_workflow.json\n"},
     {"\n方向: ", "\nExif.Image.Orientation: "},
     {"优先1:1显示", "Prefer 1:1 Display"},
+    {"Esc关闭图片", "Close Image with Esc"},
+    {"记住最后使用的显示器", "Remember Last Monitor"},
 };
 
 
