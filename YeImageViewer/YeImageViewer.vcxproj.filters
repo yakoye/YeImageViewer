@@ -75,6 +75,9 @@
     <ClInclude Include="include\TextDrawer.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\SystemFont.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\jarkUtils.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -177,10 +180,5 @@
     <Image Include="file\printerRes.png">
       <Filter>resources</Filter>
     </Image>
-  </ItemGroup>
-  <ItemGroup>
-    <Font Include="file\MSYHMONO.ttf">
-      <Filter>resources</Filter>
-    </Font>
   </ItemGroup>
 </Project>

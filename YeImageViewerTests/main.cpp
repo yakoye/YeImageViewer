@@ -22,6 +22,7 @@
 #include "ZoomEditPolicy.h"
 #include "StbImageDecoder.h"
 #include "SvgRenderer.h"
+#include "SystemFont.h"
 
 #include <algorithm>
 #include <cmath>
@@ -833,6 +834,11 @@ void expectTextRendering() {
         TextRenderingPolicy::enhanceCoverage(64) > 64 &&
         TextRenderingPolicy::enhanceCoverage(128) > 128 &&
         TextRenderingPolicy::enhanceCoverage(255) == 255);
+    const auto systemFont = SystemFont::findPreferredPath();
+    passOrFail("Windows system font replaces the embedded fifteen megabyte font",
+        SystemFont::PREFERRED_FILE_NAMES.front() == L"msyh.ttc" &&
+        systemFont.has_value() &&
+        std::filesystem::is_regular_file(*systemFont));
 }
 
 void expectImageInfoPresentation() {

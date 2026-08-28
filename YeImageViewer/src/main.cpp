@@ -37,7 +37,7 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.25";
+std::wstring_view appVersion = L"v1.36.26";
 constinit int appVersionCode = 13625; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";

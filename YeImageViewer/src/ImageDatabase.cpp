@@ -1,6 +1,7 @@
 #include "ImageDatabase.h"
 #include "MotionPhotoUtils.h"
 #include "StbImageDecoder.h"
+#include "SystemFont.h"
 
 #ifndef QOI_IMPLEMENTATION
 #define QOI_IMPLEMENTATION
@@ -1844,19 +1845,20 @@ cv::Mat ImageDatabase::loadSTB(wstring_view path, std::span<const uint8_t> buf) 
 
 cv::Mat ImageDatabase::loadSVG(wstring_view path, std::span<const uint8_t> buf, std::shared_ptr<SvgRenderer>* rendererOut) {
     const int maxEdge = 4000;
-    static bool isInitFont = false;
+    static std::once_flag systemFontOnce;
+    std::call_once(systemFontOnce, [] {
+        const auto fontPath = SystemFont::findPreferredPath();
+        if (!fontPath) {
+            JARK_LOG("SVG renderer could not find a Windows system UI font");
+            return;
+        }
 
-    if (!isInitFont) {
-        isInitFont = true;
-        auto rc = jarkUtils::GetResource(IDR_MSYHMONO_TTF, L"TTF");
-        JARK_LOG("loadSVG initFont: size:{} ptr:{:x}", rc.size, (size_t)rc.ptr);
-        if (!lunasvg_add_font_face_from_data("", false, false, rc.ptr, rc.size, nullptr, nullptr)) {
-            JARK_LOG("loadSVG initFont Fail !!!\nlunasvg_add_font_face_from_data");
-        }
-        else {
-            JARK_LOG("loadSVG initFont Done!");
-        }
-    }
+        const auto utf8Path = jarkUtils::wstringToUtf8(fontPath->wstring());
+        if (!lunasvg_add_font_face_from_file("", false, false, utf8Path.c_str()))
+            JARK_LOG("SVG renderer failed to load system font: {}", utf8Path);
+        else
+            JARK_LOG("SVG renderer loaded system font: {}", utf8Path);
+    });
 
     auto renderer = SvgRenderer::create(buf);
     if (!renderer) {

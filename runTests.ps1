@@ -73,12 +73,19 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.25.0"
+$expectedFileVersion = "1.36.26.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
 }
 Write-Host "PASS viewer file version is $expectedFileVersion."
+
+$maximumViewerBytes = 92MB
+$viewerBytes = (Get-Item -LiteralPath $viewer).Length
+if ($viewerBytes -gt $maximumViewerBytes) {
+    throw "Viewer is $([math]::Round($viewerBytes / 1MB, 2)) MiB; the embedded-font size regression limit is 92 MiB."
+}
+Write-Host "PASS viewer stays below the 92 MiB embedded-font regression limit."
 
 $embeddedIcon = [Drawing.Icon]::ExtractAssociatedIcon($viewer)
 if ($null -eq $embeddedIcon) {

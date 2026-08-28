@@ -9,7 +9,6 @@
 #define IDR_ACCELERATOR1                134
 #define IDB_PNG_TIPS                    136
 #define IDB_PNG_HOME                    137
-#define IDR_MSYHMONO_TTF                138
 #define IDB_PNG_MAIN_RES                140
 #define IDB_PNG_PRINTER_RES             141
 #define IDR_SVG_PREVIOUS_ICON           142

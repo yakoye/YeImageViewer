@@ -13,7 +13,7 @@
 
 **YeImageViewer** is a minimal, fast native Windows image viewer. It supports common still images, animations, RAW files, iOS Live Photos, and Android Motion Photos, together with EXIF display, printing, simple editing, and file associations.
 
-Current version: **v1.36.25** · [Changelog](CHANGELOG.md)
+Current version: **v1.36.26** · [Changelog](CHANGELOG.md)
 
 This project is based on [JarkViewer](https://github.com/jark006/JarkViewer) and is licensed under GNU GPL v3. Thanks to upstream author JARK006 and all contributors.
 
@@ -51,9 +51,10 @@ The build requires Windows x64, Visual Studio 2026 Build Tools, MSVC v145, and t
 ```powershell
 .\buildRelease.ps1
 .\installLocal.ps1
+.\packageRelease.ps1 -SkipBuild
 ```
 
-Build outputs are written to `x64/Release`. The install script installs to `%LOCALAPPDATA%\Programs\YeImageViewer`, registers the per-user thumbnail provider, and creates a Start menu shortcut. It does not change default image-file applications automatically.
+Build outputs are written to `x64/Release`. The install script installs to `%LOCALAPPDATA%\Programs\YeImageViewer`, registers the per-user thumbnail provider, and creates a Start menu shortcut. It does not change default image-file applications automatically. The packaging script creates a full LZMA2 archive with every supported format and fails if the download exceeds 25 MiB.
 
 This repository started as a shallow clone of JarkViewer. To prepare the upstream source again, keep the shallow-clone recommendation:
 

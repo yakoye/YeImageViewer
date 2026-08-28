@@ -1,5 +1,6 @@
 #pragma once
 #include "TextDrawer.h"
+#include "SystemFont.h"
 
 // https://github.com/nothings/stb
 // 整个工程只能一个源文件定义 STB_TRUETYPE_IMPLEMENTATION， 其他地方只需include
@@ -30,9 +31,10 @@ void TextDrawer::putText(cv::Mat& img, const int x, const int y, const char* str
         return;
     }
 
-    if (!hasInit) {
-        Init(IDR_TTF_DEFAULT, L"TTF");
-        hasInit = true;
+    if (!hasInit && !Init()) {
+        drawNativeText(img, { x, y, img.cols - x, img.rows - y }, str, color,
+            DT_LEFT | DT_TOP | DT_NOPREFIX);
+        return;
     }
     if (scale == 0)
         scale = stbtt_ScaleForPixelHeight(&info, (float)fontSize);
@@ -146,9 +148,12 @@ void TextDrawer::putAlignLeft(cv::Mat& img, cv::Rect rect, const char* str, intU
         return;
     }
 
-    if (!hasInit) {
-        Init(IDR_TTF_DEFAULT, L"TTF");
-        hasInit = true;
+    if (!hasInit && !Init()) {
+        const bool multiline = strchr(str, '\n') != nullptr;
+        drawNativeText(img, rect, str, color, multiline ?
+            (DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX) :
+            (DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX));
+        return;
     }
     if (scale == 0)
         scale = stbtt_ScaleForPixelHeight(&info, (float)fontSize);
@@ -272,16 +277,17 @@ void TextDrawer::drawNativeText(cv::Mat& img, cv::Rect rect, const char* str,
     DeleteDC(memoryDc);
 }
 
-void TextDrawer::Init(unsigned int idi, const wchar_t* type) {
-    rc = jarkUtils::GetResource(idi, type);
+bool TextDrawer::Init() {
+    if (!SystemFont::readPreferredFont(fontFileBuffer)) {
+        JARK_LOG("Failed to load a Windows system UI font");
+        return false;
+    }
 
-    if (!stbtt_InitFont(&info, rc.ptr, 0)) {
-        JARK_LOG("stbtt_InitFont failed");
-        if (idi != IDR_TTF_DEFAULT) {
-            JARK_LOG("Reset to IDR_TTF_DEFAULT");
-            Init(IDR_TTF_DEFAULT, L"TTF");
-        }
-        return;
+    const int offset = stbtt_GetFontOffsetForIndex(fontFileBuffer.data(), 0);
+    if (offset < 0 || !stbtt_InitFont(&info, fontFileBuffer.data(), offset)) {
+        JARK_LOG("stbtt_InitFont failed for the Windows system UI font");
+        fontFileBuffer.clear();
+        return false;
     }
 
     auto newBufferSize = 2ULL * fontSize * fontSize;
@@ -289,6 +295,8 @@ void TextDrawer::Init(unsigned int idi, const wchar_t* type) {
     memset(wordBuff.data(), 0, newBufferSize);
     asciiCache.clear();
     asciiCache.resize(256);
+    hasInit = true;
+    return true;
 }
 
 int TextDrawer::putWord(cv::Mat& img, int x, int y, const int codePoint, intUnion color,

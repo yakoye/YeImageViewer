@@ -9,7 +9,6 @@
 
 class TextDrawer {
 public:
-    const uint32_t IDR_TTF_DEFAULT = IDR_MSYHMONO_TTF;
     std::vector<std::vector<uint8_t>> asciiCache;
 
     TextDrawer() {}
@@ -46,9 +45,7 @@ private:
     vector<uint8_t> wordBuff;
     vector<uint8_t> fontFileBuffer;
 
-    rcFileInfo rc;
-
-    void Init(unsigned int idi, const wchar_t* type);
+    bool Init();
     void drawNativeText(cv::Mat& img, cv::Rect rect, const char* str,
         intUnion color, UINT format);
     int putWord(cv::Mat& img, int x, int y, const int codePoint, intUnion color,

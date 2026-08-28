@@ -194,6 +194,7 @@
     <ClInclude Include="include\SVGPreprocessor.h" />
     <ClInclude Include="include\SvgRenderer.h" />
     <ClInclude Include="include\StbImageDecoder.h" />
+    <ClInclude Include="include\SystemFont.h" />
     <ClInclude Include="include\TextDrawer.h" />
     <ClInclude Include="include\TextRenderingPolicy.h" />
     <ClInclude Include="include\WindowTitlePresentation.h" />
@@ -232,9 +233,6 @@
     <Image Include="file\tips.png" />
     <Image Include="YeImageViewer.ico" />
     <Image Include="small.ico" />
-  </ItemGroup>
-  <ItemGroup>
-    <Font Include="file\MSYHMONO.ttf" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
