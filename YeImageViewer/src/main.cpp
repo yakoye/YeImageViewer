@@ -12,6 +12,7 @@
 #include "PresentationLayout.h"
 #include "BackgroundPolicy.h"
 #include "ImageInfoPresentation.h"
+#include "WindowTitlePresentation.h"
 #include "WheelInput.h"
 #include "RenamePolicy.h"
 
@@ -33,8 +34,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.18";
-constinit int appVersionCode = 13618; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.19";
+constinit int appVersionCode = 13619; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -2491,47 +2492,6 @@ public:
             target.y + (target.height - icon.rows) / 2);
     }
 
-    void drawViewerTopBar(cv::Mat& canvas) {
-        const int barHeight = std::min(58, canvas.rows / 4);
-        for (int y = 0; y < barHeight; ++y) {
-            const uint32_t alpha = static_cast<uint32_t>(210 * (barHeight - y) / barHeight);
-            blendInfoPanel(canvas, { 0, y, canvas.cols, 1 }, alpha << 24);
-        }
-
-        textDrawer.setSize(14);
-        const std::string position = std::format("{} / {}", curFileIdx + 1, imgFileList.size());
-        std::string fileName = jarkUtils::wstringToUtf8(appName);
-        if (hasCurrentImagePath())
-            fileName = jarkUtils::wstringToUtf8(std::filesystem::path(
-                imgFileList[curFileIdx]).filename().wstring());
-        textDrawer.putAlignLeft(canvas, { 16, 8, 64, 30 }, position.c_str(), 0xFFE8EAF0u);
-        textDrawer.putAlignLeft(canvas, { 78, 8, std::max(40, canvas.cols - 390), 30 },
-            fileName.c_str(), 0xFFB8BECCu);
-
-        const auto& model = currentImageInfoModel();
-        std::string dimensions = std::format("{} × {}", curPar.width, curPar.height);
-        std::string fileSize;
-        for (const auto& row : model.basic) {
-            if (row.label == "分辨率" || row.label == "Dimensions")
-                dimensions = row.value;
-            else if (row.label == "文件大小" || row.label == "Size")
-                fileSize = row.value;
-        }
-        const int closeReserve = presentationMode ? 66 : 12;
-        const int right = canvas.cols - closeReserve;
-        const int sizeWidth = fileSize.empty() ? 0 : 104;
-        if (sizeWidth > 0) {
-            const OverlayLayout::Rect badge{ right - sizeWidth, 10, sizeWidth - 8, 26 };
-            auto surface = roundedSurface(badge.width, badge.height, 6, 0x0FFFFFFFu);
-            jarkUtils::overlayImg(canvas, surface, badge.x, badge.y);
-            textDrawer.putAlignCenter(canvas, toCvRect(badge), fileSize.c_str(), 0xFFB8BECCu);
-        }
-        const OverlayLayout::Rect dimensionBadge{ right - sizeWidth - 116, 10, 108, 26 };
-        auto surface = roundedSurface(dimensionBadge.width, dimensionBadge.height, 6, 0x0FFFFFFFu);
-        jarkUtils::overlayImg(canvas, surface, dimensionBadge.x, dimensionBadge.y);
-        textDrawer.putAlignCenter(canvas, toCvRect(dimensionBadge), dimensions.c_str(), 0xFFB8BECCu);
-    }
-
     const char* toolbarTooltip() const {
         const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
         switch (cursorPos) {
@@ -2573,18 +2533,10 @@ public:
         }
     }
 
-    void drawSideButton(cv::Mat& canvas, const OverlayLayout::Rect& rect,
-        const cv::Mat& icon, bool hovered) {
-        auto surface = roundedSurface(rect.width, rect.height, 11,
-            hovered ? 0xD10D0F14u : 0xB30D0F14u, 0x17FFFFFFu);
-        jarkUtils::overlayImg(canvas, surface, rect.x, rect.y);
-        drawOverlayIcon(canvas, icon, rect);
-    }
-
     void drawViewerToolbar(cv::Mat& canvas) {
         const auto toolbar = OverlayLayout::toolbarRect(canvas.cols, canvas.rows);
         auto pill = roundedSurface(toolbar.width, toolbar.height,
-            std::max(8, toolbar.height / 3), 0xD10D0F14u, 0x17FFFFFFu);
+            std::max(8, toolbar.height / 3), 0xD10D0F14u, OverlayLayout::TOOLBAR_BORDER);
         jarkUtils::overlayImg(canvas, pill, toolbar.x, toolbar.y);
 
         const int scale = OverlayLayout::toolbarScale(canvas.cols);
@@ -2682,18 +2634,8 @@ public:
         if (canvasWidth < 100 || canvasHeight < 100)
             return;
 
-        // The reference header is persistent; only the navigation controls use
-        // the deliberately small hover-reveal regions requested for the viewer.
-        drawViewerTopBar(canvas);
-
         switch (extraUIFlag) {
         case ShowExtraUI::bottomToolbar: {
-            const auto previous = OverlayLayout::previousImageIconRect(canvasWidth, canvasHeight);
-            const auto next = OverlayLayout::nextImageIconRect(canvasWidth, canvasHeight);
-            drawSideButton(canvas, previous, extraUIRes.leftArrow,
-                cursorPos == CursorPos::leftEdge);
-            drawSideButton(canvas, next, extraUIRes.rightArrow,
-                cursorPos == CursorPos::rightEdge);
             drawViewerToolbar(canvas);
         } break;
         case ShowExtraUI::leftArrow:
@@ -3246,25 +3188,30 @@ public:
         drawExifInfo(mainCanvas);
         drawExtraUI(mainCanvas);
 
-        if (curPar.imageAssetPtr->format == ImageFormat::Animated && curPar.isAnimationPause) {
-            wstring str = std::format(L"{} [{}/{}] {}% {}  ",
-                getUIStringW(9),
-                curPar.curFrameIdx + 1, curPar.curFrameIdxMax + 1,
-                curPar.zoomCur * 100ULL / curPar.ZOOM_BASE,
-                imgFileList[curFileIdx]);
-            if (curPar.rotation)
-                str += (curPar.rotation == 1 ? getUIStringW(10) : (curPar.rotation == 3 ? getUIStringW(11) : getUIStringW(12)));
-            SetWindowTextW(m_hWnd, str.c_str());
+        const bool pausedAnimation = curPar.imageAssetPtr->format == ImageFormat::Animated &&
+            curPar.isAnimationPause;
+        std::wstring fileSize;
+        for (const auto& row : currentImageInfoModel().basic) {
+            if (row.label == "文件大小" || row.label == "Size") {
+                fileSize = jarkUtils::utf8ToWstring(row.value);
+                break;
+            }
         }
-        else {
-            wstring str = std::format(L" [{}/{}] {}% {}  ",
-                curFileIdx + 1, imgFileList.size(),
-                curPar.zoomCur * 100ULL / curPar.ZOOM_BASE,
-                imgFileList[curFileIdx]);
-            if (curPar.rotation)
-                str += (curPar.rotation == 1 ? getUIStringW(10) : (curPar.rotation == 3 ? getUIStringW(11) : getUIStringW(12)));
-            SetWindowTextW(m_hWnd, str.c_str());
-        }
+        WindowTitlePresentation::Model titleModel{
+            .state = pausedAnimation ? std::wstring(getUIStringW(9)) : std::wstring{},
+            .current = pausedAnimation ? curPar.curFrameIdx + 1 : curFileIdx + 1,
+            .total = pausedAnimation ? curPar.curFrameIdxMax + 1 : static_cast<int>(imgFileList.size()),
+            .zoomPercent = static_cast<int>(curPar.zoomCur * 100ULL / curPar.ZOOM_BASE),
+            .pixelWidth = curPar.width,
+            .pixelHeight = curPar.height,
+            .fileSize = std::move(fileSize),
+            .fileName = hasCurrentImagePath() ?
+                std::filesystem::path(imgFileList[curFileIdx]).filename().wstring() : m_wndCaption,
+            .rotation = curPar.rotation ? std::wstring(curPar.rotation == 1 ? getUIStringW(10) :
+                (curPar.rotation == 3 ? getUIStringW(11) : getUIStringW(12))) : std::wstring{},
+        };
+        const auto title = WindowTitlePresentation::build(titleModel);
+        SetWindowTextW(m_hWnd, title.c_str());
 
         updateMainCanvas();
 

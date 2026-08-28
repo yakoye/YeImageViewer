@@ -66,7 +66,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.18.0"
+$expectedFileVersion = "1.36.19.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -337,6 +337,9 @@ public static class YeImageViewerTestNativeV1365
     public static extern uint GetDpiForWindow(IntPtr window);
 
     [DllImport("user32.dll")]
+    public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
+
+    [DllImport("user32.dll")]
     public static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
 
     [DllImport("user32.dll")]
@@ -348,6 +351,10 @@ public static class YeImageViewerTestNativeV1365
 }
 "@
 }
+
+# Match the viewer's per-monitor-v2 coordinate space before reading client
+# rectangles or synthesizing mouse messages on scaled displays.
+[void][YeImageViewerTestNativeV1365]::SetThreadDpiAwarenessContext([IntPtr](-4))
 
 Write-Host "Checking fresh-install window defaults..."
 $freshDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Fresh-" + [Guid]::NewGuid().ToString("N"))
@@ -409,8 +416,10 @@ try {
     }
     Write-Host "PASS clicking the image keeps presentation mode available for dragging."
 
-    $freshBackgroundX = 120
-    $freshBackgroundY = 120
+    # Use the far-left gutter; the portrait fixture may overlap the former
+    # fixed 120,120 point on smaller/high-DPI work areas.
+    $freshBackgroundX = 4
+    $freshBackgroundY = [int](($freshClientRect.Bottom - $freshClientRect.Top) / 2)
     $freshBackgroundPosition = [IntPtr](($freshBackgroundY -shl 16) -bor ($freshBackgroundX -band 0xFFFF))
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0200, [UIntPtr]::Zero, $freshBackgroundPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0201, [UIntPtr]1, $freshBackgroundPosition)
@@ -439,6 +448,17 @@ try {
         throw "Fresh-install regression failed: framed window did not restore active mouse and keyboard interaction."
     }
     Write-Host "PASS background click restores an active, enabled framed window."
+
+    $freshFramedTitle = New-Object Text.StringBuilder 2048
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $freshWindow, $freshFramedTitle, $freshFramedTitle.Capacity)
+    $freshFramedTitleText = $freshFramedTitle.ToString()
+    if ($freshFramedTitleText -notmatch '\[\d+/\d+\]\s*\|\s*\d+%\s*\|\s*\d+\s*×\s*\d+\s*px\s*\|\s*[^|]+\s*\|' -or
+        $freshFramedTitleText -notmatch '\|\s*[^|\\/:]+\.[A-Za-z0-9]+(?:\s*\|.*)?$' -or
+        $freshFramedTitleText.Contains([IO.Path]::GetDirectoryName($sharpSvgFixture))) {
+        throw "Title regression failed: framed title did not cleanly separate zoom, dimensions, size, and filename. Actual: $freshFramedTitleText"
+    }
+    Write-Host "PASS framed title cleanly separates zoom, dimensions, size, and filename."
 
     # WM_MOUSEWHEEL packs modifier flags in the low word and the signed wheel
     # delta in the high word. Keep the cursor in the image area so an
@@ -546,10 +566,16 @@ try {
     $settingLayoutDeadline = [DateTime]::UtcNow.AddSeconds(2)
     do {
         [void][YeImageViewerTestNativeV1365]::GetClientRect($settingWindow, [ref]$settingRect)
-        $expectedSettingWidth = 620
-        $expectedSettingHeight = 620
-        $settingLayoutReady = ($settingRect.Right - $settingRect.Left) -eq $expectedSettingWidth -and
-            ($settingRect.Bottom - $settingRect.Top) -eq $expectedSettingHeight -and
+        $settingDpi = [YeImageViewerTestNativeV1365]::GetDpiForWindow($settingWindow)
+        # GetClientRect can be DPI-virtualized to the PowerShell caller even
+        # though the viewer itself owns the requested 620x620 physical canvas.
+        $expectedSettingWidth = [int][Math]::Round(620 * 96.0 / $settingDpi)
+        $expectedSettingHeight = [int][Math]::Round(620 * 96.0 / $settingDpi)
+        $actualSettingWidth = $settingRect.Right - $settingRect.Left
+        $actualSettingHeight = $settingRect.Bottom - $settingRect.Top
+        $settingSizeMatches = ($actualSettingWidth -eq 620 -and $actualSettingHeight -eq 620) -or
+            ($actualSettingWidth -eq $expectedSettingWidth -and $actualSettingHeight -eq $expectedSettingHeight)
+        $settingLayoutReady = $settingSizeMatches -and
             [YeImageViewerTestNativeV1365]::IsWindowEnabled($settingWindow)
         if (-not $settingLayoutReady) {
             Start-Sleep -Milliseconds 100
@@ -557,7 +583,7 @@ try {
     } while (-not $settingLayoutReady -and [DateTime]::UtcNow -lt $settingLayoutDeadline)
     if (-not $settingLayoutReady) {
         $actualSettingSize = "$(($settingRect.Right - $settingRect.Left))x$(($settingRect.Bottom - $settingRect.Top))"
-        throw "Settings-layout regression failed: expected ${expectedSettingWidth}x${expectedSettingHeight}, got $actualSettingSize."
+        throw "Settings-layout regression failed: expected 620x620 physical (${expectedSettingWidth}x${expectedSettingHeight} virtualized), got $actualSettingSize."
     }
     $initialSettingWidth = $settingRect.Right - $settingRect.Left
     $initialSettingHeight = $settingRect.Bottom - $settingRect.Top
@@ -965,13 +991,13 @@ try {
     }
     Write-Host "PASS normal image changes keep the current framed window size."
 
-    $targetClientWidth = [int][Math]::Round($clientWidth * $windowDpi / 96.0)
-    $targetClientHeight = [int][Math]::Round($clientHeight * $windowDpi / 96.0)
-    $toolbarWidth = [Math]::Min(595, [Math]::Max([int][Math]::Round(595 * 0.4), $clientWidth - 16))
+    $targetClientWidth = $clientWidth
+    $targetClientHeight = $clientHeight
+    $toolbarWidth = [Math]::Min(595, [Math]::Max([int][Math]::Round(595 * 0.4), $targetClientWidth - 16))
     $toolbarHeight = [int][Math]::Round(50 * $toolbarWidth / 595.0)
     $toolbarBottom = [int][Math]::Round(20 * $toolbarWidth / 595.0)
-    $toolbarX = [int]($clientWidth / 2)
-    $toolbarY = $clientHeight - $toolbarBottom - [int]($toolbarHeight / 2)
+    $toolbarX = [int]($targetClientWidth / 2)
+    $toolbarY = $targetClientHeight - $toolbarBottom - [int]($toolbarHeight / 2)
     $mousePosition = [IntPtr](($toolbarY -shl 16) -bor ($toolbarX -band 0xFFFF))
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0200, [UIntPtr]::Zero, $mousePosition)
     Start-Sleep -Milliseconds 250
@@ -982,30 +1008,38 @@ try {
     Write-Host "PASS centered reference toolbar hover remains responsive."
 
     $toolbarScale = [Math]::Min(1000, [Math]::Max(400,
-        [int][Math]::Floor(($clientWidth - 16) * 1000.0 / 595.0)))
+        [int][Math]::Floor(($targetClientWidth - 16) * 1000.0 / 595.0)))
     $scaledToolbarWidth = [int][Math]::Floor((595 * $toolbarScale + 500) / 1000.0)
     $scaledButtonSize = [int][Math]::Floor((34 * $toolbarScale + 500) / 1000.0)
     $scaledPadding = [int][Math]::Floor((8 * $toolbarScale + 500) / 1000.0)
     $scaledNextOffset = [int][Math]::Floor((35 * $toolbarScale + 500) / 1000.0)
-    $toolbarLeft = [int][Math]::Floor(($clientWidth - $scaledToolbarWidth) / 2.0)
+    $toolbarLeft = [int][Math]::Floor(($targetClientWidth - $scaledToolbarWidth) / 2.0)
     $nextButtonX = $toolbarLeft + $scaledPadding + $scaledNextOffset +
         [int][Math]::Floor($scaledButtonSize / 2.0)
     $nextButtonPosition = [IntPtr](($toolbarY -shl 16) -bor ($nextButtonX -band 0xFFFF))
     $titleBeforeToolbarClick = New-Object Text.StringBuilder 1024
     [void][YeImageViewerTestNativeV1365]::GetWindowText(
         $window, $titleBeforeToolbarClick, $titleBeforeToolbarClick.Capacity)
-    [void][YeImageViewerTestNativeV1365]::SendMessage(
+    # Queue the synthetic move/down/up as one ordered input sequence. A
+    # synchronous fake move can otherwise arm TrackMouseEvent and let a real
+    # WM_MOUSELEAVE reset the hover target before the synthetic click arrives.
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
         $window, 0x0200, [UIntPtr]::Zero, $nextButtonPosition)
-    [void][YeImageViewerTestNativeV1365]::SendMessage(
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
         $window, 0x0201, [UIntPtr]1, $nextButtonPosition)
-    [void][YeImageViewerTestNativeV1365]::SendMessage(
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
         $window, 0x0202, [UIntPtr]::Zero, $nextButtonPosition)
-    Start-Sleep -Milliseconds 500
     $titleAfterToolbarClick = New-Object Text.StringBuilder 1024
-    [void][YeImageViewerTestNativeV1365]::GetWindowText(
-        $window, $titleAfterToolbarClick, $titleAfterToolbarClick.Capacity)
+    $toolbarSwitchDeadline = [DateTime]::UtcNow.AddSeconds(4)
+    do {
+        Start-Sleep -Milliseconds 100
+        [void]$titleAfterToolbarClick.Clear()
+        [void][YeImageViewerTestNativeV1365]::GetWindowText(
+            $window, $titleAfterToolbarClick, $titleAfterToolbarClick.Capacity)
+    } while ($titleBeforeToolbarClick.ToString() -eq $titleAfterToolbarClick.ToString() -and
+        [DateTime]::UtcNow -lt $toolbarSwitchDeadline)
     if ($titleBeforeToolbarClick.ToString() -eq $titleAfterToolbarClick.ToString()) {
-        throw "Overlay regression failed: the centered Next button did not change images."
+        throw "Overlay regression failed: the centered Next button did not change images. dpi=$windowDpi client=${clientWidth}x${clientHeight} click=${nextButtonX},${toolbarY} title=$($titleAfterToolbarClick.ToString())"
     }
     Write-Host "PASS centered toolbar Next button changes images through its precise hit target."
 

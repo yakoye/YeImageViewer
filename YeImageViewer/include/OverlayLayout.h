@@ -1,20 +1,22 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 
 namespace OverlayLayout {
 
 inline constexpr int BASE_TOOLBAR_WIDTH = 595;
 inline constexpr int BASE_TOOLBAR_HEIGHT = 50;
 inline constexpr int BASE_TOOLBAR_BOTTOM_MARGIN = 20;
+inline constexpr int BASE_TOOLBAR_REVEAL_SIDE_PADDING = 48;
+inline constexpr int BASE_TOOLBAR_REVEAL_TOP_PADDING = 12;
 inline constexpr int BASE_TOOLBAR_PADDING = 8;
 inline constexpr int BASE_BUTTON_SIZE = 34;
 inline constexpr int BASE_SMALL_BUTTON_SIZE = 22;
 inline constexpr int BASE_ICON_SIZE = 18;
-inline constexpr int BASE_SIDE_BUTTON_SIZE = 40;
-inline constexpr int SIDE_BUTTON_MARGIN = 16;
 inline constexpr int PRESENTATION_CLOSE_SIZE = 42;
 inline constexpr int PRESENTATION_CLOSE_MARGIN = 12;
+inline constexpr uint32_t TOOLBAR_BORDER = 0x00000000u;
 
 struct Rect {
     int x = 0;
@@ -75,6 +77,10 @@ constexpr bool shouldDrawPresentationClose(
     return presentationMode || !windowHasCaption;
 }
 
+constexpr bool usesTopInfoBar() {
+    return false;
+}
+
 constexpr Rect toolbarRect(int canvasWidth, int canvasHeight) {
     const int scale = toolbarScale(canvasWidth);
     const int width = scaled(BASE_TOOLBAR_WIDTH, scale);
@@ -124,26 +130,16 @@ constexpr Rect zoomTextRect(int width, int height) {
 constexpr Rect zoomInRect(int width, int height) { return baseToolbarButtonRect(width, height, 565, BASE_SMALL_BUTTON_SIZE); }
 
 constexpr Rect toolbarRevealRect(int canvasWidth, int canvasHeight) {
-    // Keep the trigger exactly on the visible pill; no large invisible strip.
-    return toolbarRect(canvasWidth, canvasHeight);
-}
-
-constexpr Rect previousImageIconRect(int, int canvasHeight) {
-    return {
-        SIDE_BUTTON_MARGIN,
-        (canvasHeight - BASE_SIDE_BUTTON_SIZE) / 2,
-        BASE_SIDE_BUTTON_SIZE,
-        BASE_SIDE_BUTTON_SIZE,
-    };
-}
-
-constexpr Rect nextImageIconRect(int canvasWidth, int canvasHeight) {
-    return {
-        canvasWidth - SIDE_BUTTON_MARGIN - BASE_SIDE_BUTTON_SIZE,
-        (canvasHeight - BASE_SIDE_BUTTON_SIZE) / 2,
-        BASE_SIDE_BUTTON_SIZE,
-        BASE_SIDE_BUTTON_SIZE,
-    };
+    const int scale = toolbarScale(canvasWidth);
+    const auto toolbar = toolbarRect(canvasWidth, canvasHeight);
+    const int sidePadding = scaled(BASE_TOOLBAR_REVEAL_SIDE_PADDING, scale);
+    const int topPadding = scaled(BASE_TOOLBAR_REVEAL_TOP_PADDING, scale);
+    const int left = std::max(0, toolbar.x - sidePadding);
+    const int top = std::max(0, toolbar.y - topPadding);
+    const int right = std::min(canvasWidth, toolbar.x + toolbar.width + sidePadding);
+    // Extend through the lower window edge so approaching from the taskbar or
+    // bottom background reliably reveals the controls.
+    return { left, top, right - left, canvasHeight - top };
 }
 
 constexpr bool isToolbarControl(Hit hit) {
@@ -155,8 +151,6 @@ constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y) {
         return Hit::None;
 
     if (presentationCloseRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::PresentationClose;
-    if (previousImageIconRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::EdgePreviousImage;
-    if (nextImageIconRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::EdgeNextImage;
     if (toolbarPreviousRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ToolbarPreviousImage;
     if (toolbarNextRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ToolbarNextImage;
     if (rotateLeftRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::RotateLeft;
@@ -178,7 +172,10 @@ constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y) {
 
 static_assert(toolbarRect(800, 600).width == BASE_TOOLBAR_WIDTH);
 static_assert(toolbarRect(800, 600).x == (800 - BASE_TOOLBAR_WIDTH) / 2);
-static_assert(toolbarRevealRect(800, 600).width == toolbarRect(800, 600).width);
-static_assert(previousImageIconRect(800, 600).width == 40);
+static_assert(toolbarRevealRect(800, 600).width == BASE_TOOLBAR_WIDTH +
+    BASE_TOOLBAR_REVEAL_SIDE_PADDING * 2);
+static_assert(toolbarRevealRect(800, 600).y == toolbarRect(800, 600).y -
+    BASE_TOOLBAR_REVEAL_TOP_PADDING);
+static_assert(toolbarRevealRect(800, 600).y + toolbarRevealRect(800, 600).height == 600);
 
 }

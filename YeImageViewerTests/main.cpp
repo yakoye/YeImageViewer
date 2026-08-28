@@ -6,6 +6,7 @@
 #include "ImageInterpolation.h"
 #include "InitialWindowLayout.h"
 #include "ImageInfoPresentation.h"
+#include "WindowTitlePresentation.h"
 #include "PresentationLayout.h"
 #include "OverlayLayout.h"
 #include "ImageViewTransform.h"
@@ -265,8 +266,6 @@ void expectOverlayLayout() {
     constexpr auto toolbarPrevious = OverlayLayout::toolbarPreviousRect(width, height);
     constexpr auto toolbarNext = OverlayLayout::toolbarNextRect(width, height);
     constexpr auto toolbar = OverlayLayout::toolbarRect(width, height);
-    constexpr auto previous = OverlayLayout::previousImageIconRect(width, height);
-    constexpr auto next = OverlayLayout::nextImageIconRect(width, height);
     constexpr auto close = OverlayLayout::presentationCloseRect(width, height);
 
     const auto hitCenter = [&](OverlayLayout::Rect rect) {
@@ -280,10 +279,8 @@ void expectOverlayLayout() {
         toolbar.y + toolbar.height == height - OverlayLayout::BASE_TOOLBAR_BOTTOM_MARGIN &&
         toolbarPrevious.width == OverlayLayout::BASE_BUTTON_SIZE &&
         toolbarNext.width == OverlayLayout::BASE_BUTTON_SIZE);
-    passOrFail("side navigation buttons match the reference size and margins",
-        previous.width == 40 && previous.height == 40 && previous.x == 16 &&
-        next.width == 40 && next.height == 40 && next.x + next.width == width - 16 &&
-        previous.y == 280 && next.y == 280);
+    passOrFail("viewer toolbar uses a flat rounded surface without square-corner borders",
+        OverlayLayout::TOOLBAR_BORDER == 0x00000000u);
     passOrFail("toolbar hit testing maps every reference action",
         hitCenter(OverlayLayout::toolbarPreviousRect(width, height)) == OverlayLayout::Hit::ToolbarPreviousImage &&
         hitCenter(OverlayLayout::toolbarNextRect(width, height)) == OverlayLayout::Hit::ToolbarNextImage &&
@@ -300,13 +297,19 @@ void expectOverlayLayout() {
         hitCenter(OverlayLayout::settingsRect(width, height)) == OverlayLayout::Hit::Settings &&
         hitCenter(OverlayLayout::zoomOutRect(width, height)) == OverlayLayout::Hit::ZoomOut &&
         hitCenter(OverlayLayout::zoomInRect(width, height)) == OverlayLayout::Hit::ZoomIn);
-    passOrFail("overlay reveal regions stay limited to visible controls",
-        OverlayLayout::toolbarRevealRect(width, height).x == toolbar.x &&
-        OverlayLayout::toolbarRevealRect(width, height).width == toolbar.width &&
+    const auto toolbarReveal = OverlayLayout::toolbarRevealRect(width, height);
+    passOrFail("toolbar reveal region includes the padded lower strip",
+        toolbarReveal.x == toolbar.x - OverlayLayout::BASE_TOOLBAR_REVEAL_SIDE_PADDING &&
+        toolbarReveal.width == toolbar.width + OverlayLayout::BASE_TOOLBAR_REVEAL_SIDE_PADDING * 2 &&
+        toolbarReveal.y == toolbar.y - OverlayLayout::BASE_TOOLBAR_REVEAL_TOP_PADDING &&
+        toolbarReveal.y + toolbarReveal.height == height &&
+        OverlayLayout::hitTest(width, height, toolbarReveal.x + 2,
+            toolbarReveal.y + 2) == OverlayLayout::Hit::Toolbar &&
+        OverlayLayout::hitTest(width, height, width / 2, height - 2) == OverlayLayout::Hit::Toolbar &&
         OverlayLayout::hitTest(width, height, 5, 590) == OverlayLayout::Hit::None &&
         OverlayLayout::hitTest(width, height, 40, 250) == OverlayLayout::Hit::None &&
-        hitCenter(previous) == OverlayLayout::Hit::EdgePreviousImage &&
-        hitCenter(next) == OverlayLayout::Hit::EdgeNextImage);
+        OverlayLayout::hitTest(width, height, 20, height / 2) == OverlayLayout::Hit::None &&
+        OverlayLayout::hitTest(width, height, width - 20, height / 2) == OverlayLayout::Hit::None);
     constexpr auto narrowToolbar = OverlayLayout::toolbarRect(300, 600);
     passOrFail("toolbar scales down without leaving narrow windows",
         narrowToolbar.width <= 284 && narrowToolbar.x >= 0 &&
@@ -319,6 +322,8 @@ void expectOverlayLayout() {
         OverlayLayout::shouldDrawPresentationClose(true, false, false) &&
         OverlayLayout::shouldDrawPresentationClose(false, false, false) &&
         !OverlayLayout::shouldDrawPresentationClose(false, true, true));
+    passOrFail("top image information bar is removed from framed and presentation modes",
+        !OverlayLayout::usesTopInfoBar());
 }
 
 void expectImageViewTransform() {
@@ -696,6 +701,21 @@ void expectImageInfoPresentation() {
         ImageInfoPresentation::logicalPanelHeight(model) <= 460);
 }
 
+void expectWindowTitlePresentation() {
+    const auto title = WindowTitlePresentation::build({
+        .current = 3,
+        .total = 16,
+        .zoomPercent = 125,
+        .pixelWidth = 1514,
+        .pixelHeight = 857,
+        .fileSize = L"1.6 MiB",
+        .fileName = L"gpu心智图.png",
+        .rotation = L"右转 90°",
+        });
+    passOrFail("window title separates position zoom dimensions size filename and rotation",
+        title == L"[3/16] | 125% | 1514 × 857 px | 1.6 MiB | gpu心智图.png | 右转 90°");
+}
+
 void expectWheelInput() {
     constexpr int panStep = 96;
     passOrFail("ordinary wheel keeps the existing context-sensitive behavior",
@@ -800,6 +820,7 @@ int main(int argc, char* argv[]) {
     expectSettingLayout();
     expectTextRendering();
     expectImageInfoPresentation();
+    expectWindowTitlePresentation();
     expectWheelInput();
     expectRotationPersistence();
     expectRenamePolicy();

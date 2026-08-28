@@ -193,6 +193,7 @@
     <ClInclude Include="include\StbImageDecoder.h" />
     <ClInclude Include="include\TextDrawer.h" />
     <ClInclude Include="include\TextRenderingPolicy.h" />
+    <ClInclude Include="include\WindowTitlePresentation.h" />
     <ClInclude Include="include\YeThumbnailProviderGuids.h" />
     <ClInclude Include="include\ThumbnailRegistrar.h" />
     <ClInclude Include="include\jarkUtils.h" />
