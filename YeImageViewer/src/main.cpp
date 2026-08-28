@@ -37,8 +37,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.24";
-constinit int appVersionCode = 13624; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.25";
+constinit int appVersionCode = 13625; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -2810,12 +2810,12 @@ public:
     }
 
     void drawOverlayIcon(cv::Mat& canvas, const cv::Mat& source,
-        const OverlayLayout::Rect& target, uint32_t tint = 0) {
+        const OverlayLayout::Rect& target, uint32_t tint = 0,
+        bool compactControl = false) {
         if (source.empty() || target.width <= 0 || target.height <= 0)
             return;
-        const int iconSize = std::max(10, std::min({ target.width - 6, target.height - 6,
-            OverlayLayout::scaled(OverlayLayout::BASE_ICON_SIZE,
-                OverlayLayout::toolbarScale(canvas.cols)) }));
+        const int iconSize = OverlayLayout::toolbarIconSize(
+            canvas.cols, target, compactControl);
         cv::Mat icon;
         if (source.cols == iconSize && source.rows == iconSize)
             icon = source;
@@ -2866,7 +2866,7 @@ public:
 
     void drawToolbarButton(cv::Mat& canvas, const OverlayLayout::Rect& rect,
         const cv::Mat& icon, CursorPos expectedCursor, bool active = false,
-        bool danger = false) {
+        bool danger = false, bool compactControl = false) {
         const bool hovered = cursorPos == expectedCursor;
         if (hovered || active) {
             const uint32_t background = active ? 0x383B82F6u :
@@ -2875,7 +2875,8 @@ public:
                 std::max(4, rect.width / 3), background);
             jarkUtils::overlayImg(canvas, surface, rect.x, rect.y);
         }
-        drawOverlayIcon(canvas, icon, rect, active ? 0xFF60A5FAu : 0);
+        drawOverlayIcon(canvas, icon, rect, active ? 0xFF60A5FAu : 0,
+            compactControl);
         if (active) {
             cv::circle(canvas, { rect.x + rect.width / 2, rect.y + rect.height - 4 },
                 2, jarkUtils::to_cv_scalar(0xFF60A5FAu), -1, cv::LINE_AA);
@@ -2926,9 +2927,9 @@ public:
         drawToolbarButton(canvas, OverlayLayout::fullscreenRect(canvas.cols, canvas.rows),
             extraUIRes.fullscreen, CursorPos::toolbarFullscreen, presentationMode);
         drawToolbarButton(canvas, OverlayLayout::zoomOutRect(canvas.cols, canvas.rows),
-            extraUIRes.zoomOut, CursorPos::toolbarZoomOut);
+            extraUIRes.zoomOut, CursorPos::toolbarZoomOut, false, false, true);
         drawToolbarButton(canvas, OverlayLayout::zoomInRect(canvas.cols, canvas.rows),
-            extraUIRes.zoomIn, CursorPos::toolbarZoomIn);
+            extraUIRes.zoomIn, CursorPos::toolbarZoomIn, false, false, true);
 
         const auto zoomTextLayout = OverlayLayout::zoomTextRect(canvas.cols, canvas.rows);
         if (zoomTextEditing) {

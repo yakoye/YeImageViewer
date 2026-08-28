@@ -14,8 +14,10 @@ inline constexpr int BASE_TOOLBAR_PADDING = 8;
 inline constexpr int BASE_BUTTON_SIZE = 34;
 inline constexpr int BASE_SMALL_BUTTON_SIZE = 22;
 inline constexpr int BASE_ICON_SIZE = 20;
-inline constexpr int TOOLBAR_TEXT_SIZE = 18;
-inline constexpr int TOOLBAR_TEXT_BOLD_OFFSET = 1;
+inline constexpr int BASE_ICON_INSET = 6;
+inline constexpr int BASE_COMPACT_ICON_INSET = 2;
+inline constexpr int TOOLBAR_TEXT_SIZE = 16;
+inline constexpr int TOOLBAR_TEXT_BOLD_OFFSET = 0;
 inline constexpr int ICON_STROKE_EXPANSION = 0;
 inline constexpr int PRESENTATION_CLOSE_SIZE = 42;
 inline constexpr int PRESENTATION_CLOSE_MARGIN = 12;
@@ -69,6 +71,14 @@ constexpr int toolbarScale(int canvasWidth) {
 
 constexpr int scaled(int value, int scale) {
     return std::max(1, (value * scale + 500) / 1000);
+}
+
+constexpr int toolbarIconSize(int canvasWidth, const Rect& target,
+    bool compactControl = false) {
+    const int inset = scaled(compactControl ? BASE_COMPACT_ICON_INSET : BASE_ICON_INSET,
+        toolbarScale(canvasWidth));
+    return std::max(10, std::min({ target.width - inset, target.height - inset,
+        scaled(BASE_ICON_SIZE, toolbarScale(canvasWidth)) }));
 }
 
 constexpr Rect presentationCloseRect(int canvasWidth, int) {

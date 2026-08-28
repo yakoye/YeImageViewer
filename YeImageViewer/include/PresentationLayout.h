@@ -10,6 +10,8 @@ inline constexpr int MAX_LANDSCAPE_HEIGHT_NUMERATOR = 33;
 inline constexpr int MAX_LANDSCAPE_HEIGHT_DENOMINATOR = 40;
 inline constexpr int BOTTOM_RESERVED_DIP = 32;
 inline constexpr int WINDOWED_MAX_PERCENT = 90;
+inline constexpr int COMMON_ASPECT_SHORT_SIDE = 9;
+inline constexpr int COMMON_ASPECT_LONG_SIDE = 16;
 
 struct Result {
     int renderedWidth = 0;
@@ -21,6 +23,8 @@ struct Result {
     int bottomReservedPixels = 0;
     double scale = 1.0;
     bool portrait = false;
+    bool longPortrait = false;
+    bool longLandscape = false;
     bool extendsBelowViewport = false;
 };
 
@@ -47,25 +51,34 @@ inline Result calculate(int imageWidth, int imageHeight, int workAreaWidth,
     const int displayWidth = quarterTurn ? imageHeight : imageWidth;
     const int displayHeight = quarterTurn ? imageWidth : imageHeight;
     const bool portrait = displayHeight > displayWidth;
+    const bool longPortrait = portrait &&
+        static_cast<int64_t>(displayHeight) * COMMON_ASPECT_SHORT_SIDE >
+        static_cast<int64_t>(displayWidth) * COMMON_ASPECT_LONG_SIDE;
+    const bool longLandscape = !portrait &&
+        static_cast<int64_t>(displayWidth) * COMMON_ASPECT_SHORT_SIDE >
+        static_cast<int64_t>(displayHeight) * COMMON_ASPECT_LONG_SIDE;
     const int maximumWidth = std::max(1, workAreaWidth * MAX_WIDTH_PERCENT / 100);
     const int maximumLandscapeHeight = std::max(1,
         workAreaHeight * MAX_LANDSCAPE_HEIGHT_NUMERATOR /
         MAX_LANDSCAPE_HEIGHT_DENOMINATOR);
 
     const double logicalOneToOneScale = static_cast<double>(dpi) / 96.0;
+    const int bottomReservedPixels = std::max(0,
+        static_cast<int>(std::lround(BOTTOM_RESERVED_DIP * logicalOneToOneScale)));
+    const int contentHeight = std::max(1, workAreaHeight - bottomReservedPixels);
     const double widthScale = static_cast<double>(maximumWidth) / displayWidth;
     const double heightScale = static_cast<double>(maximumLandscapeHeight) / displayHeight;
-    const double scale = portrait ?
+    const double portraitFitScale = static_cast<double>(contentHeight) / displayHeight;
+    const double scale = longPortrait ?
         std::min(logicalOneToOneScale, widthScale) :
-        std::min({ logicalOneToOneScale, widthScale, heightScale });
+        (longLandscape ? std::min(logicalOneToOneScale, heightScale) :
+            (portrait ? std::min({ logicalOneToOneScale, widthScale, portraitFitScale }) :
+                std::min({ logicalOneToOneScale, widthScale, heightScale })));
 
     const int renderedWidth = std::max(1,
         static_cast<int>(std::lround(displayWidth * scale)));
     const int renderedHeight = std::max(1,
         static_cast<int>(std::lround(displayHeight * scale)));
-    const int bottomReservedPixels = std::max(0,
-        static_cast<int>(std::lround(BOTTOM_RESERVED_DIP * logicalOneToOneScale)));
-    const int contentHeight = std::max(1, workAreaHeight - bottomReservedPixels);
     const int imageLeft = (workAreaWidth - renderedWidth) / 2;
     const int centeredImageTop = (contentHeight - renderedHeight) / 2;
     const int naturallyCenteredLeft = static_cast<int>(
@@ -87,6 +100,8 @@ inline Result calculate(int imageWidth, int imageHeight, int workAreaWidth,
         bottomReservedPixels,
         scale,
         portrait,
+        longPortrait,
+        longLandscape,
         imageTop + renderedHeight > workAreaHeight,
     };
 }

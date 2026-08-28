@@ -291,11 +291,18 @@ void expectOverlayLayout() {
         toolbarPrevious.x < toolbarPlayPause.x && toolbarPlayPause.x < toolbarNext.x);
     passOrFail("viewer toolbar uses a flat rounded surface without square-corner borders",
         OverlayLayout::TOOLBAR_BORDER == 0x00000000u);
-    passOrFail("toolbar keeps enlarged clean icons and a lightly bold percentage",
+    passOrFail("toolbar keeps one clean visual weight for icons and zoom percentage",
         OverlayLayout::BASE_ICON_SIZE == 20 &&
-        OverlayLayout::TOOLBAR_TEXT_SIZE == 18 &&
-        OverlayLayout::TOOLBAR_TEXT_BOLD_OFFSET == 1 &&
+        OverlayLayout::TOOLBAR_TEXT_SIZE == 16 &&
+        OverlayLayout::TOOLBAR_TEXT_BOLD_OFFSET == 0 &&
         OverlayLayout::ICON_STROKE_EXPANSION == 0);
+    passOrFail("compact plus and minus retain the same 20 pixel visual size as other icons",
+        OverlayLayout::toolbarIconSize(width,
+            OverlayLayout::settingsRect(width, height)) == OverlayLayout::BASE_ICON_SIZE &&
+        OverlayLayout::toolbarIconSize(width,
+            OverlayLayout::zoomOutRect(width, height), true) == OverlayLayout::BASE_ICON_SIZE &&
+        OverlayLayout::toolbarIconSize(width,
+            OverlayLayout::zoomInRect(width, height), true) == OverlayLayout::BASE_ICON_SIZE);
     passOrFail("toolbar hit testing maps every reference action",
         hitCenter(OverlayLayout::toolbarPreviousRect(width, height)) == OverlayLayout::Hit::ToolbarPreviousImage &&
         hitCenter(OverlayLayout::toolbarPlayPauseRect(width, height)) == OverlayLayout::Hit::ToolbarPlayPause &&
@@ -497,21 +504,46 @@ void expectPresentationLayout() {
     passOrFail("large landscape images fit the measured Picasa preview height",
         wide.renderedWidth == 1486 && wide.renderedHeight == 841 &&
         wide.imageLeft == 217 && wide.imageTop == 69 &&
-        !wide.portrait && !wide.extendsBelowViewport);
+        !wide.portrait && !wide.longLandscape && !wide.extendsBelowViewport);
+
+    const auto exactLandscapeSixteenNine = PresentationLayout::calculate(1600, 900, 1920, 1020, 120);
+    const auto panoramic = PresentationLayout::calculate(4000, 1000, 1920, 1020, 120);
+    passOrFail("only landscapes wider than 16 by 9 use readable centered panorama mode",
+        !exactLandscapeSixteenNine.longLandscape &&
+        exactLandscapeSixteenNine.renderedWidth == 1495 &&
+        exactLandscapeSixteenNine.renderedHeight == 841 &&
+        panoramic.longLandscape && panoramic.renderedWidth == 3364 &&
+        panoramic.renderedHeight == 841 && panoramic.imageLeft == -722 &&
+        panoramic.initialSlideX == 0);
 
     const auto tall = PresentationLayout::calculate(723, 1130, 1920, 1020, 120);
-    passOrFail("portrait images preserve readable logical 100 percent and may overflow vertically",
-        std::abs(tall.scale - 1.25) < 0.000001 &&
-        tall.renderedWidth == 904 && tall.renderedHeight == 1413 &&
-        tall.imageLeft == 508 && tall.imageTop == 0 &&
-        tall.initialSlideY == 197 &&
-        tall.portrait && tall.extendsBelowViewport);
+    passOrFail("ordinary portrait photos up to 16 by 9 open fully visible",
+        std::abs(tall.scale - 980.0 / 1130.0) < 0.000001 &&
+        tall.renderedWidth == 627 && tall.renderedHeight == 980 &&
+        tall.imageLeft == 646 && tall.imageTop == 0 &&
+        tall.initialSlideY == -20 && tall.portrait && !tall.longPortrait &&
+        !tall.extendsBelowViewport);
 
-    const auto veryWidePortrait = PresentationLayout::calculate(2000, 3000, 1920, 1020, 120);
-    passOrFail("portrait images shrink only when their width exceeds the preview limit",
-        std::abs(veryWidePortrait.scale - 1728.0 / 2000.0) < 0.000001 &&
-        veryWidePortrait.renderedWidth == 1728 &&
-        veryWidePortrait.renderedHeight == 2592);
+    const auto suppliedPortrait = PresentationLayout::calculate(3060, 4080, 1920, 1020, 120);
+    passOrFail("the supplied 3 by 4 portrait photo opens fully visible",
+        suppliedPortrait.renderedWidth == 735 && suppliedPortrait.renderedHeight == 980 &&
+        suppliedPortrait.imageTop == 0 && !suppliedPortrait.longPortrait &&
+        !suppliedPortrait.extendsBelowViewport);
+
+    const auto exactSixteenNine = PresentationLayout::calculate(900, 1600, 1920, 1020, 120);
+    const auto longPortrait = PresentationLayout::calculate(900, 1601, 1920, 1020, 120);
+    passOrFail("only portraits taller than 16 by 9 use readable top-aligned long-image mode",
+        !exactSixteenNine.longPortrait && exactSixteenNine.renderedHeight == 980 &&
+        longPortrait.longPortrait && longPortrait.renderedWidth == 1125 &&
+        longPortrait.renderedHeight == 2001 && longPortrait.imageTop == 0 &&
+        longPortrait.extendsBelowViewport);
+
+    const auto veryWideLongPortrait = PresentationLayout::calculate(2000, 4001, 1920, 1020, 120);
+    passOrFail("long portraits shrink only when their width exceeds the preview limit",
+        std::abs(veryWideLongPortrait.scale - 1728.0 / 2000.0) < 0.000001 &&
+        veryWideLongPortrait.renderedWidth == 1728 &&
+        veryWideLongPortrait.renderedHeight == 3457 &&
+        veryWideLongPortrait.longPortrait);
 
     const auto smallWindow = PresentationLayout::calculateWindowed(small, 1920, 1020);
     const auto wideWindow = PresentationLayout::calculateWindowed(wide, 1920, 1020);
@@ -519,9 +551,9 @@ void expectPresentationLayout() {
     passOrFail("leaving presentation mode wraps the window client around the displayed image",
         smallWindow.clientWidth == 839 && smallWindow.clientHeight == 596 &&
         wideWindow.clientWidth == 1486 && wideWindow.clientHeight == 841);
-    passOrFail("an overflowing portrait keeps its zoom and opens at the scrollable top",
-        tallWindow.clientWidth == 904 && tallWindow.clientHeight == 918 &&
-        tallWindow.initialSlideY == 248);
+    passOrFail("a portrait returning to the framed window remains top aligned when capped",
+        tallWindow.clientWidth == 627 && tallWindow.clientHeight == 918 &&
+        tallWindow.initialSlideY == 31);
     passOrFail("the current image layout determines the next framed window",
         tallWindow.clientWidth != smallWindow.clientWidth &&
         tallWindow.clientHeight != smallWindow.clientHeight &&
