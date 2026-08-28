@@ -93,7 +93,7 @@ try {
         throw "Full package is $([math]::Round($archiveInfo.Length / 1MB, 2)) MiB, above the 25 MiB release limit."
     }
 
-    $installerSfx = Join-Path $repoRoot "tools\installer\7zSD.sfx"
+    $installerSfx = Join-Path $repoRoot "tools\installer\7zS2.sfx"
     if (-not (Test-Path -LiteralPath $installerSfx -PathType Leaf)) {
         throw "The pinned LZMA SDK installer module is missing: $installerSfx"
     }
@@ -102,6 +102,8 @@ try {
     Copy-Item -LiteralPath $thumbnailProvider -Destination (Join-Path $installerStaging "YeThumbnailProvider.dll")
     Copy-Item -LiteralPath (Join-Path $repoRoot "installLocal.ps1") `
         -Destination (Join-Path $installerStaging "installLocal.ps1")
+    Copy-Item -LiteralPath (Join-Path $repoRoot "tools\installer\setup.cmd") `
+        -Destination (Join-Path $installerStaging "setup.cmd")
     $installer = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "$packageName-setup.exe"))
     if (Test-Path -LiteralPath $installer) {
         [IO.File]::Delete($installer)
@@ -110,7 +112,8 @@ try {
     Push-Location $installerStaging
     try {
         & $sevenZip a -t7z -mx=9 -m0=lzma2 -md=64m -ms=on -mmt=on `
-            $installerPayload "YeImageViewer.exe" "YeThumbnailProvider.dll" "installLocal.ps1" | Out-Null
+            $installerPayload "YeImageViewer.exe" "YeThumbnailProvider.dll" `
+                "installLocal.ps1" "setup.cmd" | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw "One-click installer payload creation failed with exit code $LASTEXITCODE."
         }
@@ -118,18 +121,9 @@ try {
     finally {
         Pop-Location
     }
-    $installerConfig = Join-Path $temporaryRoot "YeImageViewer-installer-config.txt"
-    $configText = @'
-;!@Install@!UTF-8!
-Title="YeImageViewer"
-RunProgram="powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File installLocal.ps1"
-;!@InstallEnd@!
-'@
-    [IO.File]::WriteAllText($installerConfig, $configText,
-        [Text.UTF8Encoding]::new($false))
     $installerStream = [IO.File]::Create($installer)
     try {
-        foreach ($part in @($installerSfx, $installerConfig, $installerPayload)) {
+        foreach ($part in @($installerSfx, $installerPayload)) {
             $partStream = [IO.File]::OpenRead($part)
             try {
                 $partStream.CopyTo($installerStream)
@@ -155,7 +149,7 @@ RunProgram="powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File inst
     if ($LASTEXITCODE -ne 0) {
         throw "One-click installer verification extraction failed with exit code $LASTEXITCODE."
     }
-    foreach ($payloadFile in @("YeImageViewer.exe", "YeThumbnailProvider.dll", "installLocal.ps1")) {
+    foreach ($payloadFile in @("YeImageViewer.exe", "YeThumbnailProvider.dll", "installLocal.ps1", "setup.cmd")) {
         $expectedPayloadFile = Join-Path $installerStaging $payloadFile
         $actualPayloadFile = Join-Path $installerVerifyDirectory $payloadFile
         if (-not (Test-Path -LiteralPath $actualPayloadFile -PathType Leaf) -or
@@ -163,6 +157,16 @@ RunProgram="powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File inst
                 (Get-FileHash -LiteralPath $actualPayloadFile -Algorithm SHA256).Hash) {
             throw "One-click installer verification failed for $payloadFile."
         }
+    }
+    $installerSmokeInstall = Join-Path $temporaryRoot "installer-smoke-install"
+    $smokeArguments = "-InstallDir `"$installerSmokeInstall`" " +
+        "-NoDesktopShortcut -NoStartMenuShortcut -NoPrompt -NoLaunch -SkipRegistration"
+    $smokeProcess = Start-Process -FilePath $installer -ArgumentList $smokeArguments `
+        -Wait -PassThru -WindowStyle Hidden
+    if ($smokeProcess.ExitCode -ne 0 -or
+        -not (Test-Path -LiteralPath (Join-Path $installerSmokeInstall "YeImageViewer.exe") -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path $installerSmokeInstall "YeThumbnailProvider.dll") -PathType Leaf)) {
+        throw "One-click installer execution smoke test failed with exit code $($smokeProcess.ExitCode)."
     }
 
     $outputs = @($archive, $installer)

@@ -140,6 +140,22 @@ finally {
 }
 Write-Host "PASS installer copies the runtime and defaults to desktop/Start-menu shortcuts, completion prompt, and launch."
 
+$packageScript = Join-Path $repoRoot "packageRelease.ps1"
+$packageSource = [IO.File]::ReadAllText($packageScript)
+[void][scriptblock]::Create($packageSource)
+$installerLauncher = Join-Path $repoRoot "tools\installer\setup.cmd"
+$installerSfx = Join-Path $repoRoot "tools\installer\7zS2.sfx"
+if (-not (Test-Path -LiteralPath $installerLauncher -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $installerSfx -PathType Leaf) -or
+    (Get-FileHash -LiteralPath $installerSfx -Algorithm SHA256).Hash -ne
+        "5844E4A1F78F309170B8A956DF9A24CAF932A6BA4CF1FCDE3E0066D850FBF5E3" -or
+    -not ([IO.File]::ReadAllText($installerLauncher).Contains('"%~dp0installLocal.ps1" %*')) -or
+    -not $packageSource.Contains('installer-smoke-install') -or
+    -not $packageSource.Contains('Start-Process -FilePath $installer')) {
+    throw "Packaging regression failed: the pinned non-elevating SFX launcher or execution smoke gate is missing."
+}
+Write-Host "PASS one-click packaging pins the non-elevating SFX launcher and requires a real safe-install smoke test."
+
 $embeddedIcon = [Drawing.Icon]::ExtractAssociatedIcon($viewer)
 if ($null -eq $embeddedIcon) {
     throw "Viewer executable does not expose an embedded application icon."
