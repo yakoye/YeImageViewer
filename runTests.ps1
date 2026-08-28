@@ -89,6 +89,13 @@ Write-Host "PASS viewer stays below the 92 MiB embedded-font regression limit."
 
 Write-Host "Checking local installer copy, shortcut, prompt, and launch contract..."
 $installerScript = Join-Path $repoRoot "installLocal.ps1"
+$installerBytes = [IO.File]::ReadAllBytes($installerScript)
+if ($installerBytes.Length -lt 3 -or
+    $installerBytes[0] -ne 0xEF -or
+    $installerBytes[1] -ne 0xBB -or
+    $installerBytes[2] -ne 0xBF) {
+    throw "Installer regression failed: installLocal.ps1 must use a UTF-8 BOM so Windows PowerShell 5.1 does not parse Chinese text with the active ANSI code page."
+}
 $installerSource = [IO.File]::ReadAllText($installerScript)
 [void][scriptblock]::Create($installerSource)
 foreach ($requiredInstallerBehavior in @(

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\YeImageViewer"),
     [switch]$NoDesktopShortcut,
     [switch]$NoStartMenuShortcut,
