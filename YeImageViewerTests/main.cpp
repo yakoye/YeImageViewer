@@ -792,10 +792,6 @@ void expectTextRendering() {
         TextRenderingPolicy::scaledPixelSize(18, 120) == 23 &&
         TextRenderingPolicy::scaledPixelSize(18, 144) == 27 &&
         TextRenderingPolicy::scaledPixelSize(18, 192) == 36);
-    passOrFail("immersive EXIF keeps its legacy size and rendering strategy",
-        TextRenderingPolicy::legacyImmersiveExifPixelSize(96) == 16 &&
-        TextRenderingPolicy::legacyImmersiveExifPixelSize(144) == 24 &&
-        TextRenderingPolicy::legacyImmersiveExifPixelSize(192) == 32);
     passOrFail("non-adaptive interface text uses native Windows ClearType",
         TextRenderingPolicy::usesNativeClearType(false, true) &&
         !TextRenderingPolicy::usesNativeClearType(true, true) &&
@@ -809,7 +805,7 @@ void expectTextRendering() {
 
 void expectImageInfoPresentation() {
     constexpr std::string_view rawInfo =
-        "路径: C:\\Pictures\\sample.png\n"
+        "路径: C:\\Pictures\\这是一个非常长而且必须完整换行显示的图片文件名_sample.png\n"
         "大小: 103.0 KiB\n"
         "分辨率: 671x477\n"
         "原始日期时间: 2026-08-28 10:20:30\n"
@@ -819,30 +815,48 @@ void expectImageInfoPresentation() {
         "曝光时间: 1/125 s\n"
         "光圈值: F2.8\n"
         "ISO感光度: 200\n"
-        "Xmp.xmp.CreatorTool: noisy raw metadata\n"
+        "白平衡: 自动\n"
+        "色彩空间: sRGB\n"
+        "Xmp.xmp.CreatorTool: Microsoft Windows Photo Viewer with a deliberately long creator name\n"
+        "Xmp.xmpMM.InstanceID: uuid:faf5bdd5-ba3d-11da-ad31-d33d75182f1b\n"
         "Exif.Photo.MakerNote: private binary payload\n";
-    const auto model = ImageInfoPresentation::build(rawInfo, true);
+    const auto model = ImageInfoPresentation::build(rawInfo, true, "RGBA · 32bpp");
 
-    passOrFail("image information keeps four immediately useful basic fields",
-        model.basic.size() == 4 &&
-        model.basic[0].label == "文件名" && model.basic[0].value == "sample.png" &&
-        model.basic[1].value == "PNG" && model.basic[2].value == "103.0 KiB" &&
-        model.basic[3].value == "671 × 477 px");
-    passOrFail("image information caps details and omits raw XMP and MakerNote noise",
-        model.details.size() == ImageInfoPresentation::MAX_DETAIL_ROWS &&
+    passOrFail("full image information preserves the complete filename path and color mode",
+        model.basic.size() == 6 &&
+        model.basic[0].label == "文件名" &&
+        model.basic[0].value == "这是一个非常长而且必须完整换行显示的图片文件名_sample.png" &&
+        model.basic[1].label == "路径" && model.basic[1].value.starts_with("C:\\Pictures\\") &&
+        model.basic[2].value == "PNG" && model.basic[3].value == "103.0 KiB" &&
+        model.basic[4].value == "671 × 477 px" && model.basic[5].value == "RGBA · 32bpp");
+    const auto compact = ImageInfoPresentation::compactRows(model, true);
+    passOrFail("compact image information follows the five-field reference order",
+        compact.size() == 5 && compact[0].label == "格式" &&
+        compact[1].label == "文件大小" && compact[2].label == "分辨率" &&
+        compact[3].label == "色彩" && compact[4].label == "文件名");
+    passOrFail("image information keeps all selected useful metadata and omits MakerNote noise",
+        model.details.size() > 6 &&
         std::ranges::none_of(model.details, [](const ImageInfoPresentation::Row& row) {
-            return row.label.contains("Xmp") || row.value.contains("Xmp") ||
-                row.label.contains("MakerNote") || row.value.contains("MakerNote") ||
-                row.value.contains("CreatorTool");
+            return row.label.contains("MakerNote") || row.value.contains("MakerNote");
             }));
-    passOrFail("image information uses a compact sixty-percent black card",
-        ImageInfoPresentation::blendBgra(0xFFFFFFFFu,
-            ImageInfoPresentation::PANEL_BACKGROUND) == 0xFF666666u &&
-        ImageInfoPresentation::logicalPanelHeight(model) <= 460);
-    passOrFail("image information uses compact fourteen-pixel rows like the reference",
-        ImageInfoPresentation::LOGICAL_FONT_SIZE == 14 &&
-        ImageInfoPresentation::LOGICAL_ROW_HEIGHT == 24 &&
-        ImageInfoPresentation::LOGICAL_PANEL_WIDTH == 320);
+    const std::string longValue = compact.back().value;
+    const auto wrapped = ImageInfoPresentation::wrapUtf8(longValue, 18);
+    std::string restored;
+    for (const auto& line : wrapped)
+        restored += line;
+    passOrFail("long UTF-8 image information wraps without ellipsis truncation or hidden bytes",
+        wrapped.size() > 1 && restored == longValue &&
+        ImageInfoPresentation::joinWrappedLines(wrapped).find("...") == std::string::npos);
+    passOrFail("image information uses twelve-pixel adaptive compact and full cards",
+        ImageInfoPresentation::LOGICAL_FONT_SIZE == 12 &&
+        ImageInfoPresentation::LOGICAL_COMPACT_PANEL_WIDTH == 288 &&
+        ImageInfoPresentation::LOGICAL_FULL_PANEL_WIDTH == 340 &&
+        ImageInfoPresentation::useLightPalette(255, 255, 255) &&
+        !ImageInfoPresentation::useLightPalette(32, 24, 16));
+    passOrFail("image information scrolling clamps at both content boundaries",
+        ImageInfoPresentation::clampScrollOffset(800, 300, -20) == 0 &&
+        ImageInfoPresentation::clampScrollOffset(800, 300, 240) == 240 &&
+        ImageInfoPresentation::clampScrollOffset(800, 300, 900) == 500);
 }
 
 void expectWindowTitlePresentation() {

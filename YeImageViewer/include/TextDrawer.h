@@ -31,6 +31,10 @@ public:
     void putAlignLeft(cv::Mat& img, cv::Rect rect, const char* str, intUnion color,
         bool isAdaptiveFG = false, bool enhanceGlyphCoverage = true);
 
+    // Draws complete multiline text inside rect without adding an ellipsis.
+    void putWrappedLeft(cv::Mat& img, cv::Rect rect, const char* str, intUnion color,
+        bool isAdaptiveFG = false, bool enhanceGlyphCoverage = true);
+
 private:
     bool hasInit = false;
     float scale = 0;

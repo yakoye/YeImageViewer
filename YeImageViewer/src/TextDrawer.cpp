@@ -200,16 +200,27 @@ void TextDrawer::putAlignLeft(cv::Mat& img, cv::Rect rect, const char* str, intU
     }
 }
 
+void TextDrawer::putWrappedLeft(cv::Mat& img, cv::Rect rect, const char* str, intUnion color,
+    bool isAdaptiveFG, bool enhanceGlyphCoverage) {
+    if (TextRenderingPolicy::usesNativeClearType(isAdaptiveFG, enhanceGlyphCoverage)) {
+        drawNativeText(img, rect, str, color,
+            DT_LEFT | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
+        return;
+    }
+    putAlignLeft(img, rect, str, color, isAdaptiveFG, enhanceGlyphCoverage);
+}
+
 void TextDrawer::drawNativeText(cv::Mat& img, cv::Rect rect, const char* str,
     intUnion color, UINT format) {
-    rect &= cv::Rect{ 0, 0, img.cols, img.rows };
-    if (rect.empty() || !str || !*str)
+    const cv::Rect requestedRect = rect;
+    const cv::Rect clippedRect = rect & cv::Rect{ 0, 0, img.cols, img.rows };
+    if (requestedRect.empty() || clippedRect.empty() || !str || !*str)
         return;
 
     BITMAPINFO bitmapInfo{};
     bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bitmapInfo.bmiHeader.biWidth = rect.width;
-    bitmapInfo.bmiHeader.biHeight = -rect.height;
+    bitmapInfo.bmiHeader.biWidth = requestedRect.width;
+    bitmapInfo.bmiHeader.biHeight = -requestedRect.height;
     bitmapInfo.bmiHeader.biPlanes = 1;
     bitmapInfo.bmiHeader.biBitCount = 32;
     bitmapInfo.bmiHeader.biCompression = BI_RGB;
@@ -227,10 +238,13 @@ void TextDrawer::drawNativeText(cv::Mat& img, cv::Rect rect, const char* str,
     }
 
     HGDIOBJ oldBitmap = SelectObject(memoryDc, bitmap);
-    const std::size_t rowBytes = static_cast<std::size_t>(rect.width) * 4;
-    for (int row = 0; row < rect.height; ++row) {
-        memcpy(static_cast<uint8_t*>(bitmapBits) + row * rowBytes,
-            img.ptr(rect.y + row) + rect.x * 4, rowBytes);
+    const std::size_t rowBytes = static_cast<std::size_t>(requestedRect.width) * 4;
+    const int bitmapX = clippedRect.x - requestedRect.x;
+    const int bitmapY = clippedRect.y - requestedRect.y;
+    for (int row = 0; row < clippedRect.height; ++row) {
+        memcpy(static_cast<uint8_t*>(bitmapBits) + (bitmapY + row) * rowBytes + bitmapX * 4,
+            img.ptr(clippedRect.y + row) + clippedRect.x * 4,
+            static_cast<std::size_t>(clippedRect.width) * 4);
     }
 
     HFONT font = CreateFontW(-fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -240,14 +254,14 @@ void TextDrawer::drawNativeText(cv::Mat& img, cv::Rect rect, const char* str,
     SetBkMode(memoryDc, TRANSPARENT);
     SetTextColor(memoryDc, RGB(color[2], color[1], color[0]));
     const std::wstring text = jarkUtils::utf8ToWstring(str);
-    RECT nativeRect{ 0, 0, rect.width, rect.height };
+    RECT nativeRect{ 0, 0, requestedRect.width, requestedRect.height };
     DrawTextW(memoryDc, text.c_str(), static_cast<int>(text.size()), &nativeRect, format);
 
-    for (int row = 0; row < rect.height; ++row) {
+    for (int row = 0; row < clippedRect.height; ++row) {
         auto* source = reinterpret_cast<uint32_t*>(
-            static_cast<uint8_t*>(bitmapBits) + row * rowBytes);
-        auto* destination = reinterpret_cast<uint32_t*>(img.ptr(rect.y + row)) + rect.x;
-        for (int column = 0; column < rect.width; ++column)
+            static_cast<uint8_t*>(bitmapBits) + (bitmapY + row) * rowBytes) + bitmapX;
+        auto* destination = reinterpret_cast<uint32_t*>(img.ptr(clippedRect.y + row)) + clippedRect.x;
+        for (int column = 0; column < clippedRect.width; ++column)
             destination[column] = source[column] | 0xFF000000u;
     }
 

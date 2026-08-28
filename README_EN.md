@@ -13,7 +13,7 @@
 
 **YeImageViewer** is a minimal, fast native Windows image viewer. It supports common still images, animations, RAW files, iOS Live Photos, and Android Motion Photos, together with EXIF display, printing, simple editing, and file associations.
 
-Current version: **v1.36.23** · [Changelog](CHANGELOG.md)
+Current version: **v1.36.24** · [Changelog](CHANGELOG.md)
 
 This project is based on [JarkViewer](https://github.com/jark006/JarkViewer) and is licensed under GNU GPL v3. Thanks to upstream author JARK006 and all contributors.
 
