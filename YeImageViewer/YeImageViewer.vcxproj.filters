@@ -69,10 +69,19 @@
     <ClInclude Include="include\EscapeBehavior.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\ShortcutConfig.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\SettingCommand.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\printer.h">
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\TextDrawer.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ToolbarCommand.h">
       <Filter>include</Filter>
     </ClInclude>
     <ClInclude Include="include\SystemFont.h">

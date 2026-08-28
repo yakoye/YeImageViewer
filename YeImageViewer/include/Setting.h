@@ -3,11 +3,13 @@
 #include "BuildInfo.h"
 #include "FileAssociationManager.h"
 #include "MatWindow.h"
+#include "SettingCommand.h"
 #include "SettingLayout.h"
 #include "TextDrawer.h"
 
 #include <array>
 #include <cctype>
+#include <optional>
 
 // TODO: 为 YeImageViewer 增加独立的更新检查。
 
@@ -46,6 +48,7 @@ private:
     std::array<int, 4> scrollOffsets{};
     std::string associationFilter;
     bool associationSearchActive = false;
+    std::optional<ShortcutConfig::Action> shortcutCapture;
 
     uint32_t primaryText() const {
         return GlobalVar::isCurrentUIDarkMode ?
@@ -165,20 +168,15 @@ private:
         switch (tab) {
         case 0: return SettingLayout::GENERAL_CONTENT_HEIGHT;
         case 1: return associationContentHeight();
-        case 2: return SettingLayout::HELP_CONTENT_HEIGHT;
+        case 2: return SettingLayout::SHORTCUT_CONTENT_HEIGHT;
         default: return SettingLayout::ABOUT_CONTENT_HEIGHT;
         }
     }
 
     std::array<cv::Rect, 4> associationButtonRects() const {
-        constexpr int gap = 8;
-        constexpr int width = (SettingLayout::CARD_WIDTH - gap * 3) / 4;
         std::array<cv::Rect, 4> result{};
-        for (int i = 0; i < 4; ++i) {
-            result[i] = {
-                SettingLayout::PAGE_PADDING + i * (width + gap), associationButtonsY(),
-                width, SettingLayout::ASSOCIATION_BUTTON_HEIGHT };
-        }
+        for (int i = 0; i < 4; ++i)
+            result[i] = toCvRect(SettingLayout::associationButtonRect(i, associationButtonsY()));
         return result;
     }
 
@@ -289,73 +287,101 @@ private:
         }
     }
 
-    struct HelpItem {
-        const char* actionZH;
-        const char* actionEN;
-        const char* descriptionZH;
-        const char* descriptionEN;
-        const char* keysZH;
-        const char* keysEN;
+    struct ShortcutItem {
+        ShortcutConfig::Action action;
+        const char* nameZH;
+        const char* nameEN;
     };
 
-    void refreshHelpTab(cv::Mat& page) {
-        static constexpr std::array<HelpItem, 12> items{
-            HelpItem{ "切换图片", "Switch", "上一张或下一张", "Previous or next image", "Ctrl+滚轮  左右键", "Ctrl+wheel  arrows" },
-            HelpItem{ "缩放图片", "Zoom", "放大或缩小", "Zoom image", "滚轮  上下键", "Wheel  Up/Down" },
-            HelpItem{ "旋转图片", "Rotate", "向左或向右旋转", "Rotate left or right", "Q  E", "Q  E" },
-            HelpItem{ "平移图片", "Pan", "拖动查看区域", "Move viewport", "Shift+滚轮  拖动", "Shift+wheel  drag" },
-            HelpItem{ "全屏显示", "Fullscreen", "进入或退出全屏", "Toggle fullscreen", "F  F11  双击", "F  F11  double click" },
-            HelpItem{ "退出沉浸", "Leave immersive", "恢复普通窗口", "Restore framed window", "Esc  点击背景", "Esc  click background" },
-            HelpItem{ "图像信息", "Image info", "显示精简信息卡", "Toggle information card", "Tab  I  中键", "Tab  I  middle click" },
-            HelpItem{ "复制图像", "Copy image", "复制到剪贴板", "Copy to clipboard", "Ctrl+C", "Ctrl+C" },
-            HelpItem{ "打印图像", "Print", "打印当前图片", "Print current image", "Ctrl+P", "Ctrl+P" },
-            HelpItem{ "分解动图", "Split animation", "导出所有帧", "Export all frames", "Ctrl+S", "Ctrl+S" },
-            HelpItem{ "逐帧浏览", "Browse frames", "向后、暂停、向前", "Back, pause, forward", "J  K  L", "J  K  L" },
-            HelpItem{ "播放暂停", "Play or pause", "切换动画播放", "Toggle animation", "空格键", "Space" },
+    static constexpr std::array<ShortcutItem,
+        static_cast<std::size_t>(ShortcutConfig::Action::Count)> shortcutItems{
+            ShortcutItem{ ShortcutConfig::Action::OpenFile, "打开图片", "Open image" },
+            ShortcutItem{ ShortcutConfig::Action::ExportFrames, "导出全部帧", "Export all frames" },
+            ShortcutItem{ ShortcutConfig::Action::CopyImage, "复制图片", "Copy image" },
+            ShortcutItem{ ShortcutConfig::Action::PrintImage, "打印图片", "Print image" },
+            ShortcutItem{ ShortcutConfig::Action::CloseViewer, "关闭看图窗口", "Close viewer" },
+            ShortcutItem{ ShortcutConfig::Action::PreviousFrame, "上一帧", "Previous frame" },
+            ShortcutItem{ ShortcutConfig::Action::ToggleAnimation, "暂停/继续动图", "Pause/resume animation" },
+            ShortcutItem{ ShortcutConfig::Action::NextFrame, "下一帧", "Next frame" },
+            ShortcutItem{ ShortcutConfig::Action::CopyImageInfo, "复制图片信息", "Copy image information" },
+            ShortcutItem{ ShortcutConfig::Action::ToggleFullscreen, "全屏显示", "Toggle fullscreen" },
+            ShortcutItem{ ShortcutConfig::Action::RotateLeft, "向左旋转", "Rotate left" },
+            ShortcutItem{ ShortcutConfig::Action::RotateRight, "向右旋转", "Rotate right" },
+            ShortcutItem{ ShortcutConfig::Action::PanUp, "向上拖动", "Pan up" },
+            ShortcutItem{ ShortcutConfig::Action::PanDown, "向下拖动", "Pan down" },
+            ShortcutItem{ ShortcutConfig::Action::PanLeft, "向左拖动", "Pan left" },
+            ShortcutItem{ ShortcutConfig::Action::PanRight, "向右拖动", "Pan right" },
+            ShortcutItem{ ShortcutConfig::Action::ZoomIn, "放大", "Zoom in" },
+            ShortcutItem{ ShortcutConfig::Action::ZoomOut, "缩小", "Zoom out" },
+            ShortcutItem{ ShortcutConfig::Action::ZoomFit, "适合窗口", "Fit window" },
+            ShortcutItem{ ShortcutConfig::Action::PreviousImage, "上一张", "Previous image" },
+            ShortcutItem{ ShortcutConfig::Action::NextImage, "下一张", "Next image" },
+            ShortcutItem{ ShortcutConfig::Action::FirstImage, "第一张", "First image" },
+            ShortcutItem{ ShortcutConfig::Action::LastImage, "最后一张", "Last image" },
+            ShortcutItem{ ShortcutConfig::Action::PlayPause, "播放/暂停", "Play/pause" },
+            ShortcutItem{ ShortcutConfig::Action::ToggleImageInfo, "显示图片信息", "Toggle image information" },
+            ShortcutItem{ ShortcutConfig::Action::OpenSettings, "打开设置", "Open settings" },
+            ShortcutItem{ ShortcutConfig::Action::RenameImage, "重命名图片", "Rename image" },
+            ShortcutItem{ ShortcutConfig::Action::OpenShortcuts, "打开快捷键设置", "Open shortcuts" },
+            ShortcutItem{ ShortcutConfig::Action::OpenAbout, "打开关于", "Open about" },
+            ShortcutItem{ ShortcutConfig::Action::DeleteImage, "删除图片", "Delete image" },
         };
-        static constexpr std::array<const char*, 4> groupsZH{
-            "图片浏览", "界面控制", "编辑与操作", "动画播放" };
-        static constexpr std::array<const char*, 4> groupsEN{
-            "IMAGE BROWSING", "INTERFACE", "EDIT & ACTIONS", "ANIMATION" };
-        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
 
-        drawCard(page, { 20, 20, 580, SettingLayout::HELP_CONTENT_HEIGHT - 40 });
-        const cv::Rect header = toCvRect(SettingLayout::HELP_HEADER);
-        cv::rectangle(page, header, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), -1);
-            textDrawer.putAlignLeft(page, { 36, header.y, 100, header.height },
-            chinese ? "功能" : "ACTION", secondaryText());
-        textDrawer.putAlignLeft(page, { 154, header.y, 210, header.height },
-            chinese ? "说明" : "DESCRIPTION", secondaryText());
-        textDrawer.putAlignLeft(page, { 374, header.y, 210, header.height },
-            chinese ? "快捷键" : "SHORTCUTS", secondaryText());
-
-        constexpr std::array<int, 4> groupStarts{ 0, 4, 7, 10 };
-        for (int group = 0; group < 4; ++group) {
-            const cv::Rect groupRect = toCvRect(SettingLayout::HELP_GROUP_HEADERS[group]);
-            cv::rectangle(page, groupRect,
-                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_DEEP), -1);
-            cv::circle(page, { groupRect.x + 16, groupRect.y + groupRect.height / 2 }, 3,
-                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.CHECK), -1);
-            textDrawer.putAlignLeft(page,
-                { groupRect.x + 28, groupRect.y, groupRect.width - 30, groupRect.height },
-                chinese ? groupsZH[group] : groupsEN[group], GlobalVar::currentTheme.CHECK);
+    const char* wheelActionName(ShortcutConfig::WheelAction action, bool chinese) const {
+        switch (action) {
+        case ShortcutConfig::WheelAction::Zoom: return chinese ? "放大/缩小" : "Zoom";
+        case ShortcutConfig::WheelAction::PanVertical: return chinese ? "上下拖动" : "Pan vertically";
+        case ShortcutConfig::WheelAction::PanHorizontal: return chinese ? "左右拖动" : "Pan horizontally";
+        case ShortcutConfig::WheelAction::SwitchImage: return chinese ? "上一张/下一张" : "Previous/next image";
+        case ShortcutConfig::WheelAction::Count: break;
         }
+        return "";
+    }
 
-        for (int index = 0; index < static_cast<int>(items.size()); ++index) {
-            const cv::Rect row = toCvRect(SettingLayout::HELP_ITEMS[index]);
+    void refreshShortcutTab(cv::Mat& page) {
+        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        drawCard(page, toCvRect(SettingLayout::SHORTCUT_CARD));
+        textDrawer.putAlignLeft(page, toCvRect(SettingLayout::SHORTCUT_WHEEL_HEADER),
+            chinese ? "鼠标滚轮（点击右侧选项可切换）" :
+                "MOUSE WHEEL (click an option to change)", GlobalVar::currentTheme.CHECK);
+        static constexpr std::array<const char*, 3> wheelZH{ "滚轮", "Ctrl + 滚轮", "Shift + 滚轮" };
+        static constexpr std::array<const char*, 3> wheelEN{ "Wheel", "Ctrl + wheel", "Shift + wheel" };
+        for (int index = 0; index < 3; ++index) {
+            const cv::Rect row = toCvRect(SettingLayout::shortcutWheelRow(index));
             cv::line(page, { row.x, row.y }, { row.x + row.width, row.y },
                 jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
-            textDrawer.putAlignLeft(page, { row.x + 16, row.y, 112, row.height },
-                chinese ? items[index].actionZH : items[index].actionEN,
-                primaryText());
-            textDrawer.putAlignLeft(page, { row.x + 134, row.y, 214, row.height },
-                chinese ? items[index].descriptionZH : items[index].descriptionEN,
-                secondaryText());
-            const cv::Rect keyRect{ row.x + 354, row.y + 8, 208, row.height - 16 };
+            textDrawer.putAlignLeft(page, { row.x + 8, row.y, 220, row.height },
+                chinese ? wheelZH[index] : wheelEN[index], primaryText());
+            const cv::Rect keyRect{ row.x + 260, row.y + 5, 280, row.height - 10 };
             fillRoundedRect(page, keyRect, GlobalVar::currentTheme.BG_DEEP, 5);
-            textDrawer.putAlignCenter(page, keyRect,
-                chinese ? items[index].keysZH : items[index].keysEN,
-                secondaryText());
+            textDrawer.putAlignCenter(page, keyRect, wheelActionName(
+                ShortcutConfig::getWheelAction(GlobalVar::settingParameter.reserve, index), chinese),
+                GlobalVar::currentTheme.CHECK);
+        }
+        const cv::Rect reset = toCvRect(SettingLayout::SHORTCUT_RESET_BUTTON);
+        fillRoundedRect(page, reset, GlobalVar::currentTheme.BG_TAG, 6);
+        textDrawer.putAlignCenter(page, reset, chinese ? "恢复默认" : "Restore defaults", primaryText());
+
+        textDrawer.putAlignLeft(page, toCvRect(SettingLayout::SHORTCUT_KEYBOARD_HEADER),
+            chinese ? "键盘快捷键（点击右侧按键后重新输入）" :
+                "KEYBOARD (click a key, then press a replacement)", GlobalVar::currentTheme.CHECK);
+        for (int index = 0; index < static_cast<int>(shortcutItems.size()); ++index) {
+            const auto& item = shortcutItems[index];
+            const cv::Rect row = toCvRect(SettingLayout::shortcutKeyboardRow(index));
+            cv::line(page, { row.x, row.y }, { row.x + row.width, row.y },
+                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+            textDrawer.putAlignLeft(page, { row.x + 8, row.y, 290, row.height },
+                chinese ? item.nameZH : item.nameEN, primaryText());
+            const cv::Rect keyRect{ row.x + 312, row.y + 5, 228, row.height - 10 };
+            const bool capturing = shortcutCapture && *shortcutCapture == item.action;
+            fillRoundedRect(page, keyRect, capturing ?
+                GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_DEEP, 5);
+            const std::string keyText = capturing ?
+                (chinese ? "请按新快捷键…" : "Press a shortcut...") :
+                ShortcutConfig::keyName(ShortcutConfig::getBinding(
+                    GlobalVar::settingParameter.reserve, item.action), chinese);
+            textDrawer.putAlignCenter(page, keyRect, keyText.c_str(),
+                capturing ? 0xFFFFFFFFu : secondaryText());
         }
     }
 
@@ -441,7 +467,7 @@ private:
         switch (tab) {
         case 0: refreshGeneralTab(page); break;
         case 1: refreshAssociateTab(page); break;
-        case 2: refreshHelpTab(page); break;
+        case 2: refreshShortcutTab(page); break;
         default: refreshAboutTab(page); break;
         }
 
@@ -595,6 +621,40 @@ private:
             jarkUtils::openUrl(upstreamRepository.data());
     }
 
+    void handleShortcutTab(int x, int y) {
+        for (int index = 0; index < 3; ++index) {
+            const cv::Rect row = toCvRect(SettingLayout::shortcutWheelRow(index));
+            if (!isInside(x, y, row))
+                continue;
+            const auto current = ShortcutConfig::getWheelAction(
+                GlobalVar::settingParameter.reserve, index);
+            const auto next = static_cast<ShortcutConfig::WheelAction>(
+                (static_cast<uint32_t>(current) + 1) %
+                static_cast<uint32_t>(ShortcutConfig::WheelAction::Count));
+            ShortcutConfig::setWheelAction(GlobalVar::settingParameter.reserve, index, next);
+            shortcutCapture.reset();
+            isNeedRefreshUI = true;
+            return;
+        }
+        if (isInside(x, y, toCvRect(SettingLayout::SHORTCUT_RESET_BUTTON))) {
+            ShortcutConfig::reset(GlobalVar::settingParameter.reserve,
+                std::size(GlobalVar::settingParameter.reserve));
+            shortcutCapture.reset();
+            isNeedRefreshUI = true;
+            return;
+        }
+        for (int index = 0; index < static_cast<int>(shortcutItems.size()); ++index) {
+            const cv::Rect row = toCvRect(SettingLayout::shortcutKeyboardRow(index));
+            if (!isInside(x, y, row))
+                continue;
+            shortcutCapture = shortcutItems[index].action;
+            isNeedRefreshUI = true;
+            return;
+        }
+        shortcutCapture.reset();
+        isNeedRefreshUI = true;
+    }
+
     void setScrollFromTrack(int y) {
         const int contentHeight = contentHeightForTab(curTabIdx);
         const int maximum = SettingLayout::maxScrollOffset(contentHeight);
@@ -611,29 +671,56 @@ private:
     }
 
     void onLButtonUp() override {
-        if (m_y < tabHeight) {
-            const int newTab = std::clamp(m_x / tabWidth, 0, 3);
+        const auto visibleExtensionCount = curTabIdx == 1 ?
+            static_cast<int>(filteredExtensions().size()) : 0;
+        const auto command = SettingCommand::resolve(curTabIdx, m_x, m_y,
+            scrollOffsets[curTabIdx], visibleExtensionCount,
+            curTabIdx == 1 ? associationButtonsY() : 0);
+
+        if (command.kind == SettingCommand::Kind::Tab) {
+            const int newTab = command.index;
             if (newTab != curTabIdx) {
                 if (curTabIdx == 1)
                     finishAssociateTab();
                 curTabIdx = newTab;
                 associationSearchActive = false;
+                shortcutCapture.reset();
                 isNeedRefreshUI = true;
             }
             return;
         }
 
-        if (m_x >= winWidth - 16) {
+        if (command.kind == SettingCommand::Kind::Scrollbar) {
             setScrollFromTrack(m_y);
             return;
         }
 
         const int contentX = m_x;
         const int contentY = m_y - tabHeight + scrollOffsets[curTabIdx];
-        switch (curTabIdx) {
-        case 0: handleGeneralTab(contentX, contentY); break;
-        case 1: handleAssociateTab(contentX, contentY); break;
-        case 3: handleAboutTab(contentX, contentY); break;
+        switch (command.kind) {
+        case SettingCommand::Kind::GeneralToggle:
+        case SettingCommand::Kind::GeneralRadioOption:
+            handleGeneralTab(contentX, contentY);
+            break;
+        case SettingCommand::Kind::AssociationSearch:
+        case SettingCommand::Kind::AssociationExtension:
+        case SettingCommand::Kind::AssociationDefaults:
+        case SettingCommand::Kind::AssociationAll:
+        case SettingCommand::Kind::AssociationNone:
+        case SettingCommand::Kind::AssociationApply:
+            handleAssociateTab(contentX, contentY);
+            break;
+        case SettingCommand::Kind::ShortcutWheel:
+        case SettingCommand::Kind::ShortcutReset:
+        case SettingCommand::Kind::ShortcutBinding:
+            handleShortcutTab(contentX, contentY);
+            break;
+        case SettingCommand::Kind::AboutProject:
+        case SettingCommand::Kind::AboutUpstream:
+            handleAboutTab(contentX, contentY);
+            break;
+        default:
+            break;
         }
     }
 
@@ -647,6 +734,35 @@ private:
     }
 
     void onKeyDown(WPARAM key) override {
+        if (curTabIdx == 2 && shortcutCapture) {
+            if (key == VK_ESCAPE) {
+                shortcutCapture.reset();
+                isNeedRefreshUI = true;
+                return;
+            }
+            if (key == VK_BACK) {
+                ShortcutConfig::setBinding(GlobalVar::settingParameter.reserve,
+                    *shortcutCapture, 0);
+                shortcutCapture.reset();
+                isNeedRefreshUI = true;
+                return;
+            }
+            if (ShortcutConfig::isModifierKey(static_cast<uint32_t>(key)))
+                return;
+            uint32_t modifiers = 0;
+            if ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
+                modifiers |= ShortcutConfig::MODIFIER_CONTROL;
+            if ((GetKeyState(VK_SHIFT) & 0x8000) != 0)
+                modifiers |= ShortcutConfig::MODIFIER_SHIFT;
+            if ((GetKeyState(VK_MENU) & 0x8000) != 0)
+                modifiers |= ShortcutConfig::MODIFIER_ALT;
+            ShortcutConfig::setBinding(GlobalVar::settingParameter.reserve,
+                *shortcutCapture,
+                ShortcutConfig::binding(static_cast<uint16_t>(key), modifiers));
+            shortcutCapture.reset();
+            isNeedRefreshUI = true;
+            return;
+        }
         if (key == VK_ESCAPE) {
             PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
         }
@@ -655,6 +771,7 @@ private:
                 finishAssociateTab();
             curTabIdx = (curTabIdx + 1) % 4;
             associationSearchActive = false;
+            shortcutCapture.reset();
             isNeedRefreshUI = true;
         }
     }
@@ -692,6 +809,17 @@ private:
             finishAssociateTab();
     }
 
+    static void persistSettings() {
+        if (GlobalVar::settingPath.empty())
+            return;
+        memcpy(GlobalVar::settingParameter.header, GlobalVar::settingHeader.data(),
+            GlobalVar::settingHeader.length());
+        if (FILE* file = _wfopen(GlobalVar::settingPath.c_str(), L"wb")) {
+            fwrite(&GlobalVar::settingParameter, 1, sizeof(SettingParameter), file);
+            fclose(file);
+        }
+    }
+
 public:
     static inline volatile bool isWorking = false;
     static inline volatile HWND hwnd = nullptr;
@@ -702,6 +830,7 @@ public:
         isWorking = true;
         Init(tabIdx);
         windowsMainLoop();
+        persistSettings();
         requestExitFlag = false;
         isWorking = false;
         hwnd = nullptr;

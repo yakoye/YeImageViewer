@@ -11,7 +11,7 @@ std::string_view UIStringTable[STRING_MAX_NUM][2] = {
     {"设置", "Settings"},
     {"常规", "General"},
     {"文件关联", "Association"},
-    {"帮助", "Help"},
+    {"快捷键", "Shortcuts"},
     {"关于", "About"},
     {"常见格式", "Common Formats"},  
     {"选择常用", "Select Common"},
@@ -105,7 +105,7 @@ std::wstring_view UIStringTableW[STRING_MAX_NUM][2] = {
     {L"退出 (&X)", L"E&xit"},
     {L"打开新图像 (&O)", L"&Open new image"},  // 35
     {L"文件属性 (&A)", L"File properties"},
-    {L"帮助 (&H)", L"&Help"},
+    {L"快捷键 (&K)", L"Shortcuts (&K)"},
     {L"全屏 (&F)", L"&FullScreen"},
     {L"设置", L"Settings"},
     {L"打印", L"Print"},  // 40

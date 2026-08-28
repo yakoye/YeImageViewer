@@ -632,10 +632,12 @@ LRESULT D3D11App::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         return S_OK;
 
     case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
         pApp->OnKeyDown(wParam);
         return S_OK;
 
     case WM_KEYUP:
+    case WM_SYSKEYUP:
         pApp->OnKeyUp(wParam);
         return S_OK;
 

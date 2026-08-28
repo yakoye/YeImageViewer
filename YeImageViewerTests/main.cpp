@@ -14,8 +14,11 @@
 #include "ImageViewTransform.h"
 #include "RotationStore.h"
 #include "RenamePolicy.h"
+#include "SettingCommand.h"
 #include "SettingLayout.h"
+#include "ShortcutConfig.h"
 #include "TextRenderingPolicy.h"
+#include "ToolbarCommand.h"
 #include "WheelInput.h"
 #include "SlideshowPolicy.h"
 #include "ZoomPolicy.h"
@@ -319,6 +322,21 @@ void expectOverlayLayout() {
         hitCenter(OverlayLayout::zoomOutRect(width, height)) == OverlayLayout::Hit::ZoomOut &&
         hitCenter(OverlayLayout::zoomTextRect(width, height)) == OverlayLayout::Hit::ZoomText &&
         hitCenter(OverlayLayout::zoomInRect(width, height)) == OverlayLayout::Hit::ZoomIn);
+    passOrFail("every visible toolbar button routes to its production command",
+        ToolbarCommand::resolve(OverlayLayout::Hit::ToolbarPreviousImage) == ToolbarCommand::Command::PreviousImage &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::ToolbarPlayPause) == ToolbarCommand::Command::PlayPause &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::ToolbarNextImage) == ToolbarCommand::Command::NextImage &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::RotateLeft) == ToolbarCommand::Command::RotateLeft &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::RotateRight) == ToolbarCommand::Command::RotateRight &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::FlipHorizontal) == ToolbarCommand::Command::FlipHorizontal &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::FlipVertical) == ToolbarCommand::Command::FlipVertical &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::ZoomFit) == ToolbarCommand::Command::ZoomFit &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::ZoomActual) == ToolbarCommand::Command::ZoomActual &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::Fullscreen) == ToolbarCommand::Command::Fullscreen &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::Settings) == ToolbarCommand::Command::Settings &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::ZoomOut) == ToolbarCommand::Command::ZoomOut &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::ZoomText) == ToolbarCommand::Command::EditZoom &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::ZoomIn) == ToolbarCommand::Command::ZoomIn);
     passOrFail("editable zoom percentage has a practical click and text area",
         OverlayLayout::zoomTextRect(width, height).width == 50 &&
         OverlayLayout::zoomTextRect(width, height).x >
@@ -750,17 +768,30 @@ void expectRenamePolicy() {
 }
 
 void expectEscapeBehavior() {
-    passOrFail("Escape exits fullscreen before considering close preference",
-        EscapeBehavior::resolve(true, true, true) == EscapeBehavior::Action::ExitFullScreen);
-    passOrFail("Escape restores a maximized window before considering close preference",
-        EscapeBehavior::resolve(false, true, true) == EscapeBehavior::Action::RestoreWindow);
+    passOrFail("Escape close preference closes directly from presentation",
+        EscapeBehavior::resolve(true, false, false, true) == EscapeBehavior::Action::CloseImage);
+    passOrFail("Escape close preference closes directly from fullscreen",
+        EscapeBehavior::resolve(false, true, false, true) == EscapeBehavior::Action::CloseImage);
+    passOrFail("Escape leaves presentation when close preference is disabled",
+        EscapeBehavior::resolve(true, false, false, false) == EscapeBehavior::Action::ExitPresentation);
+    passOrFail("Escape exits fullscreen when close preference is disabled",
+        EscapeBehavior::resolve(false, true, true, false) == EscapeBehavior::Action::ExitFullScreen);
+    passOrFail("Escape restores a maximized window when close preference is disabled",
+        EscapeBehavior::resolve(false, false, true, false) == EscapeBehavior::Action::RestoreWindow);
     passOrFail("Escape does not close a normal window by default",
-        EscapeBehavior::resolve(false, false, false) == EscapeBehavior::Action::Ignore);
+        EscapeBehavior::resolve(false, false, false, false) == EscapeBehavior::Action::Ignore);
     passOrFail("Escape closes a normal window only when explicitly enabled",
-        EscapeBehavior::resolve(false, false, true) == EscapeBehavior::Action::CloseImage);
+        EscapeBehavior::resolve(false, false, false, true) == EscapeBehavior::Action::CloseImage);
 }
 
 void expectSettingLayout() {
+    const auto hasCenter = [](const SettingLayout::Rect& rect, int contentHeight) {
+        const int centerX = rect.x + rect.width / 2;
+        const int centerY = rect.y + rect.height / 2;
+        return SettingLayout::isInsidePage(rect, contentHeight) &&
+            rect.x <= centerX && centerX < rect.x + rect.width &&
+            rect.y <= centerY && centerY < rect.y + rect.height;
+    };
     passOrFail("settings use the native Windows menu-sized font",
         SettingLayout::FONT_SIZE == 16 &&
         TextRenderingPolicy::LOGICAL_FONT_SIZE == SettingLayout::FONT_SIZE &&
@@ -772,6 +803,116 @@ void expectSettingLayout() {
         SettingLayout::TAB_WIDTH * 4 == SettingLayout::CANVAS_WIDTH);
     passOrFail("settings controls remain separated inside the fixed canvas",
         SettingLayout::generalControlsAreSeparated());
+    bool everySettingControlHasHitTarget = true;
+    for (const auto& rect : SettingLayout::GENERAL_CHECK_BOXES)
+        everySettingControlHasHitTarget &= hasCenter(rect, SettingLayout::GENERAL_CONTENT_HEIGHT);
+    for (const auto& rect : SettingLayout::GENERAL_RADIOS)
+        everySettingControlHasHitTarget &= hasCenter(rect, SettingLayout::GENERAL_CONTENT_HEIGHT);
+    everySettingControlHasHitTarget &= hasCenter(SettingLayout::ASSOCIATION_SEARCH, 600);
+    for (int index = 0; index < 4; ++index)
+        everySettingControlHasHitTarget &= hasCenter(
+            SettingLayout::associationButtonRect(index, 400), 500);
+    for (int index = 0; index < 3; ++index)
+        everySettingControlHasHitTarget &= hasCenter(
+            SettingLayout::shortcutWheelRow(index), SettingLayout::SHORTCUT_CONTENT_HEIGHT);
+    everySettingControlHasHitTarget &= hasCenter(
+        SettingLayout::SHORTCUT_RESET_BUTTON, SettingLayout::SHORTCUT_CONTENT_HEIGHT);
+    for (int index = 0; index < SettingLayout::SHORTCUT_KEYBOARD_ROW_COUNT; ++index)
+        everySettingControlHasHitTarget &= hasCenter(
+            SettingLayout::shortcutKeyboardRow(index), SettingLayout::SHORTCUT_CONTENT_HEIGHT);
+    everySettingControlHasHitTarget &= hasCenter(
+        SettingLayout::ABOUT_PROJECT_BUTTON, SettingLayout::ABOUT_CONTENT_HEIGHT) &&
+        hasCenter(SettingLayout::ABOUT_UPSTREAM_BUTTON, SettingLayout::ABOUT_CONTENT_HEIGHT);
+    passOrFail("every settings switch segment button and shortcut row has a tested hit target",
+        everySettingControlHasHitTarget);
+    bool everySettingControlRoutes = true;
+    for (int index = 0; index < static_cast<int>(SettingLayout::GENERAL_CHECK_BOXES.size()); ++index) {
+        const auto rect = SettingLayout::GENERAL_CHECK_BOXES[index];
+        const auto command = SettingCommand::resolve(0, rect.x + rect.width / 2,
+            SettingLayout::TAB_HEIGHT + rect.y + rect.height / 2, 0);
+        everySettingControlRoutes &= command.kind == SettingCommand::Kind::GeneralToggle &&
+            command.index == index;
+    }
+    constexpr std::array<int, 4> radioOptions{ 3, 3, 2, 2 };
+    for (int rowIndex = 0; rowIndex < static_cast<int>(SettingLayout::GENERAL_RADIOS.size()); ++rowIndex) {
+        const auto row = SettingLayout::GENERAL_RADIOS[rowIndex];
+        const int segmentX = row.x + 138;
+        const int segmentWidth = (row.width - 138) / radioOptions[rowIndex];
+        for (int option = 0; option < radioOptions[rowIndex]; ++option) {
+            const auto command = SettingCommand::resolve(0,
+                segmentX + option * segmentWidth + segmentWidth / 2,
+                SettingLayout::TAB_HEIGHT + row.y + row.height / 2, 0);
+            everySettingControlRoutes &= command.kind == SettingCommand::Kind::GeneralRadioOption &&
+                command.index == rowIndex && command.option == option;
+        }
+    }
+    constexpr int associationCount = 24;
+    constexpr int associationButtonsY = 185;
+    everySettingControlRoutes &= SettingCommand::resolve(1,
+        SettingLayout::ASSOCIATION_SEARCH.x + 10,
+        SettingLayout::TAB_HEIGHT + SettingLayout::ASSOCIATION_SEARCH.y + 10,
+        0, associationCount, associationButtonsY).kind == SettingCommand::Kind::AssociationSearch;
+    for (int index = 0; index < associationCount; ++index) {
+        const int column = index % SettingLayout::ASSOCIATION_GRID_COLUMNS;
+        const int row = index / SettingLayout::ASSOCIATION_GRID_COLUMNS;
+        const auto command = SettingCommand::resolve(1,
+            SettingLayout::ASSOCIATION_GRID_X + column *
+                (SettingLayout::ASSOCIATION_TAG_WIDTH + SettingLayout::ASSOCIATION_TAG_GAP_X) + 2,
+            SettingLayout::TAB_HEIGHT + SettingLayout::ASSOCIATION_GRID_Y + row *
+                (SettingLayout::ASSOCIATION_TAG_HEIGHT + SettingLayout::ASSOCIATION_TAG_GAP_Y) + 2,
+            0, associationCount, associationButtonsY);
+        everySettingControlRoutes &= command.kind == SettingCommand::Kind::AssociationExtension &&
+            command.index == index;
+    }
+    constexpr std::array<SettingCommand::Kind, 4> associationKinds{
+        SettingCommand::Kind::AssociationDefaults, SettingCommand::Kind::AssociationAll,
+        SettingCommand::Kind::AssociationNone, SettingCommand::Kind::AssociationApply };
+    for (int index = 0; index < 4; ++index) {
+        const auto rect = SettingLayout::associationButtonRect(index, associationButtonsY);
+        everySettingControlRoutes &= SettingCommand::resolve(1, rect.x + rect.width / 2,
+            SettingLayout::TAB_HEIGHT + rect.y + rect.height / 2, 0,
+            associationCount, associationButtonsY).kind == associationKinds[index];
+    }
+    for (int index = 0; index < 3; ++index) {
+        const auto row = SettingLayout::shortcutWheelRow(index);
+        const auto command = SettingCommand::resolve(2, row.x + row.width / 2,
+            SettingLayout::TAB_HEIGHT + row.y + row.height / 2, 0);
+        everySettingControlRoutes &= command.kind == SettingCommand::Kind::ShortcutWheel &&
+            command.index == index;
+    }
+    {
+        const auto reset = SettingLayout::SHORTCUT_RESET_BUTTON;
+        everySettingControlRoutes &= SettingCommand::resolve(2,
+            reset.x + reset.width / 2,
+            SettingLayout::TAB_HEIGHT + reset.y + reset.height / 2, 0).kind ==
+            SettingCommand::Kind::ShortcutReset;
+    }
+    for (int index = 0; index < SettingLayout::SHORTCUT_KEYBOARD_ROW_COUNT; ++index) {
+        const auto row = SettingLayout::shortcutKeyboardRow(index);
+        const auto command = SettingCommand::resolve(2, row.x + row.width / 2,
+            SettingLayout::TAB_HEIGHT + row.y + row.height / 2, 0);
+        everySettingControlRoutes &= command.kind == SettingCommand::Kind::ShortcutBinding &&
+            command.index == index;
+    }
+    for (int tab = 0; tab < 4; ++tab) {
+        const auto command = SettingCommand::resolve(0,
+            tab * SettingLayout::TAB_WIDTH + SettingLayout::TAB_WIDTH / 2,
+            SettingLayout::TAB_HEIGHT / 2, 0);
+        everySettingControlRoutes &= command.kind == SettingCommand::Kind::Tab &&
+            command.index == tab;
+    }
+    everySettingControlRoutes &= SettingCommand::resolve(3,
+        SettingLayout::ABOUT_PROJECT_BUTTON.x + SettingLayout::ABOUT_PROJECT_BUTTON.width / 2,
+        SettingLayout::TAB_HEIGHT + SettingLayout::ABOUT_PROJECT_BUTTON.y +
+            SettingLayout::ABOUT_PROJECT_BUTTON.height / 2, 0).kind ==
+            SettingCommand::Kind::AboutProject;
+    everySettingControlRoutes &= SettingCommand::resolve(3,
+        SettingLayout::ABOUT_UPSTREAM_BUTTON.x + SettingLayout::ABOUT_UPSTREAM_BUTTON.width / 2,
+        SettingLayout::TAB_HEIGHT + SettingLayout::ABOUT_UPSTREAM_BUTTON.y +
+            SettingLayout::ABOUT_UPSTREAM_BUTTON.height / 2, 0).kind ==
+            SettingCommand::Kind::AboutUpstream;
+    passOrFail("every Settings tab switch segment association shortcut and About button routes to its production command",
+        everySettingControlRoutes);
     passOrFail("general settings pair switches and keep segmented rows full width",
         SettingLayout::GENERAL_CHECK_BOXES[0].y == SettingLayout::GENERAL_CHECK_BOXES[1].y &&
         SettingLayout::GENERAL_CHECK_BOXES[0].x < SettingLayout::GENERAL_CHECK_BOXES[1].x &&
@@ -782,16 +923,18 @@ void expectSettingLayout() {
         SettingLayout::GENERAL_CHECK_BOXES.back().y +
             SettingLayout::GENERAL_CHECK_BOXES.back().height <
             SettingLayout::GENERAL_RADIOS.front().y);
-    passOrFail("help shortcuts use twelve separated table rows",
-        SettingLayout::HELP_ITEMS.size() == 12 &&
-        SettingLayout::HELP_ITEMS.front().y < SettingLayout::HELP_ITEMS.back().y &&
-        SettingLayout::helpItemsAreSeparated());
+    passOrFail("shortcut settings expose every configurable keyboard action",
+        SettingLayout::SHORTCUT_KEYBOARD_ROW_COUNT ==
+            static_cast<int>(ShortcutConfig::Action::Count) &&
+        SettingLayout::shortcutKeyboardRow(0).y <
+            SettingLayout::shortcutKeyboardRow(SettingLayout::SHORTCUT_KEYBOARD_ROW_COUNT - 1).y &&
+        SettingLayout::shortcutItemsAreSeparated());
     passOrFail("only overflowing settings pages enable a compact scrollbar",
         SettingLayout::maxScrollOffset(SettingLayout::GENERAL_CONTENT_HEIGHT) == 0 &&
         SettingLayout::maxScrollOffset(SettingLayout::ABOUT_CONTENT_HEIGHT) == 0 &&
-        SettingLayout::maxScrollOffset(SettingLayout::HELP_CONTENT_HEIGHT) > 0 &&
-        SettingLayout::scrollbarThumbHeight(SettingLayout::HELP_CONTENT_HEIGHT) >= 32 &&
-        SettingLayout::scrollbarThumbHeight(SettingLayout::HELP_CONTENT_HEIGHT) <
+        SettingLayout::maxScrollOffset(SettingLayout::SHORTCUT_CONTENT_HEIGHT) > 0 &&
+        SettingLayout::scrollbarThumbHeight(SettingLayout::SHORTCUT_CONTENT_HEIGHT) >= 32 &&
+        SettingLayout::scrollbarThumbHeight(SettingLayout::SHORTCUT_CONTENT_HEIGHT) <
             SettingLayout::CONTENT_VIEW_HEIGHT);
     passOrFail("about build details follow the author and repository buttons stay at the bottom",
         SettingLayout::aboutLayoutIsOrdered() &&
@@ -801,9 +944,9 @@ void expectSettingLayout() {
             SettingLayout::ABOUT_PROJECT_BUTTON.height ==
             SettingLayout::ABOUT_CONTENT_HEIGHT - SettingLayout::PAGE_PADDING);
     passOrFail("settings scroll offsets are clamped to the content bounds",
-        SettingLayout::clampScrollOffset(SettingLayout::HELP_CONTENT_HEIGHT, -10) == 0 &&
-        SettingLayout::clampScrollOffset(SettingLayout::HELP_CONTENT_HEIGHT, 10000) ==
-            SettingLayout::maxScrollOffset(SettingLayout::HELP_CONTENT_HEIGHT));
+        SettingLayout::clampScrollOffset(SettingLayout::SHORTCUT_CONTENT_HEIGHT, -10) == 0 &&
+        SettingLayout::clampScrollOffset(SettingLayout::SHORTCUT_CONTENT_HEIGHT, 10000) ==
+            SettingLayout::maxScrollOffset(SettingLayout::SHORTCUT_CONTENT_HEIGHT));
 }
 
 void expectHomeScreenLayout() {
@@ -914,22 +1057,64 @@ void expectWindowTitlePresentation() {
 
 void expectWheelInput() {
     constexpr int panStep = 96;
-    passOrFail("ordinary wheel keeps the existing context-sensitive behavior",
-        WheelInput::resolve(0, 120, panStep).intent == WheelInput::Intent::Default &&
-        WheelInput::resolve(0, -120, panStep).intent == WheelInput::Intent::Default);
-    passOrFail("Shift wheel pans a tall image vertically in both directions",
-        WheelInput::resolve(WheelInput::SHIFT_FLAG, 120, panStep).intent == WheelInput::Intent::PanVertical &&
-        WheelInput::resolve(WheelInput::SHIFT_FLAG, 120, panStep).verticalDelta == panStep &&
-        WheelInput::resolve(WheelInput::SHIFT_FLAG, -120, panStep).verticalDelta == -panStep);
-    passOrFail("Ctrl wheel switches to previous or next image",
-        WheelInput::resolve(WheelInput::CONTROL_FLAG, 120, panStep).intent == WheelInput::Intent::PreviousImage &&
-        WheelInput::resolve(WheelInput::CONTROL_FLAG, -120, panStep).intent == WheelInput::Intent::NextImage);
+    passOrFail("ordinary wheel pans the image vertically by default",
+        WheelInput::resolveDefault(0, 120, panStep).intent == WheelInput::Intent::PanVertical &&
+        WheelInput::resolveDefault(0, 120, panStep).verticalDelta == panStep &&
+        WheelInput::resolveDefault(0, -120, panStep).verticalDelta == -panStep);
+    passOrFail("Ctrl wheel zooms in or out by default",
+        WheelInput::resolveDefault(WheelInput::CONTROL_FLAG, 120, panStep).intent == WheelInput::Intent::ZoomIn &&
+        WheelInput::resolveDefault(WheelInput::CONTROL_FLAG, -120, panStep).intent == WheelInput::Intent::ZoomOut);
+    passOrFail("Shift wheel pans the image horizontally by default",
+        WheelInput::resolveDefault(WheelInput::SHIFT_FLAG, 120, panStep).intent == WheelInput::Intent::PanHorizontal &&
+        WheelInput::resolveDefault(WheelInput::SHIFT_FLAG, 120, panStep).horizontalDelta == panStep &&
+        WheelInput::resolveDefault(WheelInput::SHIFT_FLAG, -120, panStep).horizontalDelta == -panStep);
     passOrFail("Ctrl takes priority when Ctrl and Shift are both held",
-        WheelInput::resolve(WheelInput::CONTROL_FLAG | WheelInput::SHIFT_FLAG, 120, panStep).intent ==
-            WheelInput::Intent::PreviousImage);
+        WheelInput::resolveDefault(WheelInput::CONTROL_FLAG | WheelInput::SHIFT_FLAG, 120, panStep).intent ==
+            WheelInput::Intent::ZoomIn);
+    passOrFail("wheel actions can be remapped without changing direction semantics",
+        WheelInput::resolve(0, 120, panStep,
+            ShortcutConfig::WheelAction::SwitchImage,
+            ShortcutConfig::WheelAction::PanHorizontal,
+            ShortcutConfig::WheelAction::Zoom).intent == WheelInput::Intent::PreviousImage &&
+        WheelInput::resolve(WheelInput::CONTROL_FLAG, -120, panStep,
+            ShortcutConfig::WheelAction::SwitchImage,
+            ShortcutConfig::WheelAction::PanHorizontal,
+            ShortcutConfig::WheelAction::Zoom).horizontalDelta == -panStep);
     passOrFail("zero wheel delta does not enqueue an action",
-        WheelInput::resolve(WheelInput::CONTROL_FLAG | WheelInput::SHIFT_FLAG, 0, panStep).intent ==
+        WheelInput::resolveDefault(WheelInput::CONTROL_FLAG | WheelInput::SHIFT_FLAG, 0, panStep).intent ==
             WheelInput::Intent::Default);
+}
+
+void expectShortcutConfig() {
+    std::array<uint32_t, 777> storage{};
+    ShortcutConfig::initialize(storage.data(), storage.size());
+    passOrFail("shortcut storage upgrades old settings to the requested defaults",
+        storage[ShortcutConfig::MAGIC_INDEX] == ShortcutConfig::STORAGE_MAGIC &&
+        ShortcutConfig::getWheelAction(storage.data(), 0) == ShortcutConfig::WheelAction::PanVertical &&
+        ShortcutConfig::getWheelAction(storage.data(), 1) == ShortcutConfig::WheelAction::Zoom &&
+        ShortcutConfig::getWheelAction(storage.data(), 2) == ShortcutConfig::WheelAction::PanHorizontal &&
+        ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::RenameImage) ==
+            ShortcutConfig::binding(0x71));
+    ShortcutConfig::setBinding(storage.data(), ShortcutConfig::Action::RenameImage,
+        ShortcutConfig::binding('R', ShortcutConfig::MODIFIER_CONTROL));
+    ShortcutConfig::setBinding(storage.data(), ShortcutConfig::Action::OpenFile,
+        ShortcutConfig::binding('R', ShortcutConfig::MODIFIER_CONTROL));
+    passOrFail("reassigning a shortcut removes the conflicting old assignment",
+        ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::RenameImage) == 0 &&
+        ShortcutConfig::matches(ShortcutConfig::getBinding(storage.data(),
+            ShortcutConfig::Action::OpenFile), 'R', ShortcutConfig::MODIFIER_CONTROL));
+    ShortcutConfig::setWheelAction(storage.data(), 0, ShortcutConfig::WheelAction::SwitchImage);
+    ShortcutConfig::initialize(storage.data(), storage.size());
+    passOrFail("valid custom keyboard and wheel mappings survive settings validation",
+        ShortcutConfig::getWheelAction(storage.data(), 0) == ShortcutConfig::WheelAction::SwitchImage &&
+        ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::OpenFile) ==
+            ShortcutConfig::binding('R', ShortcutConfig::MODIFIER_CONTROL));
+    ShortcutConfig::reset(storage.data(), storage.size());
+    passOrFail("shortcut reset restores every keyboard and wheel default",
+        ShortcutConfig::getWheelAction(storage.data(), 0) == ShortcutConfig::DEFAULT_WHEEL_ACTIONS[0] &&
+        ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::OpenFile) ==
+            ShortcutConfig::DEFAULT_BINDINGS[ShortcutConfig::actionIndex(ShortcutConfig::Action::OpenFile)] &&
+        ShortcutConfig::keyName(ShortcutConfig::binding(0x71), true) == "F2");
 }
 
 void expectDrawioTextFallback(std::string_view path) {
@@ -1022,6 +1207,7 @@ int main(int argc, char* argv[]) {
     expectImageInfoPresentation();
     expectWindowTitlePresentation();
     expectWheelInput();
+    expectShortcutConfig();
     expectRotationPersistence();
     expectRenamePolicy();
     if (argc >= 2) {

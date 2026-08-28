@@ -58,6 +58,7 @@ $temporaryBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $temporaryRoot = Join-Path $temporaryBase ("YeImageViewer-Package-" + [Guid]::NewGuid().ToString("N"))
 $stagingRoot = Join-Path $temporaryRoot $packageName
 $stagingRuntime = Join-Path $stagingRoot "x64\Release"
+$installerStaging = Join-Path $temporaryRoot "installer"
 
 try {
     New-Item -ItemType Directory -Path $stagingRuntime -Force | Out-Null
@@ -92,7 +93,79 @@ try {
         throw "Full package is $([math]::Round($archiveInfo.Length / 1MB, 2)) MiB, above the 25 MiB release limit."
     }
 
-    $outputs = @($archive)
+    $installerSfx = Join-Path $repoRoot "tools\installer\7zSD.sfx"
+    if (-not (Test-Path -LiteralPath $installerSfx -PathType Leaf)) {
+        throw "The pinned LZMA SDK installer module is missing: $installerSfx"
+    }
+    New-Item -ItemType Directory -Path $installerStaging -Force | Out-Null
+    Copy-Item -LiteralPath $viewer -Destination (Join-Path $installerStaging "YeImageViewer.exe")
+    Copy-Item -LiteralPath $thumbnailProvider -Destination (Join-Path $installerStaging "YeThumbnailProvider.dll")
+    Copy-Item -LiteralPath (Join-Path $repoRoot "installLocal.ps1") `
+        -Destination (Join-Path $installerStaging "installLocal.ps1")
+    $installer = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "$packageName-setup.exe"))
+    if (Test-Path -LiteralPath $installer) {
+        [IO.File]::Delete($installer)
+    }
+    $installerPayload = Join-Path $temporaryRoot "YeImageViewer-installer.7z"
+    Push-Location $installerStaging
+    try {
+        & $sevenZip a -t7z -mx=9 -m0=lzma2 -md=64m -ms=on -mmt=on `
+            $installerPayload "YeImageViewer.exe" "YeThumbnailProvider.dll" "installLocal.ps1" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "One-click installer payload creation failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+    $installerConfig = Join-Path $temporaryRoot "YeImageViewer-installer-config.txt"
+    $configText = @'
+;!@Install@!UTF-8!
+Title="YeImageViewer"
+RunProgram="powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File installLocal.ps1"
+;!@InstallEnd@!
+'@
+    [IO.File]::WriteAllText($installerConfig, $configText,
+        [Text.UTF8Encoding]::new($false))
+    $installerStream = [IO.File]::Create($installer)
+    try {
+        foreach ($part in @($installerSfx, $installerConfig, $installerPayload)) {
+            $partStream = [IO.File]::OpenRead($part)
+            try {
+                $partStream.CopyTo($installerStream)
+            }
+            finally {
+                $partStream.Dispose()
+            }
+        }
+    }
+    finally {
+        $installerStream.Dispose()
+    }
+    if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+        throw "One-click installer creation failed."
+    }
+    $installerInfo = Get-Item -LiteralPath $installer
+    if ($installerInfo.Length -gt $maximumDownloadBytes) {
+        throw "One-click installer is $([math]::Round($installerInfo.Length / 1MB, 2)) MiB, above the 25 MiB release limit."
+    }
+    $installerVerifyDirectory = Join-Path $temporaryRoot "installer-verify"
+    New-Item -ItemType Directory -Path $installerVerifyDirectory -Force | Out-Null
+    & $sevenZip x -y "-o$installerVerifyDirectory" $installer | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "One-click installer verification extraction failed with exit code $LASTEXITCODE."
+    }
+    foreach ($payloadFile in @("YeImageViewer.exe", "YeThumbnailProvider.dll", "installLocal.ps1")) {
+        $expectedPayloadFile = Join-Path $installerStaging $payloadFile
+        $actualPayloadFile = Join-Path $installerVerifyDirectory $payloadFile
+        if (-not (Test-Path -LiteralPath $actualPayloadFile -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $expectedPayloadFile -Algorithm SHA256).Hash -ne
+                (Get-FileHash -LiteralPath $actualPayloadFile -Algorithm SHA256).Hash) {
+            throw "One-click installer verification failed for $payloadFile."
+        }
+    }
+
+    $outputs = @($archive, $installer)
     if ($IncludeCompatibilityZip) {
         $zip = Join-Path $OutputDirectory "$packageName.zip"
         if (Test-Path -LiteralPath $zip) {
@@ -113,6 +186,8 @@ try {
         Version = $version
         FullPackage = $archive
         FullPackageMiB = [math]::Round($archiveInfo.Length / 1MB, 2)
+        OneClickInstaller = $installer
+        OneClickInstallerMiB = [math]::Round($installerInfo.Length / 1MB, 2)
         CompatibilityZip = if ($IncludeCompatibilityZip) { $outputs[-1] } else { $null }
         Checksums = $checksumPath
     }

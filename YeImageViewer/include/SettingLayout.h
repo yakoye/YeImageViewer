@@ -58,28 +58,32 @@ inline constexpr int ASSOCIATION_TAG_GAP_X = 3;
 inline constexpr int ASSOCIATION_TAG_GAP_Y = 5;
 inline constexpr int ASSOCIATION_BUTTON_HEIGHT = 42;
 
-inline constexpr Rect HELP_HEADER{ 20, 20, 580, 38 };
-inline constexpr std::array<Rect, 4> HELP_GROUP_HEADERS{
-    Rect{ 20, 58, 580, 30 },
-    Rect{ 20, 272, 580, 30 },
-    Rect{ 20, 440, 580, 30 },
-    Rect{ 20, 608, 580, 30 },
-};
-inline constexpr std::array<Rect, 12> HELP_ITEMS{
-    Rect{ 20, 88, 580, 46 },
-    Rect{ 20, 134, 580, 46 },
-    Rect{ 20, 180, 580, 46 },
-    Rect{ 20, 226, 580, 46 },
-    Rect{ 20, 302, 580, 46 },
-    Rect{ 20, 348, 580, 46 },
-    Rect{ 20, 394, 580, 46 },
-    Rect{ 20, 470, 580, 46 },
-    Rect{ 20, 516, 580, 46 },
-    Rect{ 20, 562, 580, 46 },
-    Rect{ 20, 638, 580, 46 },
-    Rect{ 20, 684, 580, 46 },
-};
-inline constexpr int HELP_CONTENT_HEIGHT = 750;
+constexpr Rect associationButtonRect(int index, int buttonsY) {
+    constexpr int gap = 8;
+    constexpr int width = (CARD_WIDTH - gap * 3) / 4;
+    return { PAGE_PADDING + index * (width + gap), buttonsY, width, ASSOCIATION_BUTTON_HEIGHT };
+}
+
+inline constexpr Rect SHORTCUT_CARD{ 20, 20, 580, 1510 };
+inline constexpr Rect SHORTCUT_WHEEL_HEADER{ 36, 36, 548, 32 };
+inline constexpr int SHORTCUT_WHEEL_ROW_Y = 72;
+inline constexpr int SHORTCUT_WHEEL_ROW_HEIGHT = 42;
+inline constexpr Rect SHORTCUT_RESET_BUTTON{ 404, 204, 180, 36 };
+inline constexpr Rect SHORTCUT_KEYBOARD_HEADER{ 36, 252, 548, 32 };
+inline constexpr int SHORTCUT_KEYBOARD_ROW_Y = 288;
+inline constexpr int SHORTCUT_KEYBOARD_ROW_HEIGHT = 40;
+inline constexpr int SHORTCUT_KEYBOARD_ROW_COUNT = 30;
+inline constexpr int SHORTCUT_CONTENT_HEIGHT = 1550;
+
+constexpr Rect shortcutWheelRow(int index) {
+    return { 36, SHORTCUT_WHEEL_ROW_Y + index * SHORTCUT_WHEEL_ROW_HEIGHT,
+        548, SHORTCUT_WHEEL_ROW_HEIGHT };
+}
+
+constexpr Rect shortcutKeyboardRow(int index) {
+    return { 36, SHORTCUT_KEYBOARD_ROW_Y + index * SHORTCUT_KEYBOARD_ROW_HEIGHT,
+        548, SHORTCUT_KEYBOARD_ROW_HEIGHT };
+}
 
 inline constexpr Rect ABOUT_HERO_CARD{ 20, 20, 580, 432 };
 inline constexpr Rect ABOUT_PROJECT_BUTTON{ 20, 480, 282, 48 };
@@ -145,12 +149,13 @@ constexpr bool generalControlsAreSeparated() {
     return true;
 }
 
-constexpr bool helpItemsAreSeparated() {
-    for (std::size_t i = 0; i < HELP_ITEMS.size(); ++i) {
-        if (!isInsidePage(HELP_ITEMS[i], HELP_CONTENT_HEIGHT))
+constexpr bool shortcutItemsAreSeparated() {
+    for (int i = 0; i < SHORTCUT_KEYBOARD_ROW_COUNT; ++i) {
+        const auto item = shortcutKeyboardRow(i);
+        if (!isInsidePage(item, SHORTCUT_CONTENT_HEIGHT))
             return false;
-        for (std::size_t j = i + 1; j < HELP_ITEMS.size(); ++j) {
-            if (overlaps(HELP_ITEMS[i], HELP_ITEMS[j]))
+        for (int j = i + 1; j < SHORTCUT_KEYBOARD_ROW_COUNT; ++j) {
+            if (overlaps(item, shortcutKeyboardRow(j)))
                 return false;
         }
     }
@@ -171,10 +176,10 @@ constexpr bool aboutLayoutIsOrdered() {
 static_assert(CANVAS_WIDTH == 620 && CANVAS_HEIGHT == 620);
 static_assert(TAB_WIDTH * 4 == CANVAS_WIDTH);
 static_assert(GENERAL_CONTENT_HEIGHT <= CONTENT_VIEW_HEIGHT);
-static_assert(HELP_CONTENT_HEIGHT > CONTENT_VIEW_HEIGHT);
+static_assert(SHORTCUT_CONTENT_HEIGHT > CONTENT_VIEW_HEIGHT);
 static_assert(ABOUT_CONTENT_HEIGHT <= CONTENT_VIEW_HEIGHT);
 static_assert(generalControlsAreSeparated());
-static_assert(helpItemsAreSeparated());
+static_assert(shortcutItemsAreSeparated());
 static_assert(aboutLayoutIsOrdered());
 static_assert(ABOUT_TITLE_FONT_SIZE == FONT_SIZE);
 

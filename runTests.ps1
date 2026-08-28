@@ -73,7 +73,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.26.0"
+$expectedFileVersion = "1.36.27.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -86,6 +86,59 @@ if ($viewerBytes -gt $maximumViewerBytes) {
     throw "Viewer is $([math]::Round($viewerBytes / 1MB, 2)) MiB; the embedded-font size regression limit is 92 MiB."
 }
 Write-Host "PASS viewer stays below the 92 MiB embedded-font regression limit."
+
+Write-Host "Checking local installer copy, shortcut, prompt, and launch contract..."
+$installerScript = Join-Path $repoRoot "installLocal.ps1"
+$installerSource = [IO.File]::ReadAllText($installerScript)
+[void][scriptblock]::Create($installerSource)
+foreach ($requiredInstallerBehavior in @(
+    "DesktopDirectory",
+    "CreateShortcut",
+    '.Popup($message',
+    'Start-Process -FilePath $targetExe',
+    "NoDesktopShortcut",
+    "NoStartMenuShortcut",
+    "NoPrompt",
+    "NoLaunch",
+    "SkipRegistration"
+)) {
+    if (-not $installerSource.Contains($requiredInstallerBehavior)) {
+        throw "Installer regression failed: missing behavior marker $requiredInstallerBehavior."
+    }
+}
+$installerTestDirectory = Join-Path ([IO.Path]::GetTempPath()) (
+    "YeImageViewer-InstallTest-" + [Guid]::NewGuid().ToString("N"))
+try {
+    $installResult = & $installerScript -InstallDir $installerTestDirectory `
+        -NoDesktopShortcut -NoStartMenuShortcut -NoPrompt -NoLaunch -SkipRegistration
+    $installedViewer = Join-Path $installerTestDirectory "YeImageViewer.exe"
+    $installedProvider = Join-Path $installerTestDirectory "YeThumbnailProvider.dll"
+    if (-not (Test-Path -LiteralPath $installedViewer -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $installedProvider -PathType Leaf) -or
+        $installResult.Launched -or $installResult.Registered -or
+        $null -ne $installResult.DesktopShortcut -or
+        $null -ne $installResult.StartMenuShortcut) {
+        throw "Installer regression failed: safe test installation did not copy exactly the runtime without side effects."
+    }
+    if ((Get-FileHash -LiteralPath $viewer -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $installedViewer -Algorithm SHA256).Hash) {
+        throw "Installer regression failed: installed executable differs from the Release build."
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $installerTestDirectory) {
+        $resolvedInstallerTestDirectory = [IO.Path]::GetFullPath($installerTestDirectory)
+        $resolvedTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+        if (-not $resolvedInstallerTestDirectory.StartsWith($resolvedTempRoot,
+                [StringComparison]::OrdinalIgnoreCase) -or
+            -not (Split-Path -Leaf $resolvedInstallerTestDirectory).StartsWith(
+                "YeImageViewer-InstallTest-", [StringComparison]::Ordinal)) {
+            throw "Refusing to remove unexpected installer test path: $resolvedInstallerTestDirectory"
+        }
+        Remove-Item -LiteralPath $resolvedInstallerTestDirectory -Recurse -Force
+    }
+}
+Write-Host "PASS installer copies the runtime and defaults to desktop/Start-menu shortcuts, completion prompt, and launch."
 
 $embeddedIcon = [Drawing.Icon]::ExtractAssociatedIcon($viewer)
 if ($null -eq $embeddedIcon) {
@@ -479,8 +532,8 @@ try {
     Write-Host "PASS framed title cleanly separates zoom, dimensions, size, and filename."
 
     # WM_MOUSEWHEEL packs modifier flags in the low word and the signed wheel
-    # delta in the high word. Keep the cursor in the image area so an
-    # unmodified wheel exercises the normal zoom path.
+    # delta in the high word. The requested defaults are Ctrl=zoom,
+    # Shift=horizontal pan, and plain wheel=vertical pan.
     $freshFramedCenterX = [int]($freshFramedWidth / 2)
     $freshFramedCenterY = [int]($freshFramedHeight / 2)
     $freshFramedCenterPosition = [IntPtr](($freshFramedCenterY -shl 16) -bor ($freshFramedCenterX -band 0xFFFF))
@@ -491,40 +544,29 @@ try {
     [void][YeImageViewerTestNativeV1365]::GetWindowText(
         $freshWindow, $wheelStartTitle, $wheelStartTitle.Capacity)
     [void][YeImageViewerTestNativeV1365]::SendMessage(
-        $freshWindow, 0x020A, [UIntPtr][uint64]4287102984, $freshFramedCenterPosition)
-    Start-Sleep -Milliseconds 700
-    $wheelNextTitle = New-Object Text.StringBuilder 2048
-    [void][YeImageViewerTestNativeV1365]::GetWindowText(
-        $freshWindow, $wheelNextTitle, $wheelNextTitle.Capacity)
-    if ($wheelNextTitle.ToString() -eq $wheelStartTitle.ToString()) {
-        throw "Wheel regression failed: Ctrl + wheel down did not switch to the next image."
-    }
-    [void][YeImageViewerTestNativeV1365]::SendMessage(
         $freshWindow, 0x020A, [UIntPtr][uint64]0x00780008, $freshFramedCenterPosition)
-    Start-Sleep -Milliseconds 700
-    $wheelReturnedTitle = New-Object Text.StringBuilder 2048
-    [void][YeImageViewerTestNativeV1365]::GetWindowText(
-        $freshWindow, $wheelReturnedTitle, $wheelReturnedTitle.Capacity)
-    if ($wheelReturnedTitle.ToString() -ne $wheelStartTitle.ToString()) {
-        throw "Wheel regression failed: Ctrl + wheel up did not return to the previous image."
-    }
-
-    $wheelInitialZoom = [regex]::Match($wheelReturnedTitle.ToString(), '(\d+)%')
-    [void][YeImageViewerTestNativeV1365]::SendMessage(
-        $freshWindow, 0x020A, [UIntPtr][uint64]0x00780000, $freshFramedCenterPosition)
-    Start-Sleep -Milliseconds 350
+    Start-Sleep -Milliseconds 500
     $wheelZoomTitle = New-Object Text.StringBuilder 2048
     [void][YeImageViewerTestNativeV1365]::GetWindowText(
         $freshWindow, $wheelZoomTitle, $wheelZoomTitle.Capacity)
+    $wheelInitialZoom = [regex]::Match($wheelStartTitle.ToString(), '(\d+)%')
     $wheelChangedZoom = [regex]::Match($wheelZoomTitle.ToString(), '(\d+)%')
     if (-not $wheelInitialZoom.Success -or -not $wheelChangedZoom.Success -or
         $wheelChangedZoom.Groups[1].Value -eq $wheelInitialZoom.Groups[1].Value) {
-        throw "Wheel regression failed: ordinary wheel no longer zooms the current image."
+        throw "Wheel regression failed: Ctrl + wheel did not zoom the current image."
     }
     [void][YeImageViewerTestNativeV1365]::SendMessage(
-        $freshWindow, 0x020A, [UIntPtr][uint64]4287102976, $freshFramedCenterPosition)
-    Start-Sleep -Milliseconds 350
-    Write-Host "PASS Ctrl + wheel switches images and ordinary wheel keeps zooming."
+        $freshWindow, 0x020A, [UIntPtr][uint64]4287102984, $freshFramedCenterPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $freshWindow, 0x020A, [UIntPtr][uint64]0x00780000, $freshFramedCenterPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $freshWindow, 0x020A, [UIntPtr][uint64]0x00780004, $freshFramedCenterPosition)
+    Start-Sleep -Milliseconds 500
+    $freshProcess.Refresh()
+    if ($freshProcess.HasExited -or -not $freshProcess.Responding) {
+        throw "Wheel regression failed: vertical or horizontal pan stopped the viewer."
+    }
+    Write-Host "PASS Ctrl+wheel zooms, plain wheel pans vertically, and Shift+wheel pans horizontally."
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0100, [UIntPtr]0x27, [IntPtr]::Zero)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0101, [UIntPtr]0x27, [IntPtr]::Zero)
@@ -620,7 +662,7 @@ try {
             throw "Settings-layout regression failed: switching tabs changed the fixed client size or interaction state."
         }
     }
-    Write-Host "PASS Settings keeps a fixed 620x620 client area across all tabs and scrolls Help content."
+    Write-Host "PASS Settings keeps a fixed 620x620 client area across all tabs and scrolls Shortcuts content."
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0112, [UIntPtr]0xF060, [IntPtr]::Zero)
     if (-not $freshProcess.WaitForExit(3000)) {
@@ -694,6 +736,100 @@ finally {
     }
     if (Test-Path -LiteralPath $freshDirectory) {
         Remove-Item -LiteralPath $freshDirectory
+    }
+}
+
+Write-Host "Checking configured Escape behavior in presentation and framed modes..."
+$escapeDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Escape-" + [Guid]::NewGuid().ToString("N"))
+$escapeViewer = Join-Path $escapeDirectory "YeImageViewer.exe"
+$escapeProcess = $null
+try {
+    [void](New-Item -ItemType Directory -Path $escapeDirectory)
+    Copy-Item -LiteralPath $viewer -Destination $escapeViewer
+    $escapeProcess = Start-Process -FilePath $escapeViewer -ArgumentList ('"' + $sharpSvgFixture + '"') -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(6)
+    do {
+        Start-Sleep -Milliseconds 150
+        $escapeProcess.Refresh()
+    } while (-not $escapeProcess.HasExited -and $escapeProcess.MainWindowHandle -eq 0 -and
+        [DateTime]::UtcNow -lt $deadline)
+    if ($escapeProcess.HasExited -or $escapeProcess.MainWindowHandle -eq 0) {
+        throw "Configured-Escape regression failed: initial viewer did not open."
+    }
+    $escapeWindow = [IntPtr]$escapeProcess.MainWindowHandle
+    [void][YeImageViewerTestNativeV1365]::SendMessage($escapeWindow, 0x0111, [UIntPtr]1010, [IntPtr]::Zero)
+    $settingDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $escapeSettingWindow = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$escapeProcess.Id, "YeImageViewerSettingWnd")
+    } while ($escapeSettingWindow -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $settingDeadline)
+    if ($escapeSettingWindow -eq [IntPtr]::Zero) {
+        throw "Configured-Escape regression failed: Settings did not open."
+    }
+    # General checkbox 6 is "Esc closes image". Click its center in the fixed canvas.
+    $escapeToggleX = 318 + 131
+    $escapeToggleY = 52 + 138 + 16
+    $escapeTogglePosition = [IntPtr](($escapeToggleY -shl 16) -bor ($escapeToggleX -band 0xFFFF))
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $escapeSettingWindow, 0x0201, [UIntPtr]1, $escapeTogglePosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $escapeSettingWindow, 0x0202, [UIntPtr]0, $escapeTogglePosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $escapeSettingWindow, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 250
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $escapeWindow, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    if (-not $escapeProcess.WaitForExit(3000)) {
+        throw "Configured-Escape regression failed: enabled Esc did not close presentation mode directly."
+    }
+    Write-Host "PASS enabled Esc closes directly from presentation mode."
+
+    $settingsPath = Join-Path $escapeDirectory "YeImageViewer.db"
+    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf) -or
+        (Get-Item -LiteralPath $settingsPath).Length -ne 4096) {
+        throw "Configured-Escape regression failed: shortcut/general settings were not persisted to the 4096-byte configuration file."
+    }
+    $escapeProcess = Start-Process -FilePath $escapeViewer -ArgumentList ('"' + $sharpSvgFixture + '"') -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(6)
+    do {
+        Start-Sleep -Milliseconds 150
+        $escapeProcess.Refresh()
+    } while (-not $escapeProcess.HasExited -and $escapeProcess.MainWindowHandle -eq 0 -and
+        [DateTime]::UtcNow -lt $deadline)
+    if ($escapeProcess.HasExited -or $escapeProcess.MainWindowHandle -eq 0) {
+        throw "Configured-Escape regression failed: persisted-settings viewer did not reopen."
+    }
+    $escapeWindow = [IntPtr]$escapeProcess.MainWindowHandle
+    $escapeClientRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($escapeWindow, [ref]$escapeClientRect)
+    $backgroundY = [int](($escapeClientRect.Bottom - $escapeClientRect.Top) / 2)
+    $backgroundPosition = [IntPtr](($backgroundY -shl 16) -bor 4)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($escapeWindow, 0x0200, [UIntPtr]::Zero, $backgroundPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($escapeWindow, 0x0201, [UIntPtr]1, $backgroundPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($escapeWindow, 0x0202, [UIntPtr]0, $backgroundPosition)
+    Start-Sleep -Milliseconds 350
+    $framedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($escapeWindow, -16).ToInt64()
+    if (($framedStyle -band 0x00C00000) -eq 0) {
+        throw "Configured-Escape regression failed: background click did not create the framed-mode precondition."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $escapeWindow, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    if (-not $escapeProcess.WaitForExit(3000)) {
+        throw "Configured-Escape regression failed: enabled Esc did not close framed mode."
+    }
+    Write-Host "PASS enabled Esc persists and closes directly from framed mode."
+}
+finally {
+    if ($escapeProcess -and -not $escapeProcess.HasExited) {
+        [void]$escapeProcess.CloseMainWindow()
+        if (-not $escapeProcess.WaitForExit(3000)) {
+            Stop-Process -Id $escapeProcess.Id -Force
+            $escapeProcess.WaitForExit()
+        }
+    }
+    if (Test-Path -LiteralPath $escapeDirectory) {
+        Remove-Item -LiteralPath $escapeDirectory -Recurse -Force
     }
 }
 
@@ -1239,11 +1375,16 @@ try {
     $closePosition = [IntPtr](($closeY -shl 16) -bor ($closeX -band 0xFFFF))
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0200, [UIntPtr]::Zero, $closePosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0201, [UIntPtr]1, $closePosition)
+    Start-Sleep -Milliseconds 250
+    $viewerProcess.Refresh()
+    if ($viewerProcess.HasExited -or -not $viewerProcess.Responding) {
+        throw "Presentation close regression failed: mouse-down closed the viewer before mouse-up and could click through to File Explorer."
+    }
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0202, [UIntPtr]0, $closePosition)
     if (-not $viewerProcess.WaitForExit(3000)) {
         throw "Presentation close regression failed: persistent close button did not exit."
     }
-    Write-Host "PASS persistent presentation close button exits cleanly."
+    Write-Host "PASS presentation close waits for mouse-up, preventing click-through, then exits cleanly."
 }
 finally {
     if ($viewerProcess -and -not $viewerProcess.HasExited) {

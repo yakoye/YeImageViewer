@@ -18,6 +18,7 @@
 #include "SlideshowPolicy.h"
 #include "ZoomPolicy.h"
 #include "ZoomEditPolicy.h"
+#include "ToolbarCommand.h"
 
 #include "D3D11App.h"
 #include <ppl.h>
@@ -37,8 +38,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.26";
-constinit int appVersionCode = 13625; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.27";
+constinit int appVersionCode = 13627; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -490,6 +491,7 @@ public:
     bool presentationMode = false;
     bool framedWindowAnchored = false;
     bool presentationClickCandidate = false;
+    bool presentationCloseClickCandidate = false;
     DWORD presentationWindowedStyle = 0;
     DWORD presentationWindowedExtendedStyle = 0;
     Cood presentationPressPos;
@@ -797,6 +799,7 @@ public:
         imageInfoScrollOffset = 0;
         framedWindowAnchored = true;
         presentationClickCandidate = false;
+        presentationCloseClickCandidate = false;
         mouseIsPressing = false;
         cursorPosLast = cursorPos = CursorPos::centerArea;
         extraUIFlag = ShowExtraUI::none;
@@ -993,8 +996,9 @@ public:
             if (presentationMode &&
                 OverlayLayout::presentationCloseRect(winWidth, winHeight).contains(x, y)) {
                 presentationClickCandidate = false;
+                presentationCloseClickCandidate = true;
                 mouseIsPressing = false;
-                operateQueue.push({ ActionENUM::requestExit });
+                SetCapture(m_hWnd);
                 return;
             }
 
@@ -1048,42 +1052,31 @@ public:
 
             mousePressPos = { x, y };
 
-            if (cursorPos == CursorPos::leftEdge || cursorPos == CursorPos::toolbarPrevious)
-                operateQueue.push({ ActionENUM::preImg });
-            else if (cursorPos == CursorPos::rightEdge || cursorPos == CursorPos::toolbarNext)
-                operateQueue.push({ ActionENUM::nextImg });
-            else if (cursorPos == CursorPos::toolbarPlayPause)
-                operateQueue.push({ ActionENUM::toggleSlideshow });
-            else if (cursorPos == CursorPos::toolbarRotateLeft)
-                operateQueue.push({ ActionENUM::rotateLeft });
-            else if (cursorPos == CursorPos::toolbarRotateRight)
-                operateQueue.push({ ActionENUM::rotateRight });
-            else if (cursorPos == CursorPos::toolbarFlipHorizontal)
-                operateQueue.push({ ActionENUM::flipHorizontal });
-            else if (cursorPos == CursorPos::toolbarFlipVertical)
-                operateQueue.push({ ActionENUM::flipVertical });
-            else if (cursorPos == CursorPos::toolbarZoomFit)
-                operateQueue.push({ ActionENUM::zoomFit });
-            else if (cursorPos == CursorPos::toolbarZoomActual)
-                operateQueue.push({ ActionENUM::zoomActual });
-            else if (cursorPos == CursorPos::toolbarFullscreen)
-                operateQueue.push({ ActionENUM::toggleFullScreen });
-            else if (cursorPos == CursorPos::toolbarFavorite)
-                operateQueue.push({ ActionENUM::toggleFavorite });
-            else if (cursorPos == CursorPos::toolbarCopy)
-                operateQueue.push({ ActionENUM::copyImage });
-            else if (cursorPos == CursorPos::toolbarDelete)
-                operateQueue.push({ ActionENUM::deleteImg });
-            else if (cursorPos == CursorPos::toolbarSetting)
-                operateQueue.push({ ActionENUM::setting, 0 });
-            else if (cursorPos == CursorPos::toolbarZoomOut)
-                operateQueue.push({ ActionENUM::zoomOut });
-            else if (cursorPos == CursorPos::toolbarZoomIn)
-                operateQueue.push({ ActionENUM::zoomIn });
-            else if (presentationMode && cursorPos == CursorPos::presentationClose)
-                operateQueue.push({ ActionENUM::requestExit });
-            else if (cursorPos == CursorPos::centerTop) {
-                handleAnimationControl(x, y);
+            const auto toolbarCommand = ToolbarCommand::resolve(
+                OverlayLayout::hitTest(winWidth, winHeight, x, y));
+            switch (toolbarCommand) {
+            case ToolbarCommand::Command::PreviousImage: operateQueue.push({ ActionENUM::preImg }); break;
+            case ToolbarCommand::Command::PlayPause: operateQueue.push({ ActionENUM::toggleSlideshow }); break;
+            case ToolbarCommand::Command::NextImage: operateQueue.push({ ActionENUM::nextImg }); break;
+            case ToolbarCommand::Command::RotateLeft: operateQueue.push({ ActionENUM::rotateLeft }); break;
+            case ToolbarCommand::Command::RotateRight: operateQueue.push({ ActionENUM::rotateRight }); break;
+            case ToolbarCommand::Command::FlipHorizontal: operateQueue.push({ ActionENUM::flipHorizontal }); break;
+            case ToolbarCommand::Command::FlipVertical: operateQueue.push({ ActionENUM::flipVertical }); break;
+            case ToolbarCommand::Command::ZoomFit: operateQueue.push({ ActionENUM::zoomFit }); break;
+            case ToolbarCommand::Command::ZoomActual: operateQueue.push({ ActionENUM::zoomActual }); break;
+            case ToolbarCommand::Command::Fullscreen: operateQueue.push({ ActionENUM::toggleFullScreen }); break;
+            case ToolbarCommand::Command::Settings: operateQueue.push({ ActionENUM::setting, 0 }); break;
+            case ToolbarCommand::Command::ZoomOut: operateQueue.push({ ActionENUM::zoomOut }); break;
+            case ToolbarCommand::Command::ZoomIn: operateQueue.push({ ActionENUM::zoomIn }); break;
+            case ToolbarCommand::Command::EditZoom:
+            case ToolbarCommand::Command::None:
+                if (cursorPos == CursorPos::leftEdge)
+                    operateQueue.push({ ActionENUM::preImg });
+                else if (cursorPos == CursorPos::rightEdge)
+                    operateQueue.push({ ActionENUM::nextImg });
+                else if (cursorPos == CursorPos::centerTop)
+                    handleAnimationControl(x, y);
+                break;
             }
             return;
         }
@@ -1118,6 +1111,16 @@ public:
         switch ((uint64_t)btnState)
         {
         case WM_LBUTTONUP: {//左键
+            if (presentationCloseClickCandidate) {
+                const bool shouldClose = presentationMode &&
+                    OverlayLayout::presentationCloseRect(winWidth, winHeight).contains(x, y);
+                presentationCloseClickCandidate = false;
+                mouseIsPressing = false;
+                ReleaseCapture();
+                if (shouldClose)
+                    operateQueue.push({ ActionENUM::requestExit });
+                return;
+            }
             if (presentationMode && presentationClickCandidate) {
                 const int deltaX = x - presentationPressPos.x;
                 const int deltaY = y - presentationPressPos.y;
@@ -1325,10 +1328,23 @@ public:
         }
 
         const int panStep = std::max(1, (winWidth + winHeight) / 16);
-        const auto modifiedWheel = WheelInput::resolve(nFlags, zDelta, panStep);
+        const auto* shortcutStorage = GlobalVar::settingParameter.reserve;
+        const auto modifiedWheel = WheelInput::resolve(nFlags, zDelta, panStep,
+            ShortcutConfig::getWheelAction(shortcutStorage, 0),
+            ShortcutConfig::getWheelAction(shortcutStorage, 1),
+            ShortcutConfig::getWheelAction(shortcutStorage, 2));
         switch (modifiedWheel.intent) {
+        case WheelInput::Intent::ZoomIn:
+            operateQueue.push({ ActionENUM::zoomIn });
+            return;
+        case WheelInput::Intent::ZoomOut:
+            operateQueue.push({ ActionENUM::zoomOut });
+            return;
         case WheelInput::Intent::PanVertical:
             operateQueue.push({ ActionENUM::slide, 0, modifiedWheel.verticalDelta });
+            return;
+        case WheelInput::Intent::PanHorizontal:
+            operateQueue.push({ ActionENUM::slide, modifiedWheel.horizontalDelta, 0 });
             return;
         case WheelInput::Intent::PreviousImage:
             operateQueue.push({ ActionENUM::preImg });
@@ -1373,14 +1389,13 @@ public:
     }
 
     void handleEscapeKey() {
-        if (presentationMode) {
-            exitPresentationMode();
-            return;
-        }
         const auto action = EscapeBehavior::resolve(
-            jarkUtils::IsFullScreen(m_hWnd), IsZoomed(m_hWnd),
+            presentationMode, jarkUtils::IsFullScreen(m_hWnd), IsZoomed(m_hWnd),
             GlobalVar::settingParameter.escapeClosesImage);
         switch (action) {
+        case EscapeBehavior::Action::ExitPresentation:
+            exitPresentationMode();
+            break;
         case EscapeBehavior::Action::ExitFullScreen:
             jarkUtils::ToggleFullScreen(m_hWnd);
             break;
@@ -1393,6 +1408,222 @@ public:
         case EscapeBehavior::Action::Ignore:
             break;
         }
+    }
+
+    uint32_t currentShortcutModifiers() const {
+        uint32_t modifiers = ctrlIsPressing ? ShortcutConfig::MODIFIER_CONTROL : 0;
+        if ((GetKeyState(VK_SHIFT) & 0x8000) != 0)
+            modifiers |= ShortcutConfig::MODIFIER_SHIFT;
+        if ((GetKeyState(VK_MENU) & 0x8000) != 0)
+            modifiers |= ShortcutConfig::MODIFIER_ALT;
+        return modifiers;
+    }
+
+    void panByKeyboard(int deltaX, int deltaY) {
+        const int displayWidth = (curPar.rotation == 0 || curPar.rotation == 2) ?
+            curPar.width : curPar.height;
+        const int displayHeight = (curPar.rotation == 0 || curPar.rotation == 2) ?
+            curPar.height : curPar.width;
+        const int targetXMax = static_cast<int>(displayWidth * curPar.zoomTarget /
+            2 / curPar.ZOOM_BASE);
+        const int targetYMax = static_cast<int>(displayHeight * curPar.zoomTarget /
+            2 / curPar.ZOOM_BASE);
+        curPar.slideTarget.x = std::clamp(curPar.slideTarget.x + deltaX,
+            -targetXMax, targetXMax);
+        curPar.slideTarget.y = std::clamp(curPar.slideTarget.y + deltaY,
+            -targetYMax, targetYMax);
+        smoothShift = true;
+    }
+
+    bool dispatchConfiguredShortcut(WPARAM keyValue) {
+        const uint32_t modifiers = currentShortcutModifiers();
+        const auto* storage = GlobalVar::settingParameter.reserve;
+        std::optional<ShortcutConfig::Action> matched;
+        for (uint32_t index = 0;
+            index < static_cast<uint32_t>(ShortcutConfig::Action::Count); ++index) {
+            const auto action = static_cast<ShortcutConfig::Action>(index);
+            if (ShortcutConfig::matches(
+                ShortcutConfig::getBinding(storage, action),
+                static_cast<uint32_t>(keyValue), modifiers)) {
+                matched = action;
+                break;
+            }
+        }
+        if (!matched)
+            return false;
+
+        const int panStep = std::max(1, (winHeight + winWidth) / 16);
+        switch (*matched) {
+        case ShortcutConfig::Action::OpenFile: {
+            std::wstring filePath = jarkUtils::SelectFile(m_hWnd);
+            if (!filePath.empty()) {
+                initOpenFile(filePath);
+                operateQueue.push({ ActionENUM::refresh });
+            }
+            ctrlIsPressing = false;
+        } break;
+        case ShortcutConfig::Action::ExportFrames: {
+            auto& frames = curPar.imageAssetPtr->frames;
+            if (frames.empty())
+                break;
+            if (IDYES == MessageBoxW(m_hWnd,
+                std::format(L"{}{}", getUIStringW(5), frames.size()).c_str(),
+                getUIStringW(6), MB_YESNO | MB_ICONQUESTION)) {
+                std::thread saveThread([](std::wstring filePath,
+                    std::shared_ptr<ImageAsset> imageAssetPtr) {
+                        auto& sourceFrames = imageAssetPtr->frames;
+                        auto dotIdx = filePath.find_last_of(L".");
+                        if (dotIdx == std::string::npos)
+                            dotIdx = filePath.size();
+                        for (int index = 0; index < sourceFrames.size(); ++index) {
+                            std::vector<uchar> buffer;
+                            if (cv::imencode(".png", sourceFrames[index], buffer)) {
+                                std::ofstream file(std::format(L"{}_{:04d}.png",
+                                    filePath.substr(0, dotIdx), index + 1), std::ios::binary);
+                                if (file.is_open())
+                                    file.write(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+                            }
+                        }
+                    }, imgFileList[curFileIdx], curPar.imageAssetPtr);
+                saveThread.detach();
+            }
+            ctrlIsPressing = false;
+        } break;
+        case ShortcutConfig::Action::CopyImage: {
+            cv::Mat source = (curPar.imageAssetPtr->format == ImageFormat::None ||
+                curPar.imageAssetPtr->format == ImageFormat::Still) ?
+                curPar.imageAssetPtr->primaryFrame :
+                curPar.imageAssetPtr->frames[curPar.curFrameIdx];
+            jarkUtils::copyImageToClipboard(source);
+            ctrlIsPressing = false;
+        } break;
+        case ShortcutConfig::Action::PrintImage:
+            operateQueue.push({ ActionENUM::printImage });
+            ctrlIsPressing = false;
+            break;
+        case ShortcutConfig::Action::CloseViewer:
+            operateQueue.push({ ActionENUM::requestExit });
+            ctrlIsPressing = false;
+            break;
+        case ShortcutConfig::Action::PreviousFrame:
+            if (curPar.imageAssetPtr->format == ImageFormat::Animated && curPar.isAnimationPause) {
+                if (--curPar.curFrameIdx < 0)
+                    curPar.curFrameIdx = curPar.curFrameIdxMax;
+                operateQueue.push({ ActionENUM::refresh });
+            }
+            break;
+        case ShortcutConfig::Action::ToggleAnimation:
+            if (curPar.imageAssetPtr->format == ImageFormat::Animated) {
+                curPar.isAnimationPause = !curPar.isAnimationPause;
+                operateQueue.push({ ActionENUM::refresh });
+            }
+            break;
+        case ShortcutConfig::Action::NextFrame:
+            if (curPar.imageAssetPtr->format == ImageFormat::Animated && curPar.isAnimationPause) {
+                if (++curPar.curFrameIdx > curPar.curFrameIdxMax)
+                    curPar.curFrameIdx = 0;
+                operateQueue.push({ ActionENUM::refresh });
+            }
+            break;
+        case ShortcutConfig::Action::CopyImageInfo:
+            jarkUtils::copyToClipboard(jarkUtils::utf8ToWstring(curPar.imageAssetPtr->exifInfo));
+            break;
+        case ShortcutConfig::Action::ToggleFullscreen:
+            if (presentationMode)
+                exitPresentationMode();
+            else
+                jarkUtils::ToggleFullScreen(m_hWnd);
+            break;
+        case ShortcutConfig::Action::RotateLeft:
+            operateQueue.push({ ActionENUM::rotateLeft });
+            break;
+        case ShortcutConfig::Action::RotateRight:
+            operateQueue.push({ ActionENUM::rotateRight });
+            break;
+        case ShortcutConfig::Action::PanUp:
+            panByKeyboard(0, panStep);
+            break;
+        case ShortcutConfig::Action::PanDown:
+            panByKeyboard(0, -panStep);
+            break;
+        case ShortcutConfig::Action::PanLeft:
+            panByKeyboard(panStep, 0);
+            break;
+        case ShortcutConfig::Action::PanRight:
+            panByKeyboard(-panStep, 0);
+            break;
+        case ShortcutConfig::Action::ZoomIn:
+            operateQueue.push({ ActionENUM::zoomIn });
+            break;
+        case ShortcutConfig::Action::ZoomOut:
+            operateQueue.push({ ActionENUM::zoomOut });
+            break;
+        case ShortcutConfig::Action::ZoomFit:
+            operateQueue.push({ ActionENUM::zoomFix });
+            break;
+        case ShortcutConfig::Action::PreviousImage:
+            operateQueue.push({ ActionENUM::preImg });
+            break;
+        case ShortcutConfig::Action::NextImage:
+            operateQueue.push({ ActionENUM::nextImg });
+            break;
+        case ShortcutConfig::Action::FirstImage:
+            operateQueue.push({ ActionENUM::firstImg });
+            break;
+        case ShortcutConfig::Action::LastImage:
+            operateQueue.push({ ActionENUM::finalImg });
+            break;
+        case ShortcutConfig::Action::PlayPause:
+            if (curPar.imageAssetPtr->format == ImageFormat::Still &&
+                !curPar.imageAssetPtr->frames.empty()) {
+                curPar.imageAssetPtr->format = ImageFormat::Animated;
+                initCurrentImageParameters();
+                operateQueue.push({ ActionENUM::refresh });
+            }
+            else if (curPar.imageAssetPtr->format == ImageFormat::Animated) {
+                curPar.isAnimationPause = !curPar.isAnimationPause;
+                operateQueue.push({ ActionENUM::refresh });
+            }
+            else {
+                operateQueue.push({ ActionENUM::nextImg });
+            }
+            break;
+        case ShortcutConfig::Action::ToggleImageInfo:
+            operateQueue.push({ ActionENUM::toggleExif });
+            break;
+        case ShortcutConfig::Action::OpenSettings:
+            operateQueue.push({ ActionENUM::setting, 0 });
+            break;
+        case ShortcutConfig::Action::RenameImage:
+            renameCurrentImage();
+            break;
+        case ShortcutConfig::Action::OpenShortcuts:
+            operateQueue.push({ ActionENUM::setting, 2 });
+            break;
+        case ShortcutConfig::Action::OpenAbout:
+            operateQueue.push({ ActionENUM::setting, 3 });
+            break;
+        case ShortcutConfig::Action::DeleteImage:
+            operateQueue.push({ ActionENUM::deleteImg });
+            break;
+        case ShortcutConfig::Action::Count:
+            return false;
+        }
+        return true;
+    }
+
+    bool isEnabledLegacyAlias(WPARAM keyValue) const {
+        const auto* storage = GlobalVar::settingParameter.reserve;
+        const auto stillDefault = [&](ShortcutConfig::Action action) {
+            const auto index = ShortcutConfig::actionIndex(action);
+            return ShortcutConfig::getBinding(storage, action) ==
+                ShortcutConfig::DEFAULT_BINDINGS[index];
+        };
+        return (keyValue == VK_F11 && stillDefault(ShortcutConfig::Action::ToggleFullscreen)) ||
+            (keyValue == VK_NUMPAD5 && stillDefault(ShortcutConfig::Action::ZoomFit)) ||
+            (keyValue == VK_PRIOR && stillDefault(ShortcutConfig::Action::PreviousImage)) ||
+            (keyValue == VK_NEXT && stillDefault(ShortcutConfig::Action::NextImage)) ||
+            (keyValue == VK_TAB && stillDefault(ShortcutConfig::Action::ToggleImageInfo));
     }
 
     void OnKeyDown(WPARAM keyValue) override {
@@ -1444,6 +1675,21 @@ public:
             // viewer shortcuts rotate, browse, or close the current image.
             return;
         }
+
+        if (keyValue == VK_CONTROL) {
+            ctrlIsPressing = true;
+            return;
+        }
+        if (keyValue == VK_ESCAPE) {
+            handleEscapeKey();
+            return;
+        }
+        if (dispatchConfiguredShortcut(keyValue))
+            return;
+        // Retain familiar secondary aliases while their primary action remains
+        // at its default. Customizing that action removes the aliases as well.
+        if (!isEnabledLegacyAlias(keyValue))
+            return;
 
         if (ctrlIsPressing) {
             switch (keyValue)

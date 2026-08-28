@@ -188,7 +188,9 @@
     <ClInclude Include="include\Printer.h" />
     <ClInclude Include="include\RenamePolicy.h" />
     <ClInclude Include="include\RotationStore.h" />
+    <ClInclude Include="include\SettingCommand.h" />
     <ClInclude Include="include\SettingLayout.h" />
+    <ClInclude Include="include\ShortcutConfig.h" />
     <ClInclude Include="include\Setting.h" />
     <ClInclude Include="include\stringRes.h" />
     <ClInclude Include="include\SVGPreprocessor.h" />
@@ -197,6 +199,7 @@
     <ClInclude Include="include\SystemFont.h" />
     <ClInclude Include="include\TextDrawer.h" />
     <ClInclude Include="include\TextRenderingPolicy.h" />
+    <ClInclude Include="include\ToolbarCommand.h" />
     <ClInclude Include="include\WindowTitlePresentation.h" />
     <ClInclude Include="include\YeThumbnailProviderGuids.h" />
     <ClInclude Include="include\ThumbnailRegistrar.h" />
