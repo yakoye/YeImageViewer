@@ -14,8 +14,9 @@ inline constexpr int BASE_TOOLBAR_PADDING = 8;
 inline constexpr int BASE_BUTTON_SIZE = 34;
 inline constexpr int BASE_SMALL_BUTTON_SIZE = 22;
 inline constexpr int BASE_ICON_SIZE = 20;
-inline constexpr int TOOLBAR_TEXT_SIZE = 14;
-inline constexpr int ICON_STROKE_EXPANSION = 1;
+inline constexpr int TOOLBAR_TEXT_SIZE = 18;
+inline constexpr int TOOLBAR_TEXT_BOLD_OFFSET = 1;
+inline constexpr int ICON_STROKE_EXPANSION = 0;
 inline constexpr int PRESENTATION_CLOSE_SIZE = 42;
 inline constexpr int PRESENTATION_CLOSE_MARGIN = 12;
 inline constexpr int ZOOM_INDICATOR_WIDTH = 72;
@@ -54,6 +55,7 @@ enum class Hit {
     DeleteImage,
     Settings,
     ZoomOut,
+    ZoomText,
     ZoomIn,
     Toolbar,
     PresentationClose,
@@ -140,11 +142,11 @@ constexpr Rect zoomTextRect(int width, int height) {
     return {
         toolbar.x + scaled(BASE_TOOLBAR_PADDING + 491, scale),
         toolbar.y + (toolbar.height - rectHeight) / 2,
-        scaled(36, scale),
+        scaled(50, scale),
         rectHeight,
     };
 }
-constexpr Rect zoomInRect(int width, int height) { return baseToolbarButtonRect(width, height, 529, BASE_SMALL_BUTTON_SIZE); }
+constexpr Rect zoomInRect(int width, int height) { return baseToolbarButtonRect(width, height, 545, BASE_SMALL_BUTTON_SIZE); }
 
 constexpr Rect toolbarRevealRect(int canvasWidth, int canvasHeight) {
     const int scale = toolbarScale(canvasWidth);
@@ -180,6 +182,7 @@ constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y) {
     if (fullscreenRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::Fullscreen;
     if (settingsRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::Settings;
     if (zoomOutRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ZoomOut;
+    if (zoomTextRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ZoomText;
     if (zoomInRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ZoomIn;
     if (toolbarRevealRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::Toolbar;
     return Hit::None;

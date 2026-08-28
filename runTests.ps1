@@ -73,7 +73,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.21.0"
+$expectedFileVersion = "1.36.22.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -1036,8 +1036,94 @@ try {
     $scaledToolbarWidth = [int][Math]::Floor((580 * $toolbarScale + 500) / 1000.0)
     $scaledButtonSize = [int][Math]::Floor((34 * $toolbarScale + 500) / 1000.0)
     $scaledPadding = [int][Math]::Floor((8 * $toolbarScale + 500) / 1000.0)
+    $scaledZoomTextOffset = [int][Math]::Floor((491 * $toolbarScale + 500) / 1000.0)
+    $scaledZoomTextWidth = [int][Math]::Floor((50 * $toolbarScale + 500) / 1000.0)
     $scaledNextOffset = [int][Math]::Floor((300 * $toolbarScale + 500) / 1000.0)
     $toolbarLeft = [int][Math]::Floor(($targetClientWidth - $scaledToolbarWidth) / 2.0)
+    $zoomTextX = $toolbarLeft + $scaledPadding + $scaledZoomTextOffset +
+        [int][Math]::Floor($scaledZoomTextWidth / 2.0)
+    $zoomTextPosition = [IntPtr](($toolbarY -shl 16) -bor ($zoomTextX -band 0xFFFF))
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0200, [UIntPtr]::Zero, $zoomTextPosition)
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0201, [UIntPtr]1, $zoomTextPosition)
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0202, [UIntPtr]::Zero, $zoomTextPosition)
+    Start-Sleep -Milliseconds 100
+    foreach ($key in @(0x31, 0x35, 0x30, 0x0D)) {
+        [void][YeImageViewerTestNativeV1365]::SendMessage(
+            $window, 0x0100, [UIntPtr]$key, [IntPtr]::Zero)
+        [void][YeImageViewerTestNativeV1365]::SendMessage(
+            $window, 0x0101, [UIntPtr]$key, [IntPtr]::Zero)
+    }
+    $zoomEditTitle = New-Object Text.StringBuilder 1024
+    $zoomEditDeadline = [DateTime]::UtcNow.AddSeconds(4)
+    do {
+        Start-Sleep -Milliseconds 100
+        [void]$zoomEditTitle.Clear()
+        [void][YeImageViewerTestNativeV1365]::GetWindowText(
+            $window, $zoomEditTitle, $zoomEditTitle.Capacity)
+    } while ($zoomEditTitle.ToString() -notmatch '\| 150% \|' -and
+        [DateTime]::UtcNow -lt $zoomEditDeadline)
+    if ($zoomEditTitle.ToString() -notmatch '\| 150% \|') {
+        throw "Zoom editor regression failed: clicking and entering 150 did not set an exact 150% zoom. Actual: $($zoomEditTitle.ToString())"
+    }
+
+    # A click elsewhere commits the edit, while Escape cancels the next edit.
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0200, [UIntPtr]::Zero, $zoomTextPosition)
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0201, [UIntPtr]1, $zoomTextPosition)
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0202, [UIntPtr]::Zero, $zoomTextPosition)
+    Start-Sleep -Milliseconds 100
+    foreach ($key in @(0x31, 0x37, 0x35)) {
+        [void][YeImageViewerTestNativeV1365]::SendMessage(
+            $window, 0x0100, [UIntPtr]$key, [IntPtr]::Zero)
+        [void][YeImageViewerTestNativeV1365]::SendMessage(
+            $window, 0x0101, [UIntPtr]$key, [IntPtr]::Zero)
+    }
+    $bareToolbarX = $toolbarLeft + $scaledPadding +
+        [int][Math]::Floor((458 * $toolbarScale + 500) / 1000.0)
+    $bareToolbarPosition = [IntPtr](($toolbarY -shl 16) -bor ($bareToolbarX -band 0xFFFF))
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0200, [UIntPtr]::Zero, $bareToolbarPosition)
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0201, [UIntPtr]1, $bareToolbarPosition)
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0202, [UIntPtr]::Zero, $bareToolbarPosition)
+    $zoomBlurDeadline = [DateTime]::UtcNow.AddSeconds(4)
+    do {
+        Start-Sleep -Milliseconds 100
+        [void]$zoomEditTitle.Clear()
+        [void][YeImageViewerTestNativeV1365]::GetWindowText(
+            $window, $zoomEditTitle, $zoomEditTitle.Capacity)
+    } while ($zoomEditTitle.ToString() -notmatch '\| 175% \|' -and
+        [DateTime]::UtcNow -lt $zoomBlurDeadline)
+    if ($zoomEditTitle.ToString() -notmatch '\| 175% \|') {
+        throw "Zoom editor regression failed: clicking outside did not commit 175%. Actual: $($zoomEditTitle.ToString())"
+    }
+
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0200, [UIntPtr]::Zero, $zoomTextPosition)
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0201, [UIntPtr]1, $zoomTextPosition)
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0202, [UIntPtr]::Zero, $zoomTextPosition)
+    Start-Sleep -Milliseconds 100
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $window, 0x0100, [UIntPtr]0x32, [IntPtr]::Zero)
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        $window, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 300
+    [void]$zoomEditTitle.Clear()
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $window, $zoomEditTitle, $zoomEditTitle.Capacity)
+    if ($zoomEditTitle.ToString() -notmatch '\| 175% \|') {
+        throw "Zoom editor regression failed: Escape did not cancel the pending edit. Actual: $($zoomEditTitle.ToString())"
+    }
+    Write-Host "PASS toolbar percentage supports exact entry, outside-click commit, and Escape cancel."
+
     $nextButtonX = $toolbarLeft + $scaledPadding + $scaledNextOffset +
         [int][Math]::Floor($scaledButtonSize / 2.0)
     $nextButtonPosition = [IntPtr](($toolbarY -shl 16) -bor ($nextButtonX -band 0xFFFF))

@@ -17,6 +17,7 @@
 #include "RenamePolicy.h"
 #include "SlideshowPolicy.h"
 #include "ZoomPolicy.h"
+#include "ZoomEditPolicy.h"
 
 #include "D3D11App.h"
 #include <ppl.h>
@@ -36,8 +37,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.21";
-constinit int appVersionCode = 13621; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.22";
+constinit int appVersionCode = 13622; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -389,6 +390,17 @@ struct CurImageParameter {
             (int)std::distance(zoomList.begin(), it) : zoomIndex;
     }
 
+    void selectZoomTarget(int64_t zoom) {
+        zoomTarget = std::max<int64_t>(1, zoom);
+        if (!std::ranges::binary_search(zoomList, zoomTarget)) {
+            zoomList.emplace_back(zoomTarget);
+            std::sort(zoomList.begin(), zoomList.end());
+        }
+        const auto it = std::find(zoomList.begin(), zoomList.end(), zoomTarget);
+        zoomIndex = (it != zoomList.end()) ?
+            static_cast<int>(std::distance(zoomList.begin(), it)) : zoomIndex;
+    }
+
     void slideTargetRotateLeft() {
         slideTarget = { slideTarget.y, -slideTarget.x };
         slideCur = slideTarget;
@@ -468,6 +480,9 @@ public:
     bool smoothShift = false;
     bool slideshowPlaying = false;
     bool showExif = false;
+    bool zoomTextEditing = false;
+    bool zoomEditReplaceSelection = false;
+    std::string zoomEditText;
     Cood mousePos, mousePressPos;
     ImageDatabase imgDB;
     RotationStore rotationStore;
@@ -523,6 +538,33 @@ public:
 
     void showZoomIndicator() {
         zoomIndicatorStartedAt = std::chrono::steady_clock::now();
+    }
+
+    void beginZoomTextEdit() {
+        zoomTextEditing = true;
+        zoomEditReplaceSelection = true;
+        zoomEditText = std::to_string(
+            ZoomPolicy::displayPercent(curPar.zoomCur, CurImageParameter::ZOOM_BASE));
+        extraUIFlag = ShowExtraUI::bottomToolbar;
+        operateQueue.push({ ActionENUM::refresh });
+    }
+
+    void cancelZoomTextEdit() {
+        zoomTextEditing = false;
+        zoomEditReplaceSelection = false;
+        zoomEditText.clear();
+        operateQueue.push({ ActionENUM::refresh });
+    }
+
+    void commitZoomTextEdit() {
+        const auto percent = ZoomEditPolicy::parsePercent(zoomEditText);
+        zoomTextEditing = false;
+        zoomEditReplaceSelection = false;
+        zoomEditText.clear();
+        if (percent)
+            operateQueue.push({ ActionENUM::zoomPercent, *percent });
+        else
+            operateQueue.push({ ActionENUM::refresh });
     }
 
     const wchar_t* renameValidationMessage(RenamePolicy::ValidationError error) const {
@@ -948,6 +990,17 @@ public:
                 return;
             }
 
+            const bool zoomTextClicked = extraUIFlag == ShowExtraUI::bottomToolbar &&
+                OverlayLayout::zoomTextRect(winWidth, winHeight).contains(x, y);
+            if (zoomTextEditing && !zoomTextClicked)
+                commitZoomTextEdit();
+            if (zoomTextClicked) {
+                if (!zoomTextEditing)
+                    beginZoomTextEdit();
+                mouseIsPressing = false;
+                return;
+            }
+
             if (presentationMode && cursorPos == CursorPos::centerArea) {
                 const bool insideImage = isPointInsideCurrentImage(x, y);
                 presentationClickCandidate = !insideImage;
@@ -1152,6 +1205,9 @@ public:
             case OverlayLayout::Hit::ZoomOut:
                 cursorPos = CursorPos::toolbarZoomOut;
                 break;
+            case OverlayLayout::Hit::ZoomText:
+                cursorPos = CursorPos::toolbarZoomText;
+                break;
             case OverlayLayout::Hit::ZoomIn:
                 cursorPos = CursorPos::toolbarZoomIn;
                 break;
@@ -1199,6 +1255,7 @@ public:
             case CursorPos::toolbarDelete:
             case CursorPos::toolbarSetting:
             case CursorPos::toolbarZoomOut:
+            case CursorPos::toolbarZoomText:
             case CursorPos::toolbarZoomIn:
             case CursorPos::toolbarPrevious:
             case CursorPos::toolbarPlayPause:
@@ -1207,6 +1264,9 @@ public:
                 extraUIFlag = ShowExtraUI::bottomToolbar;
                 break;
             }
+
+            if (zoomTextEditing)
+                extraUIFlag = ShowExtraUI::bottomToolbar;
 
             operateQueue.push({ ActionENUM::refresh });
             cursorPosLast = cursorPos;
@@ -1221,7 +1281,7 @@ public:
 
     void OnMouseLeave() override {
         cursorPosLast = cursorPos = CursorPos::centerArea;
-        extraUIFlag = ShowExtraUI::none;
+        extraUIFlag = zoomTextEditing ? ShowExtraUI::bottomToolbar : ShowExtraUI::none;
         mouseIsPressing = false;
         operateQueue.push({ ActionENUM::refresh });
     }
@@ -1257,6 +1317,7 @@ public:
             break;
 
         case CursorPos::toolbarSetting:
+        case CursorPos::toolbarZoomText:
         case CursorPos::toolbarPlayPause:
         case CursorPos::toolbar:
         case CursorPos::centerTop:
@@ -1298,6 +1359,55 @@ public:
     }
 
     void OnKeyDown(WPARAM keyValue) override {
+        if (zoomTextEditing) {
+            if (keyValue == VK_RETURN) {
+                commitZoomTextEdit();
+                return;
+            }
+            if (keyValue == VK_ESCAPE) {
+                cancelZoomTextEdit();
+                return;
+            }
+            if (keyValue == VK_BACK) {
+                if (zoomEditReplaceSelection) {
+                    zoomEditText.clear();
+                    zoomEditReplaceSelection = false;
+                }
+                else if (!zoomEditText.empty()) {
+                    zoomEditText.pop_back();
+                }
+                operateQueue.push({ ActionENUM::refresh });
+                return;
+            }
+            if (keyValue == VK_CONTROL) {
+                ctrlIsPressing = true;
+                return;
+            }
+            if (ctrlIsPressing && keyValue == 'A') {
+                zoomEditReplaceSelection = true;
+                operateQueue.push({ ActionENUM::refresh });
+                return;
+            }
+
+            char digit = '\0';
+            if (keyValue >= '0' && keyValue <= '9')
+                digit = static_cast<char>(keyValue);
+            else if (keyValue >= VK_NUMPAD0 && keyValue <= VK_NUMPAD9)
+                digit = static_cast<char>('0' + keyValue - VK_NUMPAD0);
+            if (digit != '\0') {
+                if (ZoomEditPolicy::appendDigit(
+                    zoomEditText, digit, zoomEditReplaceSelection)) {
+                    zoomEditReplaceSelection = false;
+                    operateQueue.push({ ActionENUM::refresh });
+                }
+                return;
+            }
+
+            // While the inline field owns keyboard focus, do not let unrelated
+            // viewer shortcuts rotate, browse, or close the current image.
+            return;
+        }
+
         if (ctrlIsPressing) {
             switch (keyValue)
             {
@@ -2488,13 +2598,6 @@ public:
             icon = source;
         else
             cv::resize(source, icon, { iconSize, iconSize }, 0, 0, cv::INTER_AREA);
-        if (OverlayLayout::ICON_STROKE_EXPANSION > 0) {
-            cv::Mat thickened;
-            const int kernelSize = OverlayLayout::ICON_STROKE_EXPANSION * 2 + 1;
-            cv::dilate(icon, thickened,
-                cv::getStructuringElement(cv::MORPH_CROSS, { kernelSize, kernelSize }));
-            icon = std::move(thickened);
-        }
         if (tint != 0) {
             icon = icon.clone();
             intUnion tintColor{ tint };
@@ -2532,6 +2635,7 @@ public:
             (chinese ? "退出沉浸" : "Exit immersive") : (chinese ? "沉浸显示" : "Immersive view");
         case CursorPos::toolbarSetting: return chinese ? "设置" : "Settings";
         case CursorPos::toolbarZoomOut: return chinese ? "缩小" : "Zoom out";
+        case CursorPos::toolbarZoomText: return chinese ? "输入缩放倍率" : "Enter zoom percentage";
         case CursorPos::toolbarZoomIn: return chinese ? "放大" : "Zoom in";
         default: return nullptr;
         }
@@ -2603,12 +2707,32 @@ public:
         drawToolbarButton(canvas, OverlayLayout::zoomInRect(canvas.cols, canvas.rows),
             extraUIRes.zoomIn, CursorPos::toolbarZoomIn);
 
+        const auto zoomTextLayout = OverlayLayout::zoomTextRect(canvas.cols, canvas.rows);
+        if (zoomTextEditing) {
+            auto editSurface = roundedSurface(zoomTextLayout.width, zoomTextLayout.height,
+                std::max(4, zoomTextLayout.height / 4), 0x263B82F6u);
+            jarkUtils::overlayImg(canvas, editSurface, zoomTextLayout.x, zoomTextLayout.y);
+            cv::line(canvas,
+                { zoomTextLayout.x + 4, zoomTextLayout.y + zoomTextLayout.height - 1 },
+                { zoomTextLayout.x + zoomTextLayout.width - 5,
+                  zoomTextLayout.y + zoomTextLayout.height - 1 },
+                jarkUtils::to_cv_scalar(0xFF60A5FAu), 1, cv::LINE_AA);
+        }
+
         textDrawer.setSize(OverlayLayout::TOOLBAR_TEXT_SIZE);
-        const std::string zoomText = std::format("{}%",
-            ZoomPolicy::displayPercent(curPar.zoomCur, CurImageParameter::ZOOM_BASE));
-        textDrawer.putAlignCenter(canvas,
-            toCvRect(OverlayLayout::zoomTextRect(canvas.cols, canvas.rows)),
-            zoomText.c_str(), 0xFFB8BECCu);
+        const std::string zoomText = zoomTextEditing ?
+            std::format("{}%", zoomEditText) :
+            std::format("{}%",
+                ZoomPolicy::displayPercent(curPar.zoomCur, CurImageParameter::ZOOM_BASE));
+        const auto zoomTextRect = toCvRect(zoomTextLayout);
+        textDrawer.putAlignCenter(canvas, zoomTextRect,
+            zoomText.c_str(), zoomTextEditing ? 0xFFFFFFFFu : 0xFFDDE1E9u);
+        if (!zoomTextEditing && OverlayLayout::TOOLBAR_TEXT_BOLD_OFFSET > 0) {
+            auto boldRect = zoomTextRect;
+            boldRect.x += OverlayLayout::TOOLBAR_TEXT_BOLD_OFFSET;
+            textDrawer.putAlignCenter(canvas, boldRect,
+                zoomText.c_str(), 0xBFDDE1E9u);
+        }
 
         if (const char* tooltip = toolbarTooltip()) {
             OverlayLayout::Rect hovered{};
@@ -2625,6 +2749,7 @@ public:
             case CursorPos::toolbarFullscreen: hovered = OverlayLayout::fullscreenRect(canvas.cols, canvas.rows); break;
             case CursorPos::toolbarSetting: hovered = OverlayLayout::settingsRect(canvas.cols, canvas.rows); break;
             case CursorPos::toolbarZoomOut: hovered = OverlayLayout::zoomOutRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarZoomText: hovered = OverlayLayout::zoomTextRect(canvas.cols, canvas.rows); break;
             case CursorPos::toolbarZoomIn: hovered = OverlayLayout::zoomInRect(canvas.cols, canvas.rows); break;
             default: break;
             }
@@ -3060,6 +3185,20 @@ public:
                 smoothShift = true;
                 showZoomIndicator();
             }
+        } break;
+
+        case ActionENUM::zoomPercent: {
+            const int percent = std::clamp(
+                operateAction.value1,
+                ZoomEditPolicy::MIN_PERCENT,
+                ZoomEditPolicy::MAX_PERCENT);
+            const auto zoomNext = std::max<int64_t>(1, static_cast<int64_t>(std::llround(
+                percent * CurImageParameter::ZOOM_BASE / 100.0)));
+            if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
+                computeZoomSlide(zoomNext);
+            curPar.selectZoomTarget(zoomNext);
+            smoothShift = true;
+            showZoomIndicator();
         } break;
 
         case ActionENUM::zoomFix: {

@@ -18,6 +18,7 @@
 #include "WheelInput.h"
 #include "SlideshowPolicy.h"
 #include "ZoomPolicy.h"
+#include "ZoomEditPolicy.h"
 #include "StbImageDecoder.h"
 #include "SvgRenderer.h"
 
@@ -289,10 +290,11 @@ void expectOverlayLayout() {
         toolbarPrevious.x < toolbarPlayPause.x && toolbarPlayPause.x < toolbarNext.x);
     passOrFail("viewer toolbar uses a flat rounded surface without square-corner borders",
         OverlayLayout::TOOLBAR_BORDER == 0x00000000u);
-    passOrFail("toolbar icons and percentage text use the enlarged bold treatment",
+    passOrFail("toolbar keeps enlarged clean icons and a lightly bold percentage",
         OverlayLayout::BASE_ICON_SIZE == 20 &&
-        OverlayLayout::TOOLBAR_TEXT_SIZE == 14 &&
-        OverlayLayout::ICON_STROKE_EXPANSION == 1);
+        OverlayLayout::TOOLBAR_TEXT_SIZE == 18 &&
+        OverlayLayout::TOOLBAR_TEXT_BOLD_OFFSET == 1 &&
+        OverlayLayout::ICON_STROKE_EXPANSION == 0);
     passOrFail("toolbar hit testing maps every reference action",
         hitCenter(OverlayLayout::toolbarPreviousRect(width, height)) == OverlayLayout::Hit::ToolbarPreviousImage &&
         hitCenter(OverlayLayout::toolbarPlayPauseRect(width, height)) == OverlayLayout::Hit::ToolbarPlayPause &&
@@ -306,7 +308,16 @@ void expectOverlayLayout() {
         hitCenter(OverlayLayout::fullscreenRect(width, height)) == OverlayLayout::Hit::Fullscreen &&
         hitCenter(OverlayLayout::settingsRect(width, height)) == OverlayLayout::Hit::Settings &&
         hitCenter(OverlayLayout::zoomOutRect(width, height)) == OverlayLayout::Hit::ZoomOut &&
+        hitCenter(OverlayLayout::zoomTextRect(width, height)) == OverlayLayout::Hit::ZoomText &&
         hitCenter(OverlayLayout::zoomInRect(width, height)) == OverlayLayout::Hit::ZoomIn);
+    passOrFail("editable zoom percentage has a practical click and text area",
+        OverlayLayout::zoomTextRect(width, height).width == 50 &&
+        OverlayLayout::zoomTextRect(width, height).x >
+            OverlayLayout::zoomOutRect(width, height).x +
+            OverlayLayout::zoomOutRect(width, height).width &&
+        OverlayLayout::zoomTextRect(width, height).x +
+            OverlayLayout::zoomTextRect(width, height).width <
+            OverlayLayout::zoomInRect(width, height).x);
     passOrFail("redundant favorite, copy, and delete actions stay out of the primary toolbar",
         !OverlayLayout::showsRedundantFileActions());
     const auto toolbarReveal = OverlayLayout::toolbarRevealRect(width, height);
@@ -397,6 +408,22 @@ void expectZoomPolicy() {
         ZoomPolicy::indicatorAlpha(ZoomPolicy::INDICATOR_TOTAL_MS) == 0);
     passOrFail("canvas presentation is synchronized to the display refresh",
         FramePacingPolicy::usesDisplaySynchronizedPresent());
+}
+
+void expectZoomEditPolicy() {
+    std::string text = "98";
+    passOrFail("first typed digit replaces the selected zoom percentage",
+        ZoomEditPolicy::appendDigit(text, '1', true) && text == "1");
+    passOrFail("zoom editor appends digits up to its visible numeric limit",
+        ZoomEditPolicy::appendDigit(text, '5', false) &&
+        ZoomEditPolicy::appendDigit(text, '0', false) && text == "150");
+    passOrFail("zoom editor accepts exact values and clamps supported bounds",
+        ZoomEditPolicy::parsePercent("150") == 150 &&
+        ZoomEditPolicy::parsePercent("0") == ZoomEditPolicy::MIN_PERCENT &&
+        ZoomEditPolicy::parsePercent("99999") == ZoomEditPolicy::MAX_PERCENT);
+    passOrFail("zoom editor rejects empty or non-numeric values",
+        !ZoomEditPolicy::parsePercent("").has_value() &&
+        !ZoomEditPolicy::parsePercent("12x").has_value());
 }
 
 void expectSlideshowPolicy() {
@@ -909,6 +936,7 @@ int main(int argc, char* argv[]) {
     expectBackgroundRendering();
     expectOverlayLayout();
     expectZoomPolicy();
+    expectZoomEditPolicy();
     expectSlideshowPolicy();
     expectImageViewTransform();
     expectInitialWindowLayout();

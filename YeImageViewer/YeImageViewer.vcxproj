@@ -203,6 +203,7 @@
     <ClInclude Include="include\videoDecoder.h" />
     <ClInclude Include="include\WheelInput.h" />
     <ClInclude Include="include\ZoomPolicy.h" />
+    <ClInclude Include="include\ZoomEditPolicy.h" />
     <ClInclude Include="Resource.h" />
   </ItemGroup>
   <ItemGroup>
