@@ -92,8 +92,8 @@ IDR_MSYHMONO_TTF        TTF                     "file\\MSYHMONO.ttf"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,36,19,0
- PRODUCTVERSION 1,36,19,0
+ FILEVERSION 1,36,20,0
+ PRODUCTVERSION 1,36,20,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -110,12 +110,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "YeImageViewer Project"
             VALUE "FileDescription", "YeImageViewer 图像查看器"
-            VALUE "FileVersion", "1.36.19.0"
+            VALUE "FileVersion", "1.36.20.0"
             VALUE "InternalName", "YeImageViewer"
             VALUE "LegalCopyright", "Copyright (C) 2023-2026 JARK006 and YeImageViewer contributors"
             VALUE "OriginalFilename", "YeImageViewer.exe"
             VALUE "ProductName", "YeImageViewer"
-            VALUE "ProductVersion", "1.36.19.0"
+            VALUE "ProductVersion", "1.36.20.0"
         END
     END
     BLOCK "VarFileInfo"
@@ -154,6 +154,8 @@ IDR_SVG_COPY_ICON       SVG                     "file\\icons\\copy.svg"
 IDR_SVG_DELETE_ICON     SVG                     "file\\icons\\delete.svg"
 IDR_SVG_ZOOM_OUT_ICON   SVG                     "file\\icons\\zoom-out.svg"
 IDR_SVG_ZOOM_IN_ICON    SVG                     "file\\icons\\zoom-in.svg"
+IDR_SVG_PLAY_ICON       SVG                     "file\\icons\\play.svg"
+IDR_SVG_PAUSE_ICON      SVG                     "file\\icons\\pause.svg"
 
 
 /////////////////////////////////////////////////////////////////////////////

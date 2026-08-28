@@ -15,6 +15,8 @@
 #include "SettingLayout.h"
 #include "TextRenderingPolicy.h"
 #include "WheelInput.h"
+#include "SlideshowPolicy.h"
+#include "ZoomPolicy.h"
 #include "StbImageDecoder.h"
 #include "SvgRenderer.h"
 
@@ -264,6 +266,7 @@ void expectOverlayLayout() {
     constexpr int width = 800;
     constexpr int height = 600;
     constexpr auto toolbarPrevious = OverlayLayout::toolbarPreviousRect(width, height);
+    constexpr auto toolbarPlayPause = OverlayLayout::toolbarPlayPauseRect(width, height);
     constexpr auto toolbarNext = OverlayLayout::toolbarNextRect(width, height);
     constexpr auto toolbar = OverlayLayout::toolbarRect(width, height);
     constexpr auto close = OverlayLayout::presentationCloseRect(width, height);
@@ -279,10 +282,14 @@ void expectOverlayLayout() {
         toolbar.y + toolbar.height == height - OverlayLayout::BASE_TOOLBAR_BOTTOM_MARGIN &&
         toolbarPrevious.width == OverlayLayout::BASE_BUTTON_SIZE &&
         toolbarNext.width == OverlayLayout::BASE_BUTTON_SIZE);
+    passOrFail("previous, slideshow, and next form the centered primary toolbar group",
+        toolbarPlayPause.x + toolbarPlayPause.width / 2 == width / 2 &&
+        toolbarPrevious.x < toolbarPlayPause.x && toolbarPlayPause.x < toolbarNext.x);
     passOrFail("viewer toolbar uses a flat rounded surface without square-corner borders",
         OverlayLayout::TOOLBAR_BORDER == 0x00000000u);
     passOrFail("toolbar hit testing maps every reference action",
         hitCenter(OverlayLayout::toolbarPreviousRect(width, height)) == OverlayLayout::Hit::ToolbarPreviousImage &&
+        hitCenter(OverlayLayout::toolbarPlayPauseRect(width, height)) == OverlayLayout::Hit::ToolbarPlayPause &&
         hitCenter(OverlayLayout::toolbarNextRect(width, height)) == OverlayLayout::Hit::ToolbarNextImage &&
         hitCenter(OverlayLayout::rotateLeftRect(width, height)) == OverlayLayout::Hit::RotateLeft &&
         hitCenter(OverlayLayout::rotateRightRect(width, height)) == OverlayLayout::Hit::RotateRight &&
@@ -291,12 +298,11 @@ void expectOverlayLayout() {
         hitCenter(OverlayLayout::zoomFitRect(width, height)) == OverlayLayout::Hit::ZoomFit &&
         hitCenter(OverlayLayout::zoomActualRect(width, height)) == OverlayLayout::Hit::ZoomActual &&
         hitCenter(OverlayLayout::fullscreenRect(width, height)) == OverlayLayout::Hit::Fullscreen &&
-        hitCenter(OverlayLayout::favoriteRect(width, height)) == OverlayLayout::Hit::Favorite &&
-        hitCenter(OverlayLayout::copyImageRect(width, height)) == OverlayLayout::Hit::CopyImage &&
-        hitCenter(OverlayLayout::deleteImageRect(width, height)) == OverlayLayout::Hit::DeleteImage &&
         hitCenter(OverlayLayout::settingsRect(width, height)) == OverlayLayout::Hit::Settings &&
         hitCenter(OverlayLayout::zoomOutRect(width, height)) == OverlayLayout::Hit::ZoomOut &&
         hitCenter(OverlayLayout::zoomInRect(width, height)) == OverlayLayout::Hit::ZoomIn);
+    passOrFail("redundant favorite, copy, and delete actions stay out of the primary toolbar",
+        !OverlayLayout::showsRedundantFileActions());
     const auto toolbarReveal = OverlayLayout::toolbarRevealRect(width, height);
     passOrFail("toolbar reveal region includes the padded lower strip",
         toolbarReveal.x == toolbar.x - OverlayLayout::BASE_TOOLBAR_REVEAL_SIDE_PADDING &&
@@ -324,6 +330,63 @@ void expectOverlayLayout() {
         !OverlayLayout::shouldDrawPresentationClose(false, true, true));
     passOrFail("top image information bar is removed from framed and presentation modes",
         !OverlayLayout::usesTopInfoBar());
+}
+
+void expectZoomPolicy() {
+    constexpr int64_t zoomBase = 1 << 16;
+    const auto levels = ZoomPolicy::buildLevels(zoomBase);
+    const auto actual = std::find(levels.begin(), levels.end(), zoomBase);
+    bool downMatches = actual != levels.end();
+    bool upMatches = actual != levels.end();
+    constexpr std::array expectedDown{
+        87, 76, 66, 57, 50, 43, 38, 33, 28, 25, 21, 19, 16,
+        14, 12, 11, 9, 8, 7, 6, 5, 4, 3, 2, 1 };
+    constexpr std::array expectedUp{
+        115, 132, 152, 175, 201, 231, 266, 306, 352, 405, 465,
+        535, 615, 708, 813, 936, 1076, 1238, 1423, 1637, 1882, 2162 };
+    if (actual != levels.end()) {
+        const auto index = static_cast<std::size_t>(std::distance(levels.begin(), actual));
+        for (std::size_t offset = 0; offset < expectedDown.size(); ++offset) {
+            if (index <= offset) {
+                downMatches = false;
+                break;
+            }
+            const int percent = static_cast<int>(std::llround(
+                levels[index - offset - 1] * 100.0 / zoomBase));
+            downMatches = downMatches && percent == expectedDown[offset];
+        }
+        for (std::size_t offset = 0; offset < expectedUp.size(); ++offset) {
+            if (index + offset + 1 >= levels.size()) {
+                upMatches = false;
+                break;
+            }
+            const int percent = static_cast<int>(std::llround(
+                levels[index + offset + 1] * 100.0 / zoomBase));
+            upMatches = upMatches && std::abs(percent - expectedUp[offset]) <= 2;
+        }
+    }
+    passOrFail("zoom buttons and wheel share the Picasa-style geometric levels",
+        downMatches && upMatches &&
+        std::llround(levels.front() * 100.0 / zoomBase) == ZoomPolicy::MIN_PERCENT &&
+        std::llround(levels.back() * 100.0 / zoomBase) == ZoomPolicy::MAX_PERCENT);
+    passOrFail("zoom animation uses monotonic time-based easing",
+        ZoomPolicy::ANIMATION_DURATION_MS >= 120 &&
+        ZoomPolicy::easeOutCubic(0.0) == 0.0 &&
+        ZoomPolicy::easeOutCubic(0.25) < ZoomPolicy::easeOutCubic(0.5) &&
+        ZoomPolicy::easeOutCubic(0.5) < ZoomPolicy::easeOutCubic(0.75) &&
+        ZoomPolicy::easeOutCubic(1.0) == 1.0);
+    passOrFail("zoom labels round the settled 115 percent target consistently",
+        ZoomPolicy::displayPercent(std::llround(zoomBase * 1.15), zoomBase) == 115);
+}
+
+void expectSlideshowPolicy() {
+    passOrFail("slideshow advances every three seconds only with multiple images",
+        SlideshowPolicy::INTERVAL_MS == 3000 &&
+        !SlideshowPolicy::canPlay(1) && SlideshowPolicy::canPlay(2) &&
+        !SlideshowPolicy::shouldAdvance(false, 3, true) &&
+        !SlideshowPolicy::shouldAdvance(true, 1, true) &&
+        !SlideshowPolicy::shouldAdvance(true, 3, false) &&
+        SlideshowPolicy::shouldAdvance(true, 3, true));
 }
 
 void expectImageViewTransform() {
@@ -447,7 +510,7 @@ void expectMonitorPlacement() {
 }
 
 void expectToolbarIcons(const std::vector<std::string>& paths) {
-    bool allValid = paths.size() == 16;
+    bool allValid = paths.size() == 18;
     for (const auto& path : paths) {
         const auto source = readFile(path);
         const auto renderer = SvgRenderer::create(source);
@@ -812,6 +875,8 @@ int main(int argc, char* argv[]) {
     expectBilinearEnlargement();
     expectBackgroundRendering();
     expectOverlayLayout();
+    expectZoomPolicy();
+    expectSlideshowPolicy();
     expectImageViewTransform();
     expectInitialWindowLayout();
     expectPresentationLayout();
@@ -839,17 +904,17 @@ int main(int argc, char* argv[]) {
         failedTests += 4;
         std::cerr << "FAIL SVG regression fixture paths were not provided\n";
     }
-    if (argc >= 20) {
+    if (argc >= 22) {
         expectToolbarIcons({ argv[4], argv[5], argv[6], argv[7], argv[8], argv[9],
             argv[10], argv[11], argv[12], argv[13], argv[14], argv[15], argv[16],
-            argv[17], argv[18], argv[19] });
+            argv[17], argv[18], argv[19], argv[20], argv[21] });
     }
     else {
         ++failedTests;
         std::cerr << "FAIL toolbar icon paths were not provided\n";
     }
-    if (argc >= 23) {
-        expectApplicationIcons({ argv[20], argv[21], argv[22] });
+    if (argc >= 25) {
+        expectApplicationIcons({ argv[22], argv[23], argv[24] });
     }
     else {
         ++failedTests;

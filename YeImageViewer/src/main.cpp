@@ -15,6 +15,8 @@
 #include "WindowTitlePresentation.h"
 #include "WheelInput.h"
 #include "RenamePolicy.h"
+#include "SlideshowPolicy.h"
+#include "ZoomPolicy.h"
 
 #include "D3D11App.h"
 #include <ppl.h>
@@ -34,8 +36,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.19";
-constinit int appVersionCode = 13619; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.20";
+constinit int appVersionCode = 13620; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -247,35 +249,9 @@ std::optional<std::wstring> showRenameDialog(HWND owner, std::wstring initialNam
 } // namespace
 
 
-static constexpr auto generate_zoom_list() {
-    // 原始缩放级别数组（2^10 到 2^22）
-    constexpr std::array<int64_t, 13> base = {
-        1 << 10, 1 << 11, 1 << 12, 1 << 13, 1 << 14,
-        1 << 15, 1 << 16, 1 << 17, 1 << 18, 1 << 19,
-        1 << 20, 1 << 21, 1 << 22
-    };
-    constexpr double baseScale = 1.148698354997035;// std::pow(2.0, 0.2);
-
-    std::array<int64_t, 5 * base.size() - 4> result{};
-
-    size_t index = 0;
-    for (size_t i = 0; i < base.size(); ++i) {
-        result[index++] = base[i];
-
-        if (i < base.size() - 1) {
-            result[index++] = (int64_t)(base[i] * baseScale);
-            result[index++] = (int64_t)(base[i] * baseScale * baseScale);
-            result[index++] = (int64_t)(base[i] * baseScale * baseScale * baseScale);
-            result[index++] = (int64_t)(base[i] * baseScale * baseScale * baseScale * baseScale);
-        }
-    }
-    return result;
-}
-
-
 struct CurImageParameter {
-    static constexpr auto ZOOM_LIST = generate_zoom_list();
     static constexpr int64_t ZOOM_BASE = (1 << 16); // 100%缩放
+    inline static const auto ZOOM_LIST = ZoomPolicy::buildLevels(ZOOM_BASE);
 
     int64_t zoomTarget;     // 设定的缩放比例
     int64_t zoomCur;        // 动画播放过程的缩放比例，动画完毕后的值等于zoomTarget
@@ -422,6 +398,7 @@ public:
     cv::Mat mainRes, leftArrow, rightArrow, leftRotate, rightRotate,
         flipHorizontal, flipVertical, fitWindow, actualSize, fullscreen,
         favorite, copy, deleteImage, setting, zoomOut, zoomIn,
+        play, pause,
         presentationClose, animationBarPlaying, animationBarPausing;
 
     static cv::Mat loadSvgIcon(int resourceId, int size = OverlayLayout::BASE_ICON_SIZE) {
@@ -459,6 +436,8 @@ public:
         setting = loadSvgIcon(IDR_SVG_SETTINGS_ICON, OverlayLayout::BASE_ICON_SIZE);
         zoomOut = loadSvgIcon(IDR_SVG_ZOOM_OUT_ICON, OverlayLayout::BASE_ICON_SIZE);
         zoomIn = loadSvgIcon(IDR_SVG_ZOOM_IN_ICON, OverlayLayout::BASE_ICON_SIZE);
+        play = loadSvgIcon(IDR_SVG_PLAY_ICON, OverlayLayout::BASE_ICON_SIZE);
+        pause = loadSvgIcon(IDR_SVG_PAUSE_ICON, OverlayLayout::BASE_ICON_SIZE);
         presentationClose = loadSvgIcon(IDR_SVG_CLOSE_ICON, OverlayLayout::PRESENTATION_CLOSE_SIZE);
 
         animationBarPlaying = mainRes({ 0, 100, 200, 50 });
@@ -479,6 +458,7 @@ public:
     bool mouseIsPressing = false;
     bool ctrlIsPressing = false;
     bool smoothShift = false;
+    bool slideshowPlaying = false;
     bool showExif = false;
     Cood mousePos, mousePressPos;
     ImageDatabase imgDB;
@@ -501,7 +481,8 @@ public:
     ImageInfoPresentation::Model imageInfoModelCache;
     CurImageParameter curPar;
     ExtraUIRes extraUIRes;
-    std::chrono::steady_clock::time_point lastClickTimestamp{}, lastWinResizeTimestamp{};
+    std::chrono::steady_clock::time_point lastClickTimestamp{}, lastWinResizeTimestamp{},
+        slideshowNextAt{};
 
     YeImageViewerApp() {
         m_wndCaption = std::format(L"{} {}", appName, appVersion);
@@ -519,6 +500,16 @@ public:
     bool hasCurrentImagePath() const {
         return curFileIdx >= 0 && curFileIdx < static_cast<int>(imgFileList.size()) &&
             imgFileList[curFileIdx] != m_wndCaption;
+    }
+
+    void scheduleSlideshowNext() {
+        slideshowNextAt = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(SlideshowPolicy::INTERVAL_MS);
+    }
+
+    void stopSlideshow() {
+        slideshowPlaying = false;
+        slideshowNextAt = {};
     }
 
     const wchar_t* renameValidationMessage(RenamePolicy::ValidationError error) const {
@@ -803,6 +794,7 @@ public:
     void initOpenFile(wstring filePath) {
         namespace fs = std::filesystem;
 
+        stopSlideshow();
         curFileIdx = -1;
         imgFileList.clear();
         imgDB.clear();
@@ -968,6 +960,8 @@ public:
                 operateQueue.push({ ActionENUM::preImg });
             else if (cursorPos == CursorPos::rightEdge || cursorPos == CursorPos::toolbarNext)
                 operateQueue.push({ ActionENUM::nextImg });
+            else if (cursorPos == CursorPos::toolbarPlayPause)
+                operateQueue.push({ ActionENUM::toggleSlideshow });
             else if (cursorPos == CursorPos::toolbarRotateLeft)
                 operateQueue.push({ ActionENUM::rotateLeft });
             else if (cursorPos == CursorPos::toolbarRotateRight)
@@ -1100,6 +1094,9 @@ public:
             case OverlayLayout::Hit::ToolbarPreviousImage:
                 cursorPos = CursorPos::toolbarPrevious;
                 break;
+            case OverlayLayout::Hit::ToolbarPlayPause:
+                cursorPos = CursorPos::toolbarPlayPause;
+                break;
             case OverlayLayout::Hit::ToolbarNextImage:
                 cursorPos = CursorPos::toolbarNext;
                 break;
@@ -1188,6 +1185,7 @@ public:
             case CursorPos::toolbarZoomOut:
             case CursorPos::toolbarZoomIn:
             case CursorPos::toolbarPrevious:
+            case CursorPos::toolbarPlayPause:
             case CursorPos::toolbarNext:
             case CursorPos::toolbar:
                 extraUIFlag = ShowExtraUI::bottomToolbar;
@@ -1243,6 +1241,7 @@ public:
             break;
 
         case CursorPos::toolbarSetting:
+        case CursorPos::toolbarPlayPause:
         case CursorPos::toolbar:
         case CursorPos::centerTop:
         case CursorPos::presentationClose:
@@ -2496,6 +2495,9 @@ public:
         const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
         switch (cursorPos) {
         case CursorPos::toolbarPrevious: return chinese ? "上一张" : "Previous";
+        case CursorPos::toolbarPlayPause: return slideshowPlaying ?
+            (chinese ? "暂停播放" : "Pause slideshow") :
+            (chinese ? "播放幻灯片" : "Play slideshow");
         case CursorPos::toolbarNext: return chinese ? "下一张" : "Next";
         case CursorPos::toolbarRotateLeft: return chinese ? "左旋转 90°" : "Rotate left";
         case CursorPos::toolbarRotateRight: return chinese ? "右旋转 90°" : "Rotate right";
@@ -2505,9 +2507,6 @@ public:
         case CursorPos::toolbarZoomActual: return chinese ? "实际大小 (1:1)" : "Actual size (1:1)";
         case CursorPos::toolbarFullscreen: return presentationMode ?
             (chinese ? "退出沉浸" : "Exit immersive") : (chinese ? "沉浸显示" : "Immersive view");
-        case CursorPos::toolbarFavorite: return chinese ? "收藏图片" : "Favorite";
-        case CursorPos::toolbarCopy: return chinese ? "复制图像" : "Copy image";
-        case CursorPos::toolbarDelete: return chinese ? "删除图片" : "Delete image";
         case CursorPos::toolbarSetting: return chinese ? "设置" : "Settings";
         case CursorPos::toolbarZoomOut: return chinese ? "缩小" : "Zoom out";
         case CursorPos::toolbarZoomIn: return chinese ? "放大" : "Zoom in";
@@ -2540,7 +2539,7 @@ public:
         jarkUtils::overlayImg(canvas, pill, toolbar.x, toolbar.y);
 
         const int scale = OverlayLayout::toolbarScale(canvas.cols);
-        for (const int baseX : { 77, 229, 346, 498 }) {
+        for (const int baseX : { 42, 199, 342 }) {
             const int x = toolbar.x + OverlayLayout::scaled(
                 OverlayLayout::BASE_TOOLBAR_PADDING + baseX, scale);
             const int half = OverlayLayout::scaled(10, scale);
@@ -2549,11 +2548,8 @@ public:
                 cv::Scalar(255, 255, 255, 26), 1, cv::LINE_AA);
         }
 
-        const bool favorite = hasCurrentImagePath() && favoritePaths.contains(imgFileList[curFileIdx]);
-        drawToolbarButton(canvas, OverlayLayout::toolbarPreviousRect(canvas.cols, canvas.rows),
-            extraUIRes.leftArrow, CursorPos::toolbarPrevious);
-        drawToolbarButton(canvas, OverlayLayout::toolbarNextRect(canvas.cols, canvas.rows),
-            extraUIRes.rightArrow, CursorPos::toolbarNext);
+        drawToolbarButton(canvas, OverlayLayout::settingsRect(canvas.cols, canvas.rows),
+            extraUIRes.setting, CursorPos::toolbarSetting);
         drawToolbarButton(canvas, OverlayLayout::rotateLeftRect(canvas.cols, canvas.rows),
             extraUIRes.leftRotate, CursorPos::toolbarRotateLeft);
         drawToolbarButton(canvas, OverlayLayout::rotateRightRect(canvas.cols, canvas.rows),
@@ -2562,6 +2558,15 @@ public:
             extraUIRes.flipHorizontal, CursorPos::toolbarFlipHorizontal, curPar.flipHorizontal);
         drawToolbarButton(canvas, OverlayLayout::flipVerticalRect(canvas.cols, canvas.rows),
             extraUIRes.flipVertical, CursorPos::toolbarFlipVertical, curPar.flipVertical);
+
+        drawToolbarButton(canvas, OverlayLayout::toolbarPreviousRect(canvas.cols, canvas.rows),
+            extraUIRes.leftArrow, CursorPos::toolbarPrevious);
+        drawToolbarButton(canvas, OverlayLayout::toolbarPlayPauseRect(canvas.cols, canvas.rows),
+            slideshowPlaying ? extraUIRes.pause : extraUIRes.play,
+            CursorPos::toolbarPlayPause, slideshowPlaying);
+        drawToolbarButton(canvas, OverlayLayout::toolbarNextRect(canvas.cols, canvas.rows),
+            extraUIRes.rightArrow, CursorPos::toolbarNext);
+
         drawToolbarButton(canvas, OverlayLayout::zoomFitRect(canvas.cols, canvas.rows),
             extraUIRes.fitWindow, CursorPos::toolbarZoomFit,
             curPar.zoomIndex == curPar.zoomIndexFix);
@@ -2570,22 +2575,14 @@ public:
             curPar.zoomIndex == curPar.zoomIndex100percent);
         drawToolbarButton(canvas, OverlayLayout::fullscreenRect(canvas.cols, canvas.rows),
             extraUIRes.fullscreen, CursorPos::toolbarFullscreen, presentationMode);
-        drawToolbarButton(canvas, OverlayLayout::favoriteRect(canvas.cols, canvas.rows),
-            extraUIRes.favorite, CursorPos::toolbarFavorite, favorite);
-        drawToolbarButton(canvas, OverlayLayout::copyImageRect(canvas.cols, canvas.rows),
-            extraUIRes.copy, CursorPos::toolbarCopy);
-        drawToolbarButton(canvas, OverlayLayout::deleteImageRect(canvas.cols, canvas.rows),
-            extraUIRes.deleteImage, CursorPos::toolbarDelete, false, true);
-        drawToolbarButton(canvas, OverlayLayout::settingsRect(canvas.cols, canvas.rows),
-            extraUIRes.setting, CursorPos::toolbarSetting);
         drawToolbarButton(canvas, OverlayLayout::zoomOutRect(canvas.cols, canvas.rows),
             extraUIRes.zoomOut, CursorPos::toolbarZoomOut);
         drawToolbarButton(canvas, OverlayLayout::zoomInRect(canvas.cols, canvas.rows),
             extraUIRes.zoomIn, CursorPos::toolbarZoomIn);
 
         textDrawer.setSize(12);
-        const std::string zoomText = std::format("{}%", (curPar.zoomCur * 100 +
-            CurImageParameter::ZOOM_BASE / 2) / CurImageParameter::ZOOM_BASE);
+        const std::string zoomText = std::format("{}%",
+            ZoomPolicy::displayPercent(curPar.zoomCur, CurImageParameter::ZOOM_BASE));
         textDrawer.putAlignCenter(canvas,
             toCvRect(OverlayLayout::zoomTextRect(canvas.cols, canvas.rows)),
             zoomText.c_str(), 0xFFB8BECCu);
@@ -2594,6 +2591,7 @@ public:
             OverlayLayout::Rect hovered{};
             switch (cursorPos) {
             case CursorPos::toolbarPrevious: hovered = OverlayLayout::toolbarPreviousRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarPlayPause: hovered = OverlayLayout::toolbarPlayPauseRect(canvas.cols, canvas.rows); break;
             case CursorPos::toolbarNext: hovered = OverlayLayout::toolbarNextRect(canvas.cols, canvas.rows); break;
             case CursorPos::toolbarRotateLeft: hovered = OverlayLayout::rotateLeftRect(canvas.cols, canvas.rows); break;
             case CursorPos::toolbarRotateRight: hovered = OverlayLayout::rotateRightRect(canvas.cols, canvas.rows); break;
@@ -2602,9 +2600,6 @@ public:
             case CursorPos::toolbarZoomFit: hovered = OverlayLayout::zoomFitRect(canvas.cols, canvas.rows); break;
             case CursorPos::toolbarZoomActual: hovered = OverlayLayout::zoomActualRect(canvas.cols, canvas.rows); break;
             case CursorPos::toolbarFullscreen: hovered = OverlayLayout::fullscreenRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarFavorite: hovered = OverlayLayout::favoriteRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarCopy: hovered = OverlayLayout::copyImageRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarDelete: hovered = OverlayLayout::deleteImageRect(canvas.cols, canvas.rows); break;
             case CursorPos::toolbarSetting: hovered = OverlayLayout::settingsRect(canvas.cols, canvas.rows); break;
             case CursorPos::toolbarZoomOut: hovered = OverlayLayout::zoomOutRect(canvas.cols, canvas.rows); break;
             case CursorPos::toolbarZoomIn: hovered = OverlayLayout::zoomInRect(canvas.cols, canvas.rows); break;
@@ -2701,6 +2696,15 @@ public:
                 initCurrentImageParameters();
                 operateQueue.push({ ActionENUM::refresh });
             }
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const bool slideshowElapsed = slideshowNextAt != std::chrono::steady_clock::time_point{} &&
+            now >= slideshowNextAt;
+        if (SlideshowPolicy::shouldAdvance(
+            slideshowPlaying, imgFileList.size(), slideshowElapsed)) {
+            scheduleSlideshowNext();
+            operateQueue.push({ ActionENUM::nextImg });
         }
 
         auto operateAction = operateQueue.get();
@@ -2852,6 +2856,8 @@ public:
 
             lastTimestamp = std::chrono::steady_clock::now();
             delayRemain = 0;
+            if (slideshowPlaying)
+                scheduleSlideshowNext();
         } break;
 
         case ActionENUM::nextImg: {
@@ -2886,6 +2892,8 @@ public:
 
             lastTimestamp = std::chrono::steady_clock::now();
             delayRemain = 0;
+            if (slideshowPlaying)
+                scheduleSlideshowNext();
         } break;
 
         case ActionENUM::firstImg: {
@@ -2961,6 +2969,18 @@ public:
                 }, curPar.zoomTarget);
         } break;
 
+        case ActionENUM::toggleSlideshow: {
+            if (!SlideshowPolicy::canPlay(imgFileList.size())) {
+                stopSlideshow();
+                break;
+            }
+            slideshowPlaying = !slideshowPlaying;
+            if (slideshowPlaying)
+                scheduleSlideshowNext();
+            else
+                slideshowNextAt = {};
+        } break;
+
         case ActionENUM::toggleExif: {
             showExif = !showExif;
         } break;
@@ -2974,15 +2994,11 @@ public:
                     computeZoomSlide(zoomNext);
                 }
                 curPar.zoomTarget = zoomNext;
-                smoothShift = !curPar.imageAssetPtr->svgRenderer;
+                smoothShift = true;
             }
         } break;
 
         case ActionENUM::zoomOut: {
-            // 不宜缩太小
-            if (curPar.zoomTarget <= curPar.ZOOM_BASE && (curPar.zoomTarget * std::min(curPar.width, curPar.height) / curPar.ZOOM_BASE) < 4)
-                break;
-
             if (curPar.zoomIndex > 0) {
                 curPar.zoomIndex--;
 
@@ -2991,7 +3007,7 @@ public:
                     computeZoomSlide(zoomNext);
                 }
                 curPar.zoomTarget = zoomNext;
-                smoothShift = !curPar.imageAssetPtr->svgRenderer;
+                smoothShift = true;
             }
         } break;
 
@@ -3006,7 +3022,7 @@ public:
                 computeZoomSlide(zoomNext);
             }
             curPar.zoomTarget = zoomNext;
-            smoothShift = !curPar.imageAssetPtr->svgRenderer;
+            smoothShift = true;
         } break;
 
         case ActionENUM::zoomFit: {
@@ -3015,7 +3031,7 @@ public:
             if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
                 computeZoomSlide(zoomNext);
             curPar.zoomTarget = zoomNext;
-            smoothShift = !curPar.imageAssetPtr->svgRenderer;
+            smoothShift = true;
         } break;
 
         case ActionENUM::zoomActual: {
@@ -3024,7 +3040,7 @@ public:
             if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
                 computeZoomSlide(zoomNext);
             curPar.zoomTarget = zoomNext;
-            smoothShift = !curPar.imageAssetPtr->svgRenderer;
+            smoothShift = true;
         } break;
 
         case ActionENUM::rotateLeft: {
@@ -3136,36 +3152,36 @@ public:
         }
 
         if (curPar.zoomCur != curPar.zoomTarget || curPar.slideCur != curPar.slideTarget) {
-            if (GlobalVar::settingParameter.isAllowZoomAnimation && smoothShift) { // 简单缩放动画
-                const int progressMax = 1 << 8;
-                static int progressCnt = progressMax;
+            if (GlobalVar::settingParameter.isAllowZoomAnimation && smoothShift) {
+                static auto animationStart = std::chrono::steady_clock::now();
                 static int64_t zoomInit = 0;
                 static int64_t zoomTargetInit = 0;
                 static Cood slideInit{}, slideTargetInit{};
 
-                //未开始进行动画 或 动画未完成就有新缩放操作
-                if (progressCnt >= progressMax || zoomTargetInit != curPar.zoomTarget || slideTargetInit != curPar.slideTarget) {
-                    progressCnt = 1;
+                if (zoomTargetInit != curPar.zoomTarget || slideTargetInit != curPar.slideTarget) {
+                    animationStart = std::chrono::steady_clock::now();
                     zoomInit = curPar.zoomCur;
                     zoomTargetInit = curPar.zoomTarget;
                     slideInit = curPar.slideCur;
                     slideTargetInit = curPar.slideTarget;
                 }
+
+                const double elapsedMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - animationStart).count();
+                const double progress = elapsedMs / ZoomPolicy::ANIMATION_DURATION_MS;
+                if (progress >= 1.0) {
+                    curPar.zoomCur = curPar.zoomTarget;
+                    curPar.slideCur = curPar.slideTarget;
+                    smoothShift = false;
+                }
                 else {
-                    auto addDelta = ((progressMax - progressCnt) / 4);
-                    if (addDelta <= 1) {
-                        progressCnt = progressMax;
-                        curPar.zoomCur = curPar.zoomTarget;
-                        curPar.slideCur = curPar.slideTarget;
-                        smoothShift = false;
-                    }
-                    else {
-                        progressCnt += addDelta;
-                        curPar.zoomCur = zoomInit + (curPar.zoomTarget - zoomInit) * progressCnt / progressMax;
-                        const double t = (double)progressCnt / progressMax;
-                        curPar.slideCur.x = (int)std::round(slideInit.x + (curPar.slideTarget.x - slideInit.x) * t);
-                        curPar.slideCur.y = (int)std::round(slideInit.y + (curPar.slideTarget.y - slideInit.y) * t);
-                    }
+                    const double eased = ZoomPolicy::easeOutCubic(progress);
+                    curPar.zoomCur = (int64_t)std::llround(
+                        zoomInit + (zoomTargetInit - zoomInit) * eased);
+                    curPar.slideCur.x = (int)std::lround(
+                        slideInit.x + (slideTargetInit.x - slideInit.x) * eased);
+                    curPar.slideCur.y = (int)std::lround(
+                        slideInit.y + (slideTargetInit.y - slideInit.y) * eased);
                 }
             }
             else {
@@ -3201,7 +3217,7 @@ public:
             .state = pausedAnimation ? std::wstring(getUIStringW(9)) : std::wstring{},
             .current = pausedAnimation ? curPar.curFrameIdx + 1 : curFileIdx + 1,
             .total = pausedAnimation ? curPar.curFrameIdxMax + 1 : static_cast<int>(imgFileList.size()),
-            .zoomPercent = static_cast<int>(curPar.zoomCur * 100ULL / curPar.ZOOM_BASE),
+            .zoomPercent = ZoomPolicy::displayPercent(curPar.zoomCur, curPar.ZOOM_BASE),
             .pixelWidth = curPar.width,
             .pixelHeight = curPar.height,
             .fileSize = std::move(fileSize),

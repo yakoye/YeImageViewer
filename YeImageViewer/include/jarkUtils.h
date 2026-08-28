@@ -363,13 +363,13 @@ struct ImageAsset {
 enum class ActionENUM:int64_t {
     none = 0, slide, preImg, nextImg, firstImg, finalImg,
     zoomIn, zoomOut, zoomFix, zoomFit, zoomActual,
-    toggleExif, toggleFullScreen, toggleFavorite, copyImage,
+    toggleExif, toggleFullScreen, toggleSlideshow, toggleFavorite, copyImage,
     requestExit, refresh, rotateLeft, rotateRight, flipHorizontal, flipVertical,
     printImage, deleteImg, setting
 };
 
 enum class CursorPos :int {
-    centerArea = 0, leftEdge, rightEdge, toolbarPrevious, toolbarNext,
+    centerArea = 0, leftEdge, rightEdge, toolbarPrevious, toolbarPlayPause, toolbarNext,
     toolbarRotateLeft, toolbarRotateRight, toolbarFlipHorizontal, toolbarFlipVertical,
     toolbarZoomFit, toolbarZoomActual, toolbarFullscreen, toolbarFavorite,
     toolbarCopy, toolbarDelete, toolbarSetting, toolbarZoomOut, toolbarZoomIn,

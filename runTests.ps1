@@ -39,6 +39,8 @@ $toolbarIcons = @(
     (Join-Path $repoRoot "YeImageViewer\file\icons\settings.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\zoom-out.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\zoom-in.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\play.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\pause.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\close.svg")
 )
 $appIcons = @(
@@ -66,7 +68,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.19.0"
+$expectedFileVersion = "1.36.20.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -993,9 +995,9 @@ try {
 
     $targetClientWidth = $clientWidth
     $targetClientHeight = $clientHeight
-    $toolbarWidth = [Math]::Min(595, [Math]::Max([int][Math]::Round(595 * 0.4), $targetClientWidth - 16))
-    $toolbarHeight = [int][Math]::Round(50 * $toolbarWidth / 595.0)
-    $toolbarBottom = [int][Math]::Round(20 * $toolbarWidth / 595.0)
+    $toolbarWidth = [Math]::Min(580, [Math]::Max([int][Math]::Round(580 * 0.4), $targetClientWidth - 16))
+    $toolbarHeight = [int][Math]::Round(50 * $toolbarWidth / 580.0)
+    $toolbarBottom = [int][Math]::Round(20 * $toolbarWidth / 580.0)
     $toolbarX = [int]($targetClientWidth / 2)
     $toolbarY = $targetClientHeight - $toolbarBottom - [int]($toolbarHeight / 2)
     $mousePosition = [IntPtr](($toolbarY -shl 16) -bor ($toolbarX -band 0xFFFF))
@@ -1008,11 +1010,11 @@ try {
     Write-Host "PASS centered reference toolbar hover remains responsive."
 
     $toolbarScale = [Math]::Min(1000, [Math]::Max(400,
-        [int][Math]::Floor(($targetClientWidth - 16) * 1000.0 / 595.0)))
-    $scaledToolbarWidth = [int][Math]::Floor((595 * $toolbarScale + 500) / 1000.0)
+        [int][Math]::Floor(($targetClientWidth - 16) * 1000.0 / 580.0)))
+    $scaledToolbarWidth = [int][Math]::Floor((580 * $toolbarScale + 500) / 1000.0)
     $scaledButtonSize = [int][Math]::Floor((34 * $toolbarScale + 500) / 1000.0)
     $scaledPadding = [int][Math]::Floor((8 * $toolbarScale + 500) / 1000.0)
-    $scaledNextOffset = [int][Math]::Floor((35 * $toolbarScale + 500) / 1000.0)
+    $scaledNextOffset = [int][Math]::Floor((300 * $toolbarScale + 500) / 1000.0)
     $toolbarLeft = [int][Math]::Floor(($targetClientWidth - $scaledToolbarWidth) / 2.0)
     $nextButtonX = $toolbarLeft + $scaledPadding + $scaledNextOffset +
         [int][Math]::Floor($scaledButtonSize / 2.0)
@@ -1042,6 +1044,45 @@ try {
         throw "Overlay regression failed: the centered Next button did not change images. dpi=$windowDpi client=${clientWidth}x${clientHeight} click=${nextButtonX},${toolbarY} title=$($titleAfterToolbarClick.ToString())"
     }
     Write-Host "PASS centered toolbar Next button changes images through its precise hit target."
+
+    $scaledPlayOffset = [int][Math]::Floor((265 * $toolbarScale + 500) / 1000.0)
+    $playButtonX = $toolbarLeft + $scaledPadding + $scaledPlayOffset +
+        [int][Math]::Floor($scaledButtonSize / 2.0)
+    $playButtonPosition = [IntPtr](($toolbarY -shl 16) -bor ($playButtonX -band 0xFFFF))
+    $titleBeforeSlideshow = $titleAfterToolbarClick.ToString()
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0200, [UIntPtr]::Zero, $playButtonPosition)
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0201, [UIntPtr]1, $playButtonPosition)
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0202, [UIntPtr]::Zero, $playButtonPosition)
+    $titleDuringSlideshow = New-Object Text.StringBuilder 1024
+    $slideshowDeadline = [DateTime]::UtcNow.AddSeconds(6)
+    do {
+        Start-Sleep -Milliseconds 100
+        [void]$titleDuringSlideshow.Clear()
+        [void][YeImageViewerTestNativeV1365]::GetWindowText(
+            $window, $titleDuringSlideshow, $titleDuringSlideshow.Capacity)
+    } while ($titleBeforeSlideshow -eq $titleDuringSlideshow.ToString() -and
+        [DateTime]::UtcNow -lt $slideshowDeadline)
+    if ($titleBeforeSlideshow -eq $titleDuringSlideshow.ToString()) {
+        throw "Slideshow regression failed: Play did not advance to the next image."
+    }
+
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0200, [UIntPtr]::Zero, $playButtonPosition)
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0201, [UIntPtr]1, $playButtonPosition)
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $window, 0x0202, [UIntPtr]::Zero, $playButtonPosition)
+    Start-Sleep -Milliseconds 3500
+    $titleAfterPause = New-Object Text.StringBuilder 1024
+    [void][YeImageViewerTestNativeV1365]::GetWindowText(
+        $window, $titleAfterPause, $titleAfterPause.Capacity)
+    if ($titleAfterPause.ToString() -ne $titleDuringSlideshow.ToString()) {
+        throw "Slideshow regression failed: Pause did not keep the current image stable."
+    }
+    Write-Host "PASS centered Play/Pause starts and stops the three-second slideshow."
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0112, [UIntPtr]0xF030, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 300

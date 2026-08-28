@@ -5,7 +5,7 @@
 
 namespace OverlayLayout {
 
-inline constexpr int BASE_TOOLBAR_WIDTH = 595;
+inline constexpr int BASE_TOOLBAR_WIDTH = 580;
 inline constexpr int BASE_TOOLBAR_HEIGHT = 50;
 inline constexpr int BASE_TOOLBAR_BOTTOM_MARGIN = 20;
 inline constexpr int BASE_TOOLBAR_REVEAL_SIDE_PADDING = 48;
@@ -35,6 +35,7 @@ enum class Hit {
     EdgePreviousImage,
     EdgeNextImage,
     ToolbarPreviousImage,
+    ToolbarPlayPause,
     ToolbarNextImage,
     RotateLeft,
     RotateRight,
@@ -81,6 +82,10 @@ constexpr bool usesTopInfoBar() {
     return false;
 }
 
+constexpr bool showsRedundantFileActions() {
+    return false;
+}
+
 constexpr Rect toolbarRect(int canvasWidth, int canvasHeight) {
     const int scale = toolbarScale(canvasWidth);
     const int width = scaled(BASE_TOOLBAR_WIDTH, scale);
@@ -102,32 +107,30 @@ constexpr Rect baseToolbarButtonRect(int canvasWidth, int canvasHeight,
     };
 }
 
-constexpr Rect toolbarPreviousRect(int width, int height) { return baseToolbarButtonRect(width, height, 0); }
-constexpr Rect toolbarNextRect(int width, int height) { return baseToolbarButtonRect(width, height, 35); }
-constexpr Rect rotateLeftRect(int width, int height) { return baseToolbarButtonRect(width, height, 82); }
-constexpr Rect rotateRightRect(int width, int height) { return baseToolbarButtonRect(width, height, 117); }
-constexpr Rect flipHorizontalRect(int width, int height) { return baseToolbarButtonRect(width, height, 152); }
-constexpr Rect flipVerticalRect(int width, int height) { return baseToolbarButtonRect(width, height, 187); }
-constexpr Rect zoomFitRect(int width, int height) { return baseToolbarButtonRect(width, height, 234); }
-constexpr Rect zoomActualRect(int width, int height) { return baseToolbarButtonRect(width, height, 269); }
-constexpr Rect fullscreenRect(int width, int height) { return baseToolbarButtonRect(width, height, 304); }
-constexpr Rect favoriteRect(int width, int height) { return baseToolbarButtonRect(width, height, 351); }
-constexpr Rect copyImageRect(int width, int height) { return baseToolbarButtonRect(width, height, 386); }
-constexpr Rect deleteImageRect(int width, int height) { return baseToolbarButtonRect(width, height, 421); }
-constexpr Rect settingsRect(int width, int height) { return baseToolbarButtonRect(width, height, 456); }
-constexpr Rect zoomOutRect(int width, int height) { return baseToolbarButtonRect(width, height, 503, BASE_SMALL_BUTTON_SIZE); }
+constexpr Rect settingsRect(int width, int height) { return baseToolbarButtonRect(width, height, 0); }
+constexpr Rect rotateLeftRect(int width, int height) { return baseToolbarButtonRect(width, height, 50); }
+constexpr Rect rotateRightRect(int width, int height) { return baseToolbarButtonRect(width, height, 85); }
+constexpr Rect flipHorizontalRect(int width, int height) { return baseToolbarButtonRect(width, height, 120); }
+constexpr Rect flipVerticalRect(int width, int height) { return baseToolbarButtonRect(width, height, 155); }
+constexpr Rect toolbarPreviousRect(int width, int height) { return baseToolbarButtonRect(width, height, 230); }
+constexpr Rect toolbarPlayPauseRect(int width, int height) { return baseToolbarButtonRect(width, height, 265); }
+constexpr Rect toolbarNextRect(int width, int height) { return baseToolbarButtonRect(width, height, 300); }
+constexpr Rect zoomFitRect(int width, int height) { return baseToolbarButtonRect(width, height, 350); }
+constexpr Rect zoomActualRect(int width, int height) { return baseToolbarButtonRect(width, height, 385); }
+constexpr Rect fullscreenRect(int width, int height) { return baseToolbarButtonRect(width, height, 420); }
+constexpr Rect zoomOutRect(int width, int height) { return baseToolbarButtonRect(width, height, 467, BASE_SMALL_BUTTON_SIZE); }
 constexpr Rect zoomTextRect(int width, int height) {
     const int scale = toolbarScale(width);
     const auto toolbar = toolbarRect(width, height);
     const int rectHeight = scaled(BASE_SMALL_BUTTON_SIZE, scale);
     return {
-        toolbar.x + scaled(BASE_TOOLBAR_PADDING + 527, scale),
+        toolbar.x + scaled(BASE_TOOLBAR_PADDING + 491, scale),
         toolbar.y + (toolbar.height - rectHeight) / 2,
         scaled(36, scale),
         rectHeight,
     };
 }
-constexpr Rect zoomInRect(int width, int height) { return baseToolbarButtonRect(width, height, 565, BASE_SMALL_BUTTON_SIZE); }
+constexpr Rect zoomInRect(int width, int height) { return baseToolbarButtonRect(width, height, 529, BASE_SMALL_BUTTON_SIZE); }
 
 constexpr Rect toolbarRevealRect(int canvasWidth, int canvasHeight) {
     const int scale = toolbarScale(canvasWidth);
@@ -152,6 +155,7 @@ constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y) {
 
     if (presentationCloseRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::PresentationClose;
     if (toolbarPreviousRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ToolbarPreviousImage;
+    if (toolbarPlayPauseRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ToolbarPlayPause;
     if (toolbarNextRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ToolbarNextImage;
     if (rotateLeftRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::RotateLeft;
     if (rotateRightRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::RotateRight;
@@ -160,9 +164,6 @@ constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y) {
     if (zoomFitRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ZoomFit;
     if (zoomActualRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ZoomActual;
     if (fullscreenRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::Fullscreen;
-    if (favoriteRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::Favorite;
-    if (copyImageRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::CopyImage;
-    if (deleteImageRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::DeleteImage;
     if (settingsRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::Settings;
     if (zoomOutRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ZoomOut;
     if (zoomInRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ZoomIn;

@@ -181,6 +181,7 @@
     <ClInclude Include="include\MotionPhotoUtils.h" />
     <ClInclude Include="include\MonitorPlacement.h" />
     <ClInclude Include="include\OverlayLayout.h" />
+    <ClInclude Include="include\SlideshowPolicy.h" />
     <ClInclude Include="include\PresentationLayout.h" />
     <ClInclude Include="include\Printer.h" />
     <ClInclude Include="include\RenamePolicy.h" />
@@ -200,6 +201,7 @@
     <ClInclude Include="include\tinyxml2.h" />
     <ClInclude Include="include\videoDecoder.h" />
     <ClInclude Include="include\WheelInput.h" />
+    <ClInclude Include="include\ZoomPolicy.h" />
     <ClInclude Include="Resource.h" />
   </ItemGroup>
   <ItemGroup>
