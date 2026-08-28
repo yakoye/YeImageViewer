@@ -31,6 +31,13 @@ struct WindowedResult {
     int initialSlideY = 0;
 };
 
+inline int topAlignedSlide(int renderedHeight, int viewportHeight) {
+    if (renderedHeight <= viewportHeight)
+        return 0;
+    return static_cast<int>(std::lround(
+        (renderedHeight - viewportHeight) / 2.0));
+}
+
 inline Result calculate(int imageWidth, int imageHeight, int workAreaWidth,
     int workAreaHeight, int dpi, bool quarterTurn = false) {
     if (imageWidth <= 0 || imageHeight <= 0 || workAreaWidth <= 0 ||
@@ -60,11 +67,15 @@ inline Result calculate(int imageWidth, int imageHeight, int workAreaWidth,
         static_cast<int>(std::lround(BOTTOM_RESERVED_DIP * logicalOneToOneScale)));
     const int contentHeight = std::max(1, workAreaHeight - bottomReservedPixels);
     const int imageLeft = (workAreaWidth - renderedWidth) / 2;
-    const int imageTop = (contentHeight - renderedHeight) / 2;
+    const int centeredImageTop = (contentHeight - renderedHeight) / 2;
     const int naturallyCenteredLeft = static_cast<int>(
         std::lround((workAreaWidth - renderedWidth) / 2.0));
     const int naturallyCenteredTop = static_cast<int>(
         std::lround((workAreaHeight - renderedHeight) / 2.0));
+    const int initialSlideY = renderedHeight > workAreaHeight ?
+        topAlignedSlide(renderedHeight, workAreaHeight) :
+        centeredImageTop - naturallyCenteredTop;
+    const int imageTop = naturallyCenteredTop + initialSlideY;
 
     return {
         renderedWidth,
@@ -72,7 +83,7 @@ inline Result calculate(int imageWidth, int imageHeight, int workAreaWidth,
         imageLeft,
         imageTop,
         imageLeft - naturallyCenteredLeft,
-        imageTop - naturallyCenteredTop,
+        initialSlideY,
         bottomReservedPixels,
         scale,
         portrait,
@@ -91,17 +102,14 @@ inline WindowedResult calculateWindowed(const Result& presentation,
     const int clientWidth = std::min(presentation.renderedWidth, maximumWidth);
     const int clientHeight = std::min(presentation.renderedHeight, maximumHeight);
     const int imageLeft = (clientWidth - presentation.renderedWidth) / 2;
-    const int imageTop = (clientHeight - presentation.renderedHeight) / 2;
     const int naturallyCenteredLeft = static_cast<int>(
         std::lround((clientWidth - presentation.renderedWidth) / 2.0));
-    const int naturallyCenteredTop = static_cast<int>(
-        std::lround((clientHeight - presentation.renderedHeight) / 2.0));
 
     return {
         clientWidth,
         clientHeight,
         imageLeft - naturallyCenteredLeft,
-        imageTop - naturallyCenteredTop,
+        topAlignedSlide(presentation.renderedHeight, clientHeight),
     };
 }
 

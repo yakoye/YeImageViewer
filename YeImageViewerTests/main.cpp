@@ -475,7 +475,8 @@ void expectPresentationLayout() {
     passOrFail("portrait images preserve readable logical 100 percent and may overflow vertically",
         std::abs(tall.scale - 1.25) < 0.000001 &&
         tall.renderedWidth == 904 && tall.renderedHeight == 1413 &&
-        tall.imageLeft == 508 && tall.imageTop == -216 &&
+        tall.imageLeft == 508 && tall.imageTop == 0 &&
+        tall.initialSlideY == 197 &&
         tall.portrait && tall.extendsBelowViewport);
 
     const auto veryWidePortrait = PresentationLayout::calculate(2000, 3000, 1920, 1020, 120);
@@ -490,9 +491,9 @@ void expectPresentationLayout() {
     passOrFail("leaving presentation mode wraps the window client around the displayed image",
         smallWindow.clientWidth == 839 && smallWindow.clientHeight == 596 &&
         wideWindow.clientWidth == 1486 && wideWindow.clientHeight == 841);
-    passOrFail("an overflowing portrait keeps its zoom and uses a centered scrollable viewport",
+    passOrFail("an overflowing portrait keeps its zoom and opens at the scrollable top",
         tallWindow.clientWidth == 904 && tallWindow.clientHeight == 918 &&
-        tallWindow.initialSlideY == 1);
+        tallWindow.initialSlideY == 248);
     passOrFail("the current image layout determines the next framed window",
         tallWindow.clientWidth != smallWindow.clientWidth &&
         tallWindow.clientHeight != smallWindow.clientHeight &&

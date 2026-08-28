@@ -208,8 +208,6 @@ std::optional<std::wstring> showRenameDialog(HWND owner, std::wstring initialNam
     }
 
     const bool restoreOwner = owner && IsWindowEnabled(owner);
-    if (restoreOwner)
-        EnableWindow(owner, FALSE);
     ShowWindow(window, SW_SHOW);
     UpdateWindow(window);
     SendMessageW(state.edit, EM_SETSEL, 0, -1);
@@ -225,6 +223,17 @@ std::optional<std::wstring> showRenameDialog(HWND owner, std::wstring initialNam
             quitCode = static_cast<int>(message.wParam);
             break;
         }
+        const bool outsideMouseDown =
+            message.message == WM_LBUTTONDOWN || message.message == WM_RBUTTONDOWN ||
+            message.message == WM_MBUTTONDOWN || message.message == WM_XBUTTONDOWN ||
+            message.message == WM_NCLBUTTONDOWN || message.message == WM_NCRBUTTONDOWN ||
+            message.message == WM_NCMBUTTONDOWN || message.message == WM_NCXBUTTONDOWN;
+        if (outsideMouseDown && message.hwnd != window &&
+            !IsChild(window, message.hwnd)) {
+            state.finished = true;
+            ShowWindow(window, SW_HIDE);
+            continue;
+        }
         if (!IsDialogMessageW(window, &message)) {
             TranslateMessage(&message);
             DispatchMessageW(&message);
@@ -236,7 +245,6 @@ std::optional<std::wstring> showRenameDialog(HWND owner, std::wstring initialNam
     if (state.font)
         DeleteObject(state.font);
     if (restoreOwner && IsWindow(owner)) {
-        EnableWindow(owner, TRUE);
         SetForegroundWindow(owner);
         SetActiveWindow(owner);
         SetFocus(owner);
@@ -662,7 +670,10 @@ public:
 
         curPar.setZoom(static_cast<int64_t>(std::lround(
             layout.scale * curPar.ZOOM_BASE)));
-        curPar.slideCur = curPar.slideTarget = { 0, 0 };
+        curPar.slideCur = curPar.slideTarget = {
+            0,
+            PresentationLayout::topAlignedSlide(layout.renderedHeight, winHeight),
+        };
     }
 
     RECT currentImageRect() const {

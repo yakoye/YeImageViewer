@@ -94,6 +94,13 @@ std::vector<EnumeratedMonitor> enumerateMonitors() {
     return monitors;
 }
 
+bool forcePrimaryMonitorForRegression() {
+    wchar_t value[2]{};
+    return GetEnvironmentVariableW(
+        L"YEIMAGEVIEWER_TEST_PRIMARY_MONITOR", value, ARRAYSIZE(value)) > 0 &&
+        value[0] == L'1';
+}
+
 MonitorPlacement::Rect toPlacementRect(const RECT& rect) {
     return { rect.left, rect.top, rect.right, rect.bottom };
 }
@@ -191,9 +198,11 @@ void D3D11App::loadSettings(bool openImageOnCursorMonitor) {
         }
     }
 
-    const auto selection = MonitorPlacement::selectForImageOpen(monitors,
-        cursorMonitorIndex, GlobalVar::settingParameter.rememberLastMonitor,
-        GlobalVar::settingParameter.lastMonitorDevice);
+    const auto selection = forcePrimaryMonitorForRegression() ?
+        MonitorPlacement::select(monitors, false, {}) :
+        MonitorPlacement::selectForImageOpen(monitors, cursorMonitorIndex,
+            GlobalVar::settingParameter.rememberLastMonitor,
+            GlobalVar::settingParameter.lastMonitorDevice);
     if (selection.index != MonitorPlacement::NO_MONITOR) {
         auto relativeRect = toPlacementRect(GlobalVar::settingParameter.monitorRelativeRect);
         if (!relativeRect.valid() && toPlacementRect(GlobalVar::settingParameter.rect).valid()) {
