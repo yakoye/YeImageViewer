@@ -173,6 +173,7 @@
     <ClInclude Include="include\FileAssociationNaming.h" />
     <ClInclude Include="include\FileAssociationManager.h" />
     <ClInclude Include="include\FramePacingPolicy.h" />
+    <ClInclude Include="include\HomeScreenLayout.h" />
     <ClInclude Include="include\ImageDatabase.h" />
     <ClInclude Include="include\ImageInfoPresentation.h" />
     <ClInclude Include="include\ImageInterpolation.h" />
@@ -226,7 +227,6 @@
     <ResourceCompile Include="YeImageViewer.rc" />
   </ItemGroup>
   <ItemGroup>
-    <Image Include="file\home.png" />
     <Image Include="file\mainRes.png" />
     <Image Include="file\printerRes.png" />
     <Image Include="file\tips.png" />

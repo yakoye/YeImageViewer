@@ -81,11 +81,10 @@ inline constexpr std::array<Rect, 12> HELP_ITEMS{
 };
 inline constexpr int HELP_CONTENT_HEIGHT = 750;
 
-inline constexpr Rect ABOUT_HERO_CARD{ 20, 20, 580, 320 };
-inline constexpr Rect ABOUT_PROJECT_BUTTON{ 20, 356, 282, 48 };
-inline constexpr Rect ABOUT_UPSTREAM_BUTTON{ 318, 356, 282, 48 };
-inline constexpr Rect ABOUT_BUILD_CARD{ 20, 420, 580, 112 };
-inline constexpr int ABOUT_CONTENT_HEIGHT = 552;
+inline constexpr Rect ABOUT_HERO_CARD{ 20, 20, 580, 432 };
+inline constexpr Rect ABOUT_PROJECT_BUTTON{ 20, 480, 282, 48 };
+inline constexpr Rect ABOUT_UPSTREAM_BUTTON{ 318, 480, 282, 48 };
+inline constexpr int ABOUT_CONTENT_HEIGHT = 548;
 
 constexpr bool overlaps(const Rect& left, const Rect& right) {
     return left.x < right.x + right.width && right.x < left.x + left.width &&
@@ -158,6 +157,17 @@ constexpr bool helpItemsAreSeparated() {
     return true;
 }
 
+constexpr bool aboutLayoutIsOrdered() {
+    return isInsidePage(ABOUT_HERO_CARD, ABOUT_CONTENT_HEIGHT) &&
+        isInsidePage(ABOUT_PROJECT_BUTTON, ABOUT_CONTENT_HEIGHT) &&
+        isInsidePage(ABOUT_UPSTREAM_BUTTON, ABOUT_CONTENT_HEIGHT) &&
+        !overlaps(ABOUT_HERO_CARD, ABOUT_PROJECT_BUTTON) &&
+        !overlaps(ABOUT_HERO_CARD, ABOUT_UPSTREAM_BUTTON) &&
+        ABOUT_PROJECT_BUTTON.y == ABOUT_UPSTREAM_BUTTON.y &&
+        ABOUT_PROJECT_BUTTON.y + ABOUT_PROJECT_BUTTON.height ==
+            ABOUT_CONTENT_HEIGHT - PAGE_PADDING;
+}
+
 static_assert(CANVAS_WIDTH == 620 && CANVAS_HEIGHT == 620);
 static_assert(TAB_WIDTH * 4 == CANVAS_WIDTH);
 static_assert(GENERAL_CONTENT_HEIGHT <= CONTENT_VIEW_HEIGHT);
@@ -165,6 +175,7 @@ static_assert(HELP_CONTENT_HEIGHT > CONTENT_VIEW_HEIGHT);
 static_assert(ABOUT_CONTENT_HEIGHT <= CONTENT_VIEW_HEIGHT);
 static_assert(generalControlsAreSeparated());
 static_assert(helpItemsAreSeparated());
+static_assert(aboutLayoutIsOrdered());
 static_assert(ABOUT_TITLE_FONT_SIZE == FONT_SIZE);
 
 }

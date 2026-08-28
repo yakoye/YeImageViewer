@@ -4,6 +4,7 @@
 #include "BackgroundPolicy.h"
 #include "EscapeBehavior.h"
 #include "FramePacingPolicy.h"
+#include "HomeScreenLayout.h"
 #include "ImageInterpolation.h"
 #include "InitialWindowLayout.h"
 #include "ImageInfoPresentation.h"
@@ -759,10 +760,30 @@ void expectSettingLayout() {
         SettingLayout::scrollbarThumbHeight(SettingLayout::HELP_CONTENT_HEIGHT) >= 32 &&
         SettingLayout::scrollbarThumbHeight(SettingLayout::HELP_CONTENT_HEIGHT) <
             SettingLayout::CONTENT_VIEW_HEIGHT);
+    passOrFail("about build details follow the author and repository buttons stay at the bottom",
+        SettingLayout::aboutLayoutIsOrdered() &&
+        SettingLayout::ABOUT_HERO_CARD.y + SettingLayout::ABOUT_HERO_CARD.height <
+            SettingLayout::ABOUT_PROJECT_BUTTON.y &&
+        SettingLayout::ABOUT_PROJECT_BUTTON.y +
+            SettingLayout::ABOUT_PROJECT_BUTTON.height ==
+            SettingLayout::ABOUT_CONTENT_HEIGHT - SettingLayout::PAGE_PADDING);
     passOrFail("settings scroll offsets are clamped to the content bounds",
         SettingLayout::clampScrollOffset(SettingLayout::HELP_CONTENT_HEIGHT, -10) == 0 &&
         SettingLayout::clampScrollOffset(SettingLayout::HELP_CONTENT_HEIGHT, 10000) ==
             SettingLayout::maxScrollOffset(SettingLayout::HELP_CONTENT_HEIGHT));
+}
+
+void expectHomeScreenLayout() {
+    passOrFail("startup help is code-laid out instead of the legacy JarkViewer diagram",
+        !HomeScreenLayout::USES_LEGACY_JARKVIEWER_DIAGRAM &&
+        HomeScreenLayout::WIDTH == 500 && HomeScreenLayout::HEIGHT == 350 &&
+        HomeScreenLayout::hasSeparatedGuideCards());
+    passOrFail("startup opening guide and footer stay inside the canvas",
+        HomeScreenLayout::isInside(HomeScreenLayout::OPEN_CARD) &&
+        HomeScreenLayout::isInside(HomeScreenLayout::FOOTER) &&
+        HomeScreenLayout::OPEN_CARD.y < HomeScreenLayout::GUIDE_CARDS.front().y &&
+        HomeScreenLayout::GUIDE_CARDS.front().y +
+            HomeScreenLayout::GUIDE_CARDS.front().height < HomeScreenLayout::FOOTER.y);
 }
 
 void expectTextRendering() {
@@ -944,6 +965,7 @@ int main(int argc, char* argv[]) {
     expectMonitorPlacement();
     expectEscapeBehavior();
     expectSettingLayout();
+    expectHomeScreenLayout();
     expectTextRendering();
     expectImageInfoPresentation();
     expectWindowTitlePresentation();

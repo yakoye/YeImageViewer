@@ -51,6 +51,9 @@
     <ClInclude Include="include\OverlayLayout.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\HomeScreenLayout.h">
+      <Filter>include</Filter>
+    </ClInclude>
     <ClInclude Include="include\ZoomEditPolicy.h">
       <Filter>include</Filter>
     </ClInclude>
@@ -166,9 +169,6 @@
       <Filter>resources</Filter>
     </Image>
     <Image Include="file\tips.png">
-      <Filter>resources</Filter>
-    </Image>
-    <Image Include="file\home.png">
       <Filter>resources</Filter>
     </Image>
     <Image Include="file\mainRes.png">

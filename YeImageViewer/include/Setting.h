@@ -379,6 +379,19 @@ private:
         textDrawer.putAlignCenter(page, { hero.x + 30, hero.y + 254, hero.width - 60, 34 },
             chinese ? "作者  yakoye" : "Author  yakoye", secondaryText());
 
+        cv::line(page, { hero.x + 30, hero.y + 300 },
+            { hero.x + hero.width - 30, hero.y + 300 },
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+        const auto buildTimeText = std::format("{}: {}", getUIString(19),
+            jarkUtils::COMPILE_DATE_TIME);
+        const auto commitText = std::format("Commit ID: {}", BuildInfo::GIT_COMMIT_ID);
+        textDrawer.putAlignCenter(page,
+            { hero.x + 30, hero.y + 310, hero.width - 60, 36 },
+            buildTimeText.c_str(), secondaryText());
+        textDrawer.putAlignCenter(page,
+            { hero.x + 30, hero.y + 350, hero.width - 60, 36 },
+            commitText.c_str(), secondaryText());
+
         const auto projectButton = toCvRect(SettingLayout::ABOUT_PROJECT_BUTTON);
         const auto upstreamButton = toCvRect(SettingLayout::ABOUT_UPSTREAM_BUTTON);
         fillRoundedRect(page, projectButton, GlobalVar::currentTheme.CHECK, 8);
@@ -387,16 +400,6 @@ private:
             chinese ? "访问本项目" : "Open this project", 0xFFFFFFFFu);
         textDrawer.putAlignCenter(page, upstreamButton,
             chinese ? "访问上游项目" : "Open upstream", primaryText());
-
-        const cv::Rect build = toCvRect(SettingLayout::ABOUT_BUILD_CARD);
-        drawCard(page, build);
-        const auto buildTimeText = std::format("{}: {}", getUIString(19),
-            jarkUtils::COMPILE_DATE_TIME);
-        const auto commitText = std::format("Commit ID: {}", BuildInfo::GIT_COMMIT_ID);
-        textDrawer.putAlignLeft(page, { build.x + 18, build.y + 14, build.width - 36, 36 },
-            buildTimeText.c_str(), secondaryText());
-        textDrawer.putAlignLeft(page, { build.x + 18, build.y + 58, build.width - 36, 36 },
-            commitText.c_str(), secondaryText());
     }
 
     void drawTabs() {
