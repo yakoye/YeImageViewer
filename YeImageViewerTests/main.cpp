@@ -3,6 +3,7 @@
 #include "BackgroundRenderer.h"
 #include "BackgroundPolicy.h"
 #include "EscapeBehavior.h"
+#include "FramePacingPolicy.h"
 #include "ImageInterpolation.h"
 #include "InitialWindowLayout.h"
 #include "ImageInfoPresentation.h"
@@ -270,6 +271,7 @@ void expectOverlayLayout() {
     constexpr auto toolbarNext = OverlayLayout::toolbarNextRect(width, height);
     constexpr auto toolbar = OverlayLayout::toolbarRect(width, height);
     constexpr auto close = OverlayLayout::presentationCloseRect(width, height);
+    constexpr auto zoomIndicator = OverlayLayout::zoomIndicatorRect(width, height);
 
     const auto hitCenter = [&](OverlayLayout::Rect rect) {
         return OverlayLayout::hitTest(width, height,
@@ -287,6 +289,10 @@ void expectOverlayLayout() {
         toolbarPrevious.x < toolbarPlayPause.x && toolbarPlayPause.x < toolbarNext.x);
     passOrFail("viewer toolbar uses a flat rounded surface without square-corner borders",
         OverlayLayout::TOOLBAR_BORDER == 0x00000000u);
+    passOrFail("toolbar icons and percentage text use the enlarged bold treatment",
+        OverlayLayout::BASE_ICON_SIZE == 20 &&
+        OverlayLayout::TOOLBAR_TEXT_SIZE == 14 &&
+        OverlayLayout::ICON_STROKE_EXPANSION == 1);
     passOrFail("toolbar hit testing maps every reference action",
         hitCenter(OverlayLayout::toolbarPreviousRect(width, height)) == OverlayLayout::Hit::ToolbarPreviousImage &&
         hitCenter(OverlayLayout::toolbarPlayPauseRect(width, height)) == OverlayLayout::Hit::ToolbarPlayPause &&
@@ -330,6 +336,11 @@ void expectOverlayLayout() {
         !OverlayLayout::shouldDrawPresentationClose(false, true, true));
     passOrFail("top image information bar is removed from framed and presentation modes",
         !OverlayLayout::usesTopInfoBar());
+    passOrFail("zoom percentage indicator stays in the lower-left safe margin",
+        zoomIndicator.x == OverlayLayout::ZOOM_INDICATOR_MARGIN &&
+        zoomIndicator.y + zoomIndicator.height == height - OverlayLayout::ZOOM_INDICATOR_MARGIN &&
+        zoomIndicator.width == OverlayLayout::ZOOM_INDICATOR_WIDTH &&
+        zoomIndicator.height == OverlayLayout::ZOOM_INDICATOR_HEIGHT);
 }
 
 void expectZoomPolicy() {
@@ -369,14 +380,23 @@ void expectZoomPolicy() {
         downMatches && upMatches &&
         std::llround(levels.front() * 100.0 / zoomBase) == ZoomPolicy::MIN_PERCENT &&
         std::llround(levels.back() * 100.0 / zoomBase) == ZoomPolicy::MAX_PERCENT);
-    passOrFail("zoom animation uses monotonic time-based easing",
-        ZoomPolicy::ANIMATION_DURATION_MS >= 120 &&
-        ZoomPolicy::easeOutCubic(0.0) == 0.0 &&
-        ZoomPolicy::easeOutCubic(0.25) < ZoomPolicy::easeOutCubic(0.5) &&
-        ZoomPolicy::easeOutCubic(0.5) < ZoomPolicy::easeOutCubic(0.75) &&
-        ZoomPolicy::easeOutCubic(1.0) == 1.0);
+    passOrFail("zoom animation uses monotonic smooth-step timing",
+        ZoomPolicy::ANIMATION_DURATION_MS == 220 &&
+        ZoomPolicy::easeSmoothStep(0.0) == 0.0 &&
+        ZoomPolicy::easeSmoothStep(0.25) < ZoomPolicy::easeSmoothStep(0.5) &&
+        ZoomPolicy::easeSmoothStep(0.5) < ZoomPolicy::easeSmoothStep(0.75) &&
+        ZoomPolicy::easeSmoothStep(1.0) == 1.0);
     passOrFail("zoom labels round the settled 115 percent target consistently",
         ZoomPolicy::displayPercent(std::llround(zoomBase * 1.15), zoomBase) == 115);
+    passOrFail("zoom percentage indicator holds and then fades completely",
+        ZoomPolicy::indicatorAlpha(-1) == 0 &&
+        ZoomPolicy::indicatorAlpha(0) == 255 &&
+        ZoomPolicy::indicatorAlpha(ZoomPolicy::INDICATOR_HOLD_MS) == 255 &&
+        ZoomPolicy::indicatorAlpha(ZoomPolicy::INDICATOR_HOLD_MS +
+            ZoomPolicy::INDICATOR_FADE_MS / 2) > 0 &&
+        ZoomPolicy::indicatorAlpha(ZoomPolicy::INDICATOR_TOTAL_MS) == 0);
+    passOrFail("canvas presentation is synchronized to the display refresh",
+        FramePacingPolicy::usesDisplaySynchronizedPresent());
 }
 
 void expectSlideshowPolicy() {
@@ -495,6 +515,14 @@ void expectMonitorPlacement() {
     passOrFail("disabled or disconnected monitor memory falls back to the primary monitor",
         disabled.index == 0 && !disabled.matchedRememberedMonitor &&
         disconnected.index == 0 && !disconnected.matchedRememberedMonitor);
+
+    const auto cursorOpen = MonitorPlacement::selectForImageOpen(
+        monitors, 1, true, L"\\\\.\\DISPLAY1");
+    const auto missingCursor = MonitorPlacement::selectForImageOpen(
+        monitors, MonitorPlacement::NO_MONITOR, true, L"\\\\.\\DISPLAY2");
+    passOrFail("image launch prefers the monitor under the mouse cursor",
+        cursorOpen.index == 1 && !cursorOpen.matchedRememberedMonitor &&
+        missingCursor.index == 1 && missingCursor.matchedRememberedMonitor);
 
     const MonitorPlacement::Rect secondaryWindow{ -1180, 100, -380, 700 };
     const auto relative = MonitorPlacement::toRelative(secondaryWindow, monitors[1].workArea);
@@ -762,6 +790,10 @@ void expectImageInfoPresentation() {
         ImageInfoPresentation::blendBgra(0xFFFFFFFFu,
             ImageInfoPresentation::PANEL_BACKGROUND) == 0xFF666666u &&
         ImageInfoPresentation::logicalPanelHeight(model) <= 460);
+    passOrFail("image information uses compact fourteen-pixel rows like the reference",
+        ImageInfoPresentation::LOGICAL_FONT_SIZE == 14 &&
+        ImageInfoPresentation::LOGICAL_ROW_HEIGHT == 24 &&
+        ImageInfoPresentation::LOGICAL_PANEL_WIDTH == 320);
 }
 
 void expectWindowTitlePresentation() {

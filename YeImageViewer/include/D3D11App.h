@@ -5,7 +5,7 @@
 
 class D3D11App {
 public:
-    D3D11App();
+    explicit D3D11App(bool openImageOnCursorMonitor = false);
     virtual ~D3D11App();
 
     virtual HRESULT Initialize(HINSTANCE hInstance);
@@ -46,7 +46,7 @@ protected:
     template<class Interface>
     void SafeRelease(Interface*& pInterfaceToRelease);
 
-    void loadSettings();
+    void loadSettings(bool openImageOnCursorMonitor);
     void saveSettings() const;
 
 protected:

@@ -13,9 +13,14 @@ inline constexpr int BASE_TOOLBAR_REVEAL_TOP_PADDING = 12;
 inline constexpr int BASE_TOOLBAR_PADDING = 8;
 inline constexpr int BASE_BUTTON_SIZE = 34;
 inline constexpr int BASE_SMALL_BUTTON_SIZE = 22;
-inline constexpr int BASE_ICON_SIZE = 18;
+inline constexpr int BASE_ICON_SIZE = 20;
+inline constexpr int TOOLBAR_TEXT_SIZE = 14;
+inline constexpr int ICON_STROKE_EXPANSION = 1;
 inline constexpr int PRESENTATION_CLOSE_SIZE = 42;
 inline constexpr int PRESENTATION_CLOSE_MARGIN = 12;
+inline constexpr int ZOOM_INDICATOR_WIDTH = 72;
+inline constexpr int ZOOM_INDICATOR_HEIGHT = 38;
+inline constexpr int ZOOM_INDICATOR_MARGIN = 24;
 inline constexpr uint32_t TOOLBAR_BORDER = 0x00000000u;
 
 struct Rect {
@@ -70,6 +75,15 @@ constexpr Rect presentationCloseRect(int canvasWidth, int) {
         PRESENTATION_CLOSE_MARGIN,
         PRESENTATION_CLOSE_SIZE,
         PRESENTATION_CLOSE_SIZE,
+    };
+}
+
+constexpr Rect zoomIndicatorRect(int, int canvasHeight) {
+    return {
+        ZOOM_INDICATOR_MARGIN,
+        std::max(0, canvasHeight - ZOOM_INDICATOR_MARGIN - ZOOM_INDICATOR_HEIGHT),
+        ZOOM_INDICATOR_WIDTH,
+        ZOOM_INDICATOR_HEIGHT,
     };
 }
 

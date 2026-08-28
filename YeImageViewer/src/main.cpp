@@ -36,8 +36,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.20";
-constinit int appVersionCode = 13620; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.21";
+constinit int appVersionCode = 13621; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -482,9 +482,10 @@ public:
     CurImageParameter curPar;
     ExtraUIRes extraUIRes;
     std::chrono::steady_clock::time_point lastClickTimestamp{}, lastWinResizeTimestamp{},
-        slideshowNextAt{};
+        slideshowNextAt{}, zoomIndicatorStartedAt{};
 
-    YeImageViewerApp() {
+    explicit YeImageViewerApp(bool openImageOnCursorMonitor = false)
+        : D3D11App(openImageOnCursorMonitor) {
         m_wndCaption = std::format(L"{} {}", appName, appVersion);
         auto rotationPath = std::filesystem::path(GlobalVar::settingPath);
         rotationPath.replace_filename(L"YeImageViewer.rotations.db");
@@ -510,6 +511,10 @@ public:
     void stopSlideshow() {
         slideshowPlaying = false;
         slideshowNextAt = {};
+    }
+
+    void showZoomIndicator() {
+        zoomIndicatorStartedAt = std::chrono::steady_clock::now();
     }
 
     const wchar_t* renameValidationMessage(RenamePolicy::ValidationError error) const {
@@ -2464,7 +2469,7 @@ public:
         const OverlayLayout::Rect& target, uint32_t tint = 0) {
         if (source.empty() || target.width <= 0 || target.height <= 0)
             return;
-        const int iconSize = std::max(10, std::min({ target.width - 8, target.height - 8,
+        const int iconSize = std::max(10, std::min({ target.width - 6, target.height - 6,
             OverlayLayout::scaled(OverlayLayout::BASE_ICON_SIZE,
                 OverlayLayout::toolbarScale(canvas.cols)) }));
         cv::Mat icon;
@@ -2472,6 +2477,13 @@ public:
             icon = source;
         else
             cv::resize(source, icon, { iconSize, iconSize }, 0, 0, cv::INTER_AREA);
+        if (OverlayLayout::ICON_STROKE_EXPANSION > 0) {
+            cv::Mat thickened;
+            const int kernelSize = OverlayLayout::ICON_STROKE_EXPANSION * 2 + 1;
+            cv::dilate(icon, thickened,
+                cv::getStructuringElement(cv::MORPH_CROSS, { kernelSize, kernelSize }));
+            icon = std::move(thickened);
+        }
         if (tint != 0) {
             icon = icon.clone();
             intUnion tintColor{ tint };
@@ -2580,7 +2592,7 @@ public:
         drawToolbarButton(canvas, OverlayLayout::zoomInRect(canvas.cols, canvas.rows),
             extraUIRes.zoomIn, CursorPos::toolbarZoomIn);
 
-        textDrawer.setSize(12);
+        textDrawer.setSize(OverlayLayout::TOOLBAR_TEXT_SIZE);
         const std::string zoomText = std::format("{}%",
             ZoomPolicy::displayPercent(curPar.zoomCur, CurImageParameter::ZOOM_BASE));
         textDrawer.putAlignCenter(canvas,
@@ -2660,6 +2672,31 @@ public:
         }
     }
 
+    void drawZoomIndicator(cv::Mat& canvas) {
+        if (zoomIndicatorStartedAt == std::chrono::steady_clock::time_point{})
+            return;
+
+        const int elapsedMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - zoomIndicatorStartedAt).count());
+        const int alpha = ZoomPolicy::indicatorAlpha(elapsedMs);
+        if (alpha <= 0) {
+            zoomIndicatorStartedAt = {};
+            return;
+        }
+
+        const auto rect = OverlayLayout::zoomIndicatorRect(canvas.cols, canvas.rows);
+        const uint32_t surfaceColor = static_cast<uint32_t>(150 * alpha / 255) << 24;
+        auto surface = roundedSurface(rect.width, rect.height,
+            std::max(6, rect.height / 5), surfaceColor);
+        jarkUtils::overlayImg(canvas, surface, rect.x, rect.y);
+
+        textDrawer.setSize(18);
+        const auto text = std::format("{}%",
+            ZoomPolicy::displayPercent(curPar.zoomCur, CurImageParameter::ZOOM_BASE));
+        const uint32_t textColor = (static_cast<uint32_t>(alpha) << 24) | 0x00FFFFFFu;
+        textDrawer.putAlignCenter(canvas, toCvRect(rect), text.c_str(), textColor);
+    }
+
     void updateMainCanvas() {
         PresentCanvas(mainCanvas.ptr(), mainCanvas.cols, mainCanvas.rows, (int)mainCanvas.step);
     }
@@ -2711,6 +2748,7 @@ public:
         if (operateAction.action == ActionENUM::none &&
             curPar.zoomCur == curPar.zoomTarget &&
             curPar.slideCur == curPar.slideTarget &&
+            zoomIndicatorStartedAt == std::chrono::steady_clock::time_point{} &&
             (curPar.imageAssetPtr->format != ImageFormat::Animated || 
                 (curPar.imageAssetPtr->format == ImageFormat::Animated && curPar.isAnimationPause))) {
 
@@ -2995,6 +3033,7 @@ public:
                 }
                 curPar.zoomTarget = zoomNext;
                 smoothShift = true;
+                showZoomIndicator();
             }
         } break;
 
@@ -3008,6 +3047,7 @@ public:
                 }
                 curPar.zoomTarget = zoomNext;
                 smoothShift = true;
+                showZoomIndicator();
             }
         } break;
 
@@ -3175,7 +3215,7 @@ public:
                     smoothShift = false;
                 }
                 else {
-                    const double eased = ZoomPolicy::easeOutCubic(progress);
+                    const double eased = ZoomPolicy::easeSmoothStep(progress);
                     curPar.zoomCur = (int64_t)std::llround(
                         zoomInit + (zoomTargetInit - zoomInit) * eased);
                     curPar.slideCur.x = (int)std::lround(
@@ -3203,6 +3243,7 @@ public:
         drawCanvas(srcImg, mainCanvas);
         drawExifInfo(mainCanvas);
         drawExtraUI(mainCanvas);
+        drawZoomIndicator(mainCanvas);
 
         const bool pausedAnimation = curPar.imageAssetPtr->format == ImageFormat::Animated &&
             curPar.isAnimationPause;
@@ -3365,7 +3406,7 @@ int WINAPI wWinMain(
         filePath.pop_back();
     }
 
-    YeImageViewerApp app;
+    YeImageViewerApp app(!filePath.empty());
     if (SUCCEEDED(app.InitWindow(hInstance))) {
         app.initOpenFile(filePath);
         app.enterPresentationMode();

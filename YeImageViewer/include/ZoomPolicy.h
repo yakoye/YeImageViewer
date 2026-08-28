@@ -10,7 +10,10 @@ namespace ZoomPolicy {
 inline constexpr double STEP_FACTOR = 1.15;
 inline constexpr int MIN_PERCENT = 1;
 inline constexpr int MAX_PERCENT = 10000;
-inline constexpr int ANIMATION_DURATION_MS = 180;
+inline constexpr int ANIMATION_DURATION_MS = 220;
+inline constexpr int INDICATOR_HOLD_MS = 650;
+inline constexpr int INDICATOR_FADE_MS = 250;
+inline constexpr int INDICATOR_TOTAL_MS = INDICATOR_HOLD_MS + INDICATOR_FADE_MS;
 
 inline std::vector<int64_t> buildLevels(int64_t zoomBase) {
     std::vector<int> percentages;
@@ -45,16 +48,23 @@ inline std::vector<int64_t> buildLevels(int64_t zoomBase) {
     return levels;
 }
 
-constexpr double easeOutCubic(double progress) {
+constexpr double easeSmoothStep(double progress) {
     const double t = std::clamp(progress, 0.0, 1.0);
-    const double remaining = 1.0 - t;
-    return 1.0 - remaining * remaining * remaining;
+    return t * t * (3.0 - 2.0 * t);
 }
 
 inline int displayPercent(int64_t zoom, int64_t zoomBase) {
     if (zoomBase <= 0)
         return 0;
     return static_cast<int>(std::llround(zoom * 100.0 / zoomBase));
+}
+
+constexpr int indicatorAlpha(int elapsedMs) {
+    if (elapsedMs < 0 || elapsedMs >= INDICATOR_TOTAL_MS)
+        return 0;
+    if (elapsedMs <= INDICATOR_HOLD_MS)
+        return 255;
+    return 255 * (INDICATOR_TOTAL_MS - elapsedMs) / INDICATOR_FADE_MS;
 }
 
 }

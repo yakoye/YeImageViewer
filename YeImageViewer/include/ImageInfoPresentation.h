@@ -21,12 +21,12 @@ struct Model {
     std::vector<Row> details;
 };
 
-inline constexpr int LOGICAL_PANEL_WIDTH = 360;
-inline constexpr int LOGICAL_FONT_SIZE = 16;
-inline constexpr int LOGICAL_HEADER_HEIGHT = 48;
-inline constexpr int LOGICAL_SECTION_HEIGHT = 28;
-inline constexpr int LOGICAL_ROW_HEIGHT = 30;
-inline constexpr int LOGICAL_FOOTER_HEIGHT = 36;
+inline constexpr int LOGICAL_PANEL_WIDTH = 320;
+inline constexpr int LOGICAL_FONT_SIZE = 14;
+inline constexpr int LOGICAL_HEADER_HEIGHT = 40;
+inline constexpr int LOGICAL_SECTION_HEIGHT = 24;
+inline constexpr int LOGICAL_ROW_HEIGHT = 24;
+inline constexpr int LOGICAL_FOOTER_HEIGHT = 32;
 inline constexpr std::size_t MAX_DETAIL_ROWS = 6;
 inline constexpr uint32_t PANEL_BACKGROUND = 0x99000000u;
 inline constexpr uint32_t PANEL_BORDER = 0xFF334155u;

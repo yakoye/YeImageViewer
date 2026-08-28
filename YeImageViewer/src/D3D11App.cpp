@@ -1,6 +1,7 @@
 #include "D3D11App.h"
 #include "BackgroundPolicy.h"
 #include "MonitorPlacement.h"
+#include "FramePacingPolicy.h"
 
 namespace {
 
@@ -103,8 +104,8 @@ RECT toWin32Rect(const MonitorPlacement::Rect& rect) {
 
 }
 
-D3D11App::D3D11App() {
-    loadSettings();
+D3D11App::D3D11App(bool openImageOnCursorMonitor) {
+    loadSettings(openImageOnCursorMonitor);
 
     GlobalVar::isSystemDarkMode = jarkUtils::getSystemDarkMode();
     GlobalVar::isCurrentUIDarkMode = GlobalVar::settingParameter.UI_Mode == 0 ? GlobalVar::isSystemDarkMode : (GlobalVar::settingParameter.UI_Mode == 2);
@@ -124,7 +125,7 @@ void D3D11App::SafeRelease(Interface*& pInterfaceToRelease) {
     pInterfaceToRelease = nullptr;
 }
 
-void D3D11App::loadSettings() {
+void D3D11App::loadSettings(bool openImageOnCursorMonitor) {
     auto exePath = jarkUtils::getCurrentAppPath();
     size_t lastSlash = exePath.find_last_of(L'\\');
     if (lastSlash == std::wstring::npos) {
@@ -176,8 +177,22 @@ void D3D11App::loadSettings() {
             (item.info.dwFlags & MONITORINFOF_PRIMARY) != 0 });
     }
 
-    const auto selection = MonitorPlacement::select(monitors,
-        GlobalVar::settingParameter.rememberLastMonitor,
+    size_t cursorMonitorIndex = MonitorPlacement::NO_MONITOR;
+    if (openImageOnCursorMonitor) {
+        POINT cursor{};
+        if (GetCursorPos(&cursor)) {
+            const HMONITOR cursorMonitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONULL);
+            for (size_t index = 0; index < enumerated.size(); ++index) {
+                if (enumerated[index].handle == cursorMonitor) {
+                    cursorMonitorIndex = index;
+                    break;
+                }
+            }
+        }
+    }
+
+    const auto selection = MonitorPlacement::selectForImageOpen(monitors,
+        cursorMonitorIndex, GlobalVar::settingParameter.rememberLastMonitor,
         GlobalVar::settingParameter.lastMonitorDevice);
     if (selection.index != MonitorPlacement::NO_MONITOR) {
         auto relativeRect = toPlacementRect(GlobalVar::settingParameter.monitorRelativeRect);
@@ -497,7 +512,7 @@ void D3D11App::PresentCanvas(const uint8_t* data, int width, int height, int str
         }
     }
 
-    m_pSwapChain->Present(0, 0);
+    m_pSwapChain->Present(FramePacingPolicy::PRESENT_SYNC_INTERVAL, 0);
 }
 
 void D3D11App::DiscardDeviceResources() {
