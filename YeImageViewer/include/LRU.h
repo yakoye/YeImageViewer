@@ -215,6 +215,27 @@ public:
         preload_pending.clear();
     }
 
+    // 使指定条目失效。文件被删除或重命名后必须调用，否则之后出现的同名文件
+    // 会命中已经过期的缓存内容。
+    void erase(const keyType& key) {
+        std::lock_guard<std::mutex> preload_lock(preload_mutex);
+        std::unique_lock<std::shared_mutex> cache_lock(cache_mutex);
+
+        // 预读线程可能正在解码该 key，递增代号让在途结果不再写回缓存
+        ++preload_generation;
+
+        auto it = cache_map.find(key);
+        if (it != cache_map.end()) {
+            cache_list.erase(it->second);
+            cache_map.erase(it);
+        }
+
+        // 队列中任务的代号已过期，执行也不会写回，直接丢弃
+        std::queue<PreloadTask> empty_queue;
+        preload_queue.swap(empty_queue);
+        preload_pending.clear();
+    }
+
     size_t size() const {
         std::shared_lock<std::shared_mutex> lock(cache_mutex);
         return cache_map.size();

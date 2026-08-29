@@ -60,8 +60,12 @@ protected:
     ID3D11DeviceContext* m_pD3DDeviceContext = nullptr;
     // DXGI 交换链 (Win7 兼容)
     IDXGISwapChain* m_pSwapChain = nullptr;
-    // CPU 可写暂存纹理，用于 CPU→GPU 数据传输
-    ID3D11Texture2D* m_pStagingTexture = nullptr;
+    // CPU 可写暂存纹理，用于 CPU→GPU 数据传输。
+    // 使用两张轮换：Map 暂存纹理需等待 GPU 读完上一次 CopyResource，
+    // 单张会让每帧都发生一次 CPU-GPU 同步等待。
+    static constexpr UINT STAGING_TEXTURE_COUNT = 2;
+    ID3D11Texture2D* m_pStagingTextures[STAGING_TEXTURE_COUNT] = {};
+    UINT m_stagingIndex = 0;
     // 暂存纹理尺寸
     UINT m_stagingWidth = 0;
     UINT m_stagingHeight = 0;

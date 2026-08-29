@@ -450,7 +450,9 @@ void D3D11App::CreateWindowSizeDependentResources() {
         return;
 
     // 释放旧暂存纹理
-    SafeRelease(m_pStagingTexture);
+    for (auto& staging : m_pStagingTextures)
+        SafeRelease(staging);
+    m_stagingIndex = 0;
     m_pD3DDeviceContext->Flush();
 
     RECT rect = { 0 };
@@ -483,24 +485,38 @@ void D3D11App::CreateWindowSizeDependentResources() {
     texDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     texDesc.MiscFlags = 0;
 
-    hr = m_pD3DDevice->CreateTexture2D(&texDesc, nullptr, &m_pStagingTexture);
-    assert(hr == S_OK);
+    for (auto& staging : m_pStagingTextures) {
+        hr = m_pD3DDevice->CreateTexture2D(&texDesc, nullptr, &staging);
+        assert(hr == S_OK);
+        if (FAILED(hr)) {
+            for (auto& created : m_pStagingTextures)
+                SafeRelease(created);
+            return;
+        }
+    }
 
     m_stagingWidth = width;
     m_stagingHeight = height;
 }
 
 void D3D11App::PresentCanvas(const uint8_t* data, int width, int height, int stride) {
-    if (!m_pStagingTexture || !m_pSwapChain || !m_pD3DDeviceContext)
+    if (!m_pStagingTextures[0] || !m_pSwapChain || !m_pD3DDeviceContext)
         return;
 
     // 尺寸不匹配时重建
-    if ((UINT)width != m_stagingWidth || (UINT)height != m_stagingHeight)
+    if ((UINT)width != m_stagingWidth || (UINT)height != m_stagingHeight) {
         CreateWindowSizeDependentResources();
+        if (!m_pStagingTextures[0])
+            return;
+    }
+
+    // 轮换暂存纹理：本帧写入的这张，GPU 上一次读的是另一张，避免 Map 等待
+    ID3D11Texture2D* staging = m_pStagingTextures[m_stagingIndex];
+    m_stagingIndex = (m_stagingIndex + 1) % STAGING_TEXTURE_COUNT;
 
     // Map 暂存纹理，写入 CPU 画布数据
     D3D11_MAPPED_SUBRESOURCE mapped = {};
-    HRESULT hr = m_pD3DDeviceContext->Map(m_pStagingTexture, 0, D3D11_MAP_WRITE, 0, &mapped);
+    HRESULT hr = m_pD3DDeviceContext->Map(staging, 0, D3D11_MAP_WRITE, 0, &mapped);
     if (SUCCEEDED(hr)) {
         const int rowBytes = width * 4;
         if ((int)mapped.RowPitch == stride) {
@@ -514,13 +530,13 @@ void D3D11App::PresentCanvas(const uint8_t* data, int width, int height, int str
                 dst += mapped.RowPitch;
             }
         }
-        m_pD3DDeviceContext->Unmap(m_pStagingTexture, 0);
+        m_pD3DDeviceContext->Unmap(staging, 0);
 
         // 将暂存纹理复制到交换链后缓冲
         ID3D11Texture2D* pBackBuffer = nullptr;
         hr = m_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pBackBuffer);
         if (SUCCEEDED(hr)) {
-            m_pD3DDeviceContext->CopyResource(pBackBuffer, m_pStagingTexture);
+            m_pD3DDeviceContext->CopyResource(pBackBuffer, staging);
             pBackBuffer->Release();
         }
     }
@@ -529,7 +545,8 @@ void D3D11App::PresentCanvas(const uint8_t* data, int width, int height, int str
 }
 
 void D3D11App::DiscardDeviceResources() {
-    SafeRelease(m_pStagingTexture);
+    for (auto& staging : m_pStagingTextures)
+        SafeRelease(staging);
     SafeRelease(m_pCompositionVisual);
     SafeRelease(m_pCompositionTarget);
     SafeRelease(m_pCompositionDevice);
