@@ -50,6 +50,8 @@ constexpr int RENAME_EDIT_ID = 1001;
 
 struct RenameDialogState {
     std::wstring initialName;
+    std::wstring title;
+    std::wstring prompt;
     std::optional<std::wstring> result;
     HWND window = nullptr;
     HWND edit = nullptr;
@@ -96,7 +98,7 @@ LRESULT CALLBACK RenameDialogProc(HWND window, UINT message, WPARAM wParam, LPAR
                 return control;
             };
 
-        makeControl(L"STATIC", getUIStringW(49), SS_LEFT,
+        makeControl(L"STATIC", state->prompt.c_str(), SS_LEFT,
             20, 16, 380, 22, -1);
         state->edit = makeControl(L"EDIT", state->initialName.c_str(),
             WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL,
@@ -164,7 +166,8 @@ LRESULT CALLBACK RenameDialogProc(HWND window, UINT message, WPARAM wParam, LPAR
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
-std::optional<std::wstring> showRenameDialog(HWND owner, std::wstring initialName) {
+std::optional<std::wstring> showTextInputDialog(HWND owner, std::wstring initialName,
+    std::wstring title, std::wstring prompt) {
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     WNDCLASSEXW windowClass{ .cbSize = sizeof(WNDCLASSEXW) };
     windowClass.style = CS_HREDRAW | CS_VREDRAW;
@@ -178,7 +181,8 @@ std::optional<std::wstring> showRenameDialog(HWND owner, std::wstring initialNam
     if (!RegisterClassExW(&windowClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
         return std::nullopt;
 
-    RenameDialogState state{ .initialName = std::move(initialName) };
+    RenameDialogState state{ .initialName = std::move(initialName),
+        .title = std::move(title), .prompt = std::move(prompt) };
     const UINT dpi = owner ? GetDpiForWindow(owner) : USER_DEFAULT_SCREEN_DPI;
     RECT outer{ 0, 0, scaleForDpi(420, dpi), scaleForDpi(138, dpi) };
     const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP;
@@ -201,7 +205,7 @@ std::optional<std::wstring> showRenameDialog(HWND owner, std::wstring initialNam
             static_cast<int>(monitorInfo.rcWork.bottom) - height);
     }
 
-    HWND window = CreateWindowExW(extendedStyle, RENAME_WINDOW_CLASS, getUIStringW(48), style,
+    HWND window = CreateWindowExW(extendedStyle, RENAME_WINDOW_CLASS, state.title.c_str(), style,
         x, y, width, height, owner, nullptr, instance, &state);
     if (!window) {
         if (state.font)
@@ -299,9 +303,12 @@ struct CurImageParameter {
         flipVertical = false;
 
         if (imageAssetPtr) {
-            curFrameIdxMax = imageAssetPtr->format == ImageFormat::Animated ? (int)imageAssetPtr->frames.size() - 1 : 1;
+            // 帧索引上界只取决于实际帧数：实况图播完会临时切成 Still，之后又会切回
+            // Animated，若此处按 format 计算，切回后上界会残留错误值导致 frames 越界。
+            curFrameIdxMax = imageAssetPtr->frames.empty() ?
+                0 : (int)imageAssetPtr->frames.size() - 1;
 
-            if (imageAssetPtr->format == ImageFormat::Animated) {
+            if (imageAssetPtr->format == ImageFormat::Animated && !imageAssetPtr->frames.empty()) {
                 width = imageAssetPtr->frames[0].cols;
                 height = imageAssetPtr->frames[0].rows;
             }
@@ -317,7 +324,12 @@ struct CurImageParameter {
             //适应显示窗口宽高的缩放比例
             const int displayWidth = (rotation == 0 || rotation == 2) ? width : height;
             const int displayHeight = (rotation == 0 || rotation == 2) ? height : width;
-            int64_t zoomFitWindow = std::min(winWidth * ZOOM_BASE / displayWidth, winHeight * ZOOM_BASE / displayHeight);
+            // 解码失败或空图时 displayWidth/displayHeight 可能为 0，直接相除会整数除零崩溃
+            // 解码失败或空图时 displayWidth/displayHeight 可能为 0，直接相除会整数除零崩溃。
+            // 仅在这一种情况下回落，其余路径保持原有取值，避免影响窗口尺寸未就绪时的缩放行为。
+            int64_t zoomFitWindow = (displayWidth > 0 && displayHeight > 0) ?
+                std::min(winWidth * ZOOM_BASE / displayWidth, winHeight * ZOOM_BASE / displayHeight) :
+                ZOOM_BASE;
             zoomTarget = (displayHeight > winHeight || displayWidth > winWidth) ? zoomFitWindow :
                 ((preventUpscale || GlobalVar::settingParameter.isOneToOnePreferred) ? ZOOM_BASE : zoomFitWindow);
             zoomCur = zoomTarget;
@@ -534,6 +546,77 @@ public:
             imgFileList[curFileIdx] != m_wndCaption;
     }
 
+    void openImageFromDialog() {
+        std::wstring filePath = jarkUtils::SelectFile(m_hWnd);
+        if (!filePath.empty()) {
+            initOpenFile(filePath);
+            operateQueue.push({ ActionENUM::refresh });
+        }
+        // A modal file dialog can consume the key-up message.
+        ctrlIsPressing = false;
+    }
+
+    bool launchCurrentImageInExternalEditor(
+        const ExternalEditorConfig::Entry& editor) {
+        if (!hasCurrentImagePath())
+            return false;
+
+        std::error_code error;
+        if (editor.path.empty() ||
+            !std::filesystem::is_regular_file(editor.path, error)) {
+            operateQueue.push({ ActionENUM::setting, 0 });
+            return false;
+        }
+
+        const std::wstring parameters = ExternalEditorConfig::quoteImageArgument(
+            imgFileList[curFileIdx]);
+        const std::wstring workingDirectory =
+            std::filesystem::path(editor.path).parent_path().wstring();
+        const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(m_hWnd, L"open",
+            editor.path.c_str(), parameters.c_str(),
+            workingDirectory.empty() ? nullptr : workingDirectory.c_str(), SW_SHOWNORMAL));
+        if (result <= 32) {
+            const std::wstring message = std::format(L"{}: {}", getUIStringW(60), result);
+            MessageBoxW(m_hWnd, message.c_str(), getUIStringW(14), MB_OK | MB_ICONERROR);
+            return false;
+        }
+        return true;
+    }
+
+    void chooseExternalEditorAndOpenCurrentImage() {
+        const std::wstring selected = jarkUtils::SelectExecutable(m_hWnd);
+        if (selected.empty())
+            return;
+
+        const std::wstring automaticName = ExternalEditorConfig::defaultName(selected);
+        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        auto requestedName = showTextInputDialog(m_hWnd, automaticName,
+            chinese ? L"设置编辑应用" : L"Configure editor",
+            chinese ? L"显示名称（留空则使用程序名称）：" :
+                L"Display name (leave blank to use the application name):");
+        if (!requestedName)
+            return;
+        const std::wstring displayName = ExternalEditorConfig::resolvedName(
+            *requestedName, selected);
+        ExternalEditorConfig::Entry editor{ displayName, selected };
+        if (!ExternalEditorConfig::add(GlobalVar::externalEditors, editor)) {
+            MessageBoxW(m_hWnd,
+                chinese ? L"最多可以设置 10 个外部图片编辑器。" :
+                    L"You can configure up to 10 external image editors.",
+                getUIStringW(15), MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+        if (!ExternalEditorConfig::save(GlobalVar::externalEditorsPath,
+            GlobalVar::externalEditors)) {
+            MessageBoxW(m_hWnd,
+                chinese ? L"无法保存外部编辑器设置。" :
+                    L"Unable to save the external editor settings.",
+                getUIStringW(14), MB_OK | MB_ICONERROR);
+            return;
+        }
+        launchCurrentImageInExternalEditor(editor);
+    }
+
     void scheduleSlideshowNext() {
         slideshowNextAt = std::chrono::steady_clock::now() +
             std::chrono::milliseconds(SlideshowPolicy::INTERVAL_MS);
@@ -597,7 +680,8 @@ public:
 
         std::wstring candidate = source.stem().wstring();
         while (true) {
-            auto requestedName = showRenameDialog(m_hWnd, candidate);
+            auto requestedName = showTextInputDialog(m_hWnd, candidate,
+                getUIStringW(48), getUIStringW(49));
             if (!requestedName)
                 return;
 
@@ -641,7 +725,9 @@ public:
     void initCurrentImageParameters() {
         const bool isRealImage = hasCurrentImagePath();
         const int savedRotation = isRealImage ? rotationStore.get(imgFileList[curFileIdx]) : 0;
-        curPar.Init(winWidth, winHeight, savedRotation, isRealImage);
+        // The functional home page is native-DPI text. Never enlarge its
+        // already rasterized glyphs when the user resizes the window.
+        curPar.Init(winWidth, winHeight, savedRotation, true);
         if (presentationMode)
             applyPresentationImageLayout();
         else if (framedWindowAnchored)
@@ -676,6 +762,32 @@ public:
         const int y = monitorInfo.rcWork.top + (workHeight - outerHeight) / 2;
         SetWindowPos(m_hWnd, nullptr, x, y, outerWidth, outerHeight,
             SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+
+    void applyHomeWindowSize() {
+        MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
+        if (!GetMonitorInfoW(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST),
+            &monitorInfo)) {
+            return;
+        }
+        const UINT dpi = GetDpiForWindow(m_hWnd);
+        const auto homeCanvas = HomeScreenLayout::nativeCanvas(
+            static_cast<int>(dpi));
+        RECT outerRect{ 0, 0,
+            homeCanvas.width, homeCanvas.height };
+        const auto style = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_STYLE));
+        const auto extendedStyle = static_cast<DWORD>(
+            GetWindowLongPtrW(m_hWnd, GWL_EXSTYLE));
+        if (!AdjustWindowRectExForDpi(&outerRect, style, FALSE, extendedStyle, dpi))
+            AdjustWindowRectEx(&outerRect, style, FALSE, extendedStyle);
+        const int outerWidth = outerRect.right - outerRect.left;
+        const int outerHeight = outerRect.bottom - outerRect.top;
+        const int workWidth = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
+        const int workHeight = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
+        SetWindowPos(m_hWnd, nullptr,
+            monitorInfo.rcWork.left + (workWidth - outerWidth) / 2,
+            monitorInfo.rcWork.top + (workHeight - outerHeight) / 2,
+            outerWidth, outerHeight, SWP_NOACTIVATE | SWP_NOZORDER);
     }
 
     PresentationLayout::Result calculatePresentationLayout() const {
@@ -747,6 +859,14 @@ public:
     bool isPointInsideCurrentImage(int x, int y) const {
         const auto rect = currentImageRect();
         return rect.left <= x && x < rect.right && rect.top <= y && y < rect.bottom;
+    }
+
+    bool isHomeOpenButtonAt(int x, int y) const {
+        if (hasCurrentImagePath() || curPar.rotation != 0)
+            return false;
+        const auto rect = currentImageRect();
+        return HomeScreenLayout::hitOpenButton(
+            { rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top }, x, y);
     }
 
     void enterPresentationMode() {
@@ -871,9 +991,11 @@ public:
         if (filePath.empty()) {
             imgFileList.emplace_back(m_wndCaption);
             curFileIdx = 0;
-            imgDB.put(m_wndCaption, { ImageFormat::Still, imgDB.getHomeMat(), {}, {}, getUIString(32) });
-            curPar.imageAssetPtr = imgDB.getSafePtr(imgFileList[curFileIdx], imgFileList[curFileIdx]);
+            imgDB.put(m_wndCaption, { ImageFormat::Still,
+                imgDB.getHomeMat(GetDpiForWindow(m_hWnd)), {}, {}, getUIString(32) });
+            curPar.imageAssetPtr = imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[curFileIdx]);
             initCurrentImageParameters();
+            applyHomeWindowSize();
             return;
         }
 
@@ -898,8 +1020,10 @@ public:
             }
 
             // 自然排序 数字感知排序
-            std::sort(fileNameList.begin(), fileNameList.end(), [](std::wstring_view a, std::wstring_view b) -> bool {
-                return StrCmpLogicalW(a.data(), b.data()) < 0; });
+            // StrCmpLogicalW 要求以 '\0' 结尾的字符串，wstring_view::data() 不保证这点，
+            // 这里直接按 wstring 比较，用 c_str() 传入。
+            std::sort(fileNameList.begin(), fileNameList.end(), [](const std::wstring& a, const std::wstring& b) -> bool {
+                return StrCmpLogicalW(a.c_str(), b.c_str()) < 0; });
 
             for (auto& fileName : fileNameList) {
                 auto fullpath = (workDir / fileName).wstring();
@@ -917,7 +1041,8 @@ public:
             if (filePath.empty()) { //直接打开软件，没有传入参数
                 imgFileList.emplace_back(m_wndCaption);
                 curFileIdx = 0;
-                imgDB.put(m_wndCaption, { ImageFormat::Still, imgDB.getHomeMat(), {}, {}, getUIString(32) });
+                imgDB.put(m_wndCaption, { ImageFormat::Still,
+                    imgDB.getHomeMat(GetDpiForWindow(m_hWnd)), {}, {}, getUIString(32) });
             }
             else { // 打开的文件不支持，默认加到尾部
                 imgFileList.emplace_back(fullPath.wstring());
@@ -933,7 +1058,7 @@ public:
             }
         }
 
-        curPar.imageAssetPtr = imgDB.getSafePtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + 1) % imgFileList.size()]);
+        curPar.imageAssetPtr = imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + 1) % imgFileList.size()]);
         initCurrentImageParameters();
     }
 
@@ -999,6 +1124,13 @@ public:
                 presentationCloseClickCandidate = true;
                 mouseIsPressing = false;
                 SetCapture(m_hWnd);
+                return;
+            }
+
+            if (isHomeOpenButtonAt(x, y)) {
+                presentationClickCandidate = false;
+                mouseIsPressing = false;
+                openImageFromDialog();
                 return;
             }
 
@@ -1167,6 +1299,7 @@ public:
 
     void OnMouseMove(WPARAM btnState, int x, int y) override {
         mousePos = { x, y };
+        SetCursor(LoadCursorW(nullptr, isHomeOpenButtonAt(x, y) ? IDC_HAND : IDC_ARROW));
 
         if (presentationClickCandidate) {
             const int deltaX = x - presentationPressPos.x;
@@ -1306,6 +1439,7 @@ public:
     }
 
     void OnMouseLeave() override {
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
         cursorPosLast = cursorPos = CursorPos::centerArea;
         extraUIFlag = zoomTextEditing ? ShowExtraUI::bottomToolbar : ShowExtraUI::none;
         mouseIsPressing = false;
@@ -1455,12 +1589,7 @@ public:
         const int panStep = std::max(1, (winHeight + winWidth) / 16);
         switch (*matched) {
         case ShortcutConfig::Action::OpenFile: {
-            std::wstring filePath = jarkUtils::SelectFile(m_hWnd);
-            if (!filePath.empty()) {
-                initOpenFile(filePath);
-                operateQueue.push({ ActionENUM::refresh });
-            }
-            ctrlIsPressing = false;
+            openImageFromDialog();
         } break;
         case ShortcutConfig::Action::ExportFrames: {
             auto& frames = curPar.imageAssetPtr->frames;
@@ -1695,12 +1824,7 @@ public:
             switch (keyValue)
             {
             case 'O': { // Ctrl + O  打开图片
-                wstring filePath = jarkUtils::SelectFile(m_hWnd);
-                if (!filePath.empty()) {
-                    initOpenFile(filePath);
-                    operateQueue.push({ ActionENUM::refresh });
-                }
-                ctrlIsPressing = false; // 上面弹出窗口导致收不到CTRL键释放的消息
+                openImageFromDialog();
             }break;
 
             case 'S': { // Ctrl + S  动图或实况图视频 批量保存每一帧到png图片
@@ -1962,13 +2086,19 @@ public:
     }
 
     void OnContextMenuCommand(WPARAM wParam) override {
+        const int commandId = static_cast<int>(LOWORD(wParam));
+        const int firstEditorCommand = static_cast<int>(ContextMenu::editImageFirst);
+        const int lastEditorCommand = static_cast<int>(ContextMenu::editImageLast);
+        if (commandId >= firstEditorCommand && commandId <= lastEditorCommand) {
+            const std::size_t index = static_cast<std::size_t>(
+                commandId - firstEditorCommand);
+            if (index < GlobalVar::externalEditors.size())
+                launchCurrentImageInExternalEditor(GlobalVar::externalEditors[index]);
+            return;
+        }
         switch ((ContextMenu)wParam) {
         case ContextMenu::openNewImage: {
-            wstring filePath = jarkUtils::SelectFile(m_hWnd);
-            if (!filePath.empty()) {
-                initOpenFile(filePath);
-                operateQueue.push({ ActionENUM::refresh });
-            }
+            openImageFromDialog();
         }break;
 
         case ContextMenu::copyImageInfo: {
@@ -1994,6 +2124,10 @@ public:
 
         case ContextMenu::openContainerFloder: {
             jarkUtils::openFileLocation(imgFileList[curFileIdx]);
+        }break;
+
+        case ContextMenu::editImageChoose: {
+            chooseExternalEditorAndOpenCurrentImage();
         }break;
 
         case ContextMenu::renameImage: {
@@ -2156,15 +2290,17 @@ public:
     }
 
     inline uint32_t getSrcPx4(const cv::Mat& srcImg, int srcX, int srcY, int mainX, int mainY) const {
-        const intUnion* srcPtr = (intUnion*)srcImg.ptr();
-        const int srcW = srcImg.cols;
+        // 按行首指针取值：cols 不等于行字节数时（ROI/对齐填充）用 cols 会取错像素，
+        // 且 int 乘法在超大图上会溢出，ptr(y) 内部按 size_t 步长计算。
+        const intUnion* curRow = (const intUnion*)srcImg.ptr(srcY);
 
-        intUnion srcPx = srcPtr[srcW * srcY + srcX];
+        intUnion srcPx = curRow[srcX];
 
         if (isLowZoom && srcY > 0 && srcX > 0) { // 简单临近像素平均
-            intUnion px1 = srcPtr[srcW * (srcY - 1) + srcX - 1];
-            intUnion px2 = srcPtr[srcW * (srcY - 1) + srcX];
-            intUnion px3 = srcPtr[srcW * srcY + srcX - 1];
+            const intUnion* prevRow = (const intUnion*)srcImg.ptr(srcY - 1);
+            intUnion px1 = prevRow[srcX - 1];
+            intUnion px2 = prevRow[srcX];
+            intUnion px3 = curRow[srcX - 1];
             for (int i = 0; i < 4; i++)
                 srcPx[i] = (px1[i] + px2[i] + px3[i] + srcPx[i]) >> 2;
         }
@@ -3314,6 +3450,10 @@ public:
 
 
     void DrawScene() {
+        // 后续逻辑大量直接解引用 imageAssetPtr，这里兜底避免任何路径下的空指针访问
+        if (!curPar.imageAssetPtr)
+            curPar.imageAssetPtr = imgDB.makeErrorAsset();
+
         if (GlobalVar::isNeedUpdateTheme) {
             GlobalVar::isNeedUpdateTheme = false;
             BOOL themeMode = GlobalVar::isCurrentUIDarkMode;
@@ -3328,12 +3468,13 @@ public:
                 imgDB.clear();
 
                 if (currentPath == m_wndCaption) {
-                    imgDB.put(m_wndCaption, { ImageFormat::Still, imgDB.getHomeMat(), {}, {}, getUIString(32) });
-                    curPar.imageAssetPtr = imgDB.getSafePtr(currentPath, currentPath);
+                    imgDB.put(m_wndCaption, { ImageFormat::Still,
+                        imgDB.getHomeMat(GetDpiForWindow(m_hWnd)), {}, {}, getUIString(32) });
+                    curPar.imageAssetPtr = imgDB.getCheckedPtr(currentPath, currentPath);
                 }
                 else {
                     const auto& nextPath = imgFileList[(curFileIdx + 1) % imgFileList.size()];
-                    curPar.imageAssetPtr = imgDB.getSafePtr(currentPath, nextPath);
+                    curPar.imageAssetPtr = imgDB.getCheckedPtr(currentPath, nextPath);
                 }
 
                 initCurrentImageParameters();
@@ -3490,7 +3631,7 @@ public:
 
             if (--curFileIdx < 0)
                 curFileIdx = (int)imgFileList.size() - 1;
-            curPar.imageAssetPtr = imgDB.getSafePtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + imgFileList.size() - 1) % imgFileList.size()]);
+            curPar.imageAssetPtr = imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + imgFileList.size() - 1) % imgFileList.size()]);
             initCurrentImageParameters();
 
             if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
@@ -3526,7 +3667,7 @@ public:
 
             if (++curFileIdx >= (int)imgFileList.size())
                 curFileIdx = 0;
-            curPar.imageAssetPtr = imgDB.getSafePtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + 1) % imgFileList.size()]);
+            curPar.imageAssetPtr = imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + 1) % imgFileList.size()]);
             initCurrentImageParameters();
 
             if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
@@ -3561,7 +3702,7 @@ public:
             }
 
             curFileIdx = 0;
-            curPar.imageAssetPtr = imgDB.getSafePtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + imgFileList.size() - 1) % imgFileList.size()]);
+            curPar.imageAssetPtr = imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + imgFileList.size() - 1) % imgFileList.size()]);
             initCurrentImageParameters();
 
             if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
@@ -3594,7 +3735,7 @@ public:
             }
 
             curFileIdx = (int)imgFileList.size() - 1;
-            curPar.imageAssetPtr = imgDB.getSafePtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + 1) % imgFileList.size()]);
+            curPar.imageAssetPtr = imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + 1) % imgFileList.size()]);
             initCurrentImageParameters();
 
             if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
@@ -3795,16 +3936,19 @@ public:
             if (imgFileList.empty()) {
                 imgFileList.emplace_back(m_wndCaption);
                 curFileIdx = 0;
-                imgDB.put(m_wndCaption, { ImageFormat::Still, imgDB.getHomeMat(), {}, {}, getUIString(32) });
+                imgDB.put(m_wndCaption, { ImageFormat::Still,
+                    imgDB.getHomeMat(GetDpiForWindow(m_hWnd)), {}, {}, getUIString(32) });
             }
             else if (curFileIdx >= (int)imgFileList.size()) {
                 curFileIdx = (int)imgFileList.size() - 1;
             }
 
-            curPar.imageAssetPtr = imgDB.getSafePtr(
+            curPar.imageAssetPtr = imgDB.getCheckedPtr(
                 imgFileList[curFileIdx],
                 imgFileList[(curFileIdx + 1) % imgFileList.size()]);
             initCurrentImageParameters();
+            if (!hasCurrentImagePath())
+                applyHomeWindowSize();
         } break;
 
         case ActionENUM::requestExit: {

@@ -1,0 +1,1 @@
+pwsh -File .\runTests.ps1

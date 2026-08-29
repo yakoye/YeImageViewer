@@ -137,10 +137,14 @@ void D3D11App::loadSettings(bool openImageOnCursorMonitor) {
     size_t lastSlash = exePath.find_last_of(L'\\');
     if (lastSlash == std::wstring::npos) {
         GlobalVar::settingPath = L"YeImageViewer.db";
-        return;
     }
-
-    GlobalVar::settingPath = exePath.substr(0, lastSlash) + L"\\YeImageViewer.db";
+    else {
+        GlobalVar::settingPath = exePath.substr(0, lastSlash) + L"\\YeImageViewer.db";
+    }
+    GlobalVar::externalEditorsPath =
+        ExternalEditorConfig::configPath(GlobalVar::settingPath);
+    GlobalVar::externalEditors =
+        ExternalEditorConfig::load(GlobalVar::externalEditorsPath);
 
     PWSTR appDataPath = nullptr;
     std::wstring oldSettingPath;
@@ -690,6 +694,26 @@ HMENU D3D11App::CreateContextMenu(HWND hwnd) {
 
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::toggleExifDisplay, getUIStringW(28));
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::openContainerFloder, getUIStringW(29));
+
+    HMENU editMenu = CreatePopupMenu();
+    for (std::size_t index = 0; index < GlobalVar::externalEditors.size(); ++index) {
+        const auto& editor = GlobalVar::externalEditors[index];
+        std::error_code editorError;
+        const bool editorAvailable =
+            std::filesystem::is_regular_file(editor.path, editorError);
+        const std::wstring editorText = ExternalEditorConfig::menuLabel(editor,
+            GlobalVar::settingParameter.UI_LANG == 0);
+        AppendMenuW(editMenu,
+            MF_STRING | (editorAvailable ? MF_ENABLED : MF_GRAYED),
+            static_cast<UINT_PTR>(ContextMenu::editImageFirst) + index,
+            editorText.c_str());
+    }
+    if (!GlobalVar::externalEditors.empty())
+        AppendMenuW(editMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(editMenu, MF_STRING, (UINT_PTR)ContextMenu::editImageChoose,
+        getUIStringW(59));
+    AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)editMenu, getUIStringW(57));
+
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::renameImage, getUIStringW(47));
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::deleteImage, getUIStringW(30));
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::openFileProperties, getUIStringW(36));

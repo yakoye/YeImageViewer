@@ -1,0 +1,1 @@
+pwsh -File .\installLocal.ps1

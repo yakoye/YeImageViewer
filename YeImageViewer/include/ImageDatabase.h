@@ -312,8 +312,9 @@ public:
         colorManager.setWindow(hwnd);
     }
 
-    cv::Mat errorTipsMatDeep, errorTipsMatLight, homeIcon;
+    cv::Mat errorTipsMatDeep, errorTipsMatLight;
     std::array<cv::Mat, 4> homeMats;
+    std::array<int, 4> homeMatDpis{};
     ColorManager colorManager;
 
     cv::Mat getErrorTipsMat() {
@@ -333,38 +334,58 @@ public:
         return GlobalVar::isCurrentUIDarkMode ? errorTipsMatDeep : errorTipsMatLight;
     }
 
+    // getSafePtr 在等待解码超时后会返回 nullptr，调用方普遍直接解引用，
+    // 这里统一兜底成错误提示图，避免空指针访问违规。
+    std::shared_ptr<ImageAsset> getCheckedPtr(const wstring& key) {
+        auto ptr = getSafePtr(key);
+        return ptr ? ptr : makeErrorAsset();
+    }
 
-    cv::Mat getHomeMat() {
+    std::shared_ptr<ImageAsset> getCheckedPtr(const wstring& key, const wstring& nextKey) {
+        auto ptr = getSafePtr(key, nextKey);
+        return ptr ? ptr : makeErrorAsset();
+    }
+
+    std::shared_ptr<ImageAsset> makeErrorAsset() {
+        return std::make_shared<ImageAsset>(ImageAsset{
+            ImageFormat::Still, getErrorTipsMat(), {}, {}, getUIString(33) });
+    }
+
+
+    cv::Mat getHomeMat(int dpi = USER_DEFAULT_SCREEN_DPI) {
+        dpi = std::max(1, dpi);
         const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
         const bool dark = GlobalVar::isCurrentUIDarkMode;
         const std::size_t cacheIndex = (chinese ? 0 : 2) + (dark ? 1 : 0);
         auto& home = homeMats[cacheIndex];
-        if (!home.empty())
+        if (!home.empty() && homeMatDpis[cacheIndex] == dpi)
             return home;
+        homeMatDpis[cacheIndex] = dpi;
 
-        if (homeIcon.empty()) {
-            auto rc = jarkUtils::GetResource(IDB_PNG_HOME, L"PNG");
-            cv::Mat imgData(1, (int)rc.size, CV_8UC1, (uint8_t*)rc.ptr);
-            homeIcon = cv::imdecode(imgData, cv::IMREAD_UNCHANGED);
-        }
+        const auto scaled = [dpi](int value) {
+            return std::max(1, HomeScreenLayout::scaleForDpi(value, dpi));
+        };
 
         const uint32_t background = dark ? 0xFF15181Eu : 0xFFF5F7FAu;
         const uint32_t card = dark ? 0xFF20242Du : 0xFFFFFFFFu;
-        const uint32_t cardStrong = dark ? 0xFF252B36u : 0xFFF0F6FFu;
         const uint32_t primary = dark ? 0xFFF3F5F8u : 0xFF17202Du;
         const uint32_t secondary = dark ? 0xFFABB3C0u : 0xFF627086u;
-        const uint32_t accent = 0xFF46BDF0u;
+        const uint32_t accent = dark ? 0xFF35AEE2u : 0xFF178FC8u;
+        const uint32_t buttonHint = 0xFFEAF7FDu;
 
-        home = cv::Mat(HomeScreenLayout::HEIGHT, HomeScreenLayout::WIDTH,
+        home = cv::Mat(scaled(HomeScreenLayout::HEIGHT),
+            scaled(HomeScreenLayout::WIDTH),
             CV_8UC4, jarkUtils::to_cv_scalar(background));
 
-        const auto toRect = [](const HomeScreenLayout::Rect& rect) {
-            return cv::Rect{ rect.x, rect.y, rect.width, rect.height };
+        const auto toRect = [&](const HomeScreenLayout::Rect& rect) {
+            return cv::Rect{ scaled(rect.x), scaled(rect.y),
+                scaled(rect.width), scaled(rect.height) };
         };
         const auto rounded = [&](const HomeScreenLayout::Rect& layout,
             uint32_t fill, int radius) {
             const cv::Rect rect = toRect(layout);
             const auto fillScalar = jarkUtils::to_cv_scalar(fill);
+            radius = scaled(radius);
             radius = std::clamp(radius, 1, std::min(rect.width, rect.height) / 2);
             cv::rectangle(home,
                 { rect.x + radius, rect.y, rect.width - radius * 2, rect.height },
@@ -383,74 +404,68 @@ public:
                 radius, fillScalar, -1, cv::LINE_AA);
         };
 
-        if (!homeIcon.empty()) {
-            cv::Mat scaledIcon;
-            cv::resize(homeIcon, scaledIcon,
-                { HomeScreenLayout::LOGO.width, HomeScreenLayout::LOGO.height },
-                0, 0, cv::INTER_AREA);
-            jarkUtils::overlayImg(home, scaledIcon,
-                HomeScreenLayout::LOGO.x, HomeScreenLayout::LOGO.y);
-        }
-
         TextDrawer drawer;
-        drawer.setSize(22);
+        drawer.setSize(scaled(24));
         drawer.putAlignCenter(home, toRect(HomeScreenLayout::TITLE),
             "YeImageViewer", primary);
-        drawer.setSize(12);
+        drawer.setSize(scaled(12));
         drawer.putAlignCenter(home, toRect(HomeScreenLayout::SUBTITLE),
             chinese ? "快速、清晰的 Windows 图片查看器" :
                 "A fast and clear image viewer for Windows",
             secondary);
 
-        rounded(HomeScreenLayout::OPEN_CARD, cardStrong, 14);
-        drawer.setSize(14);
+        rounded(HomeScreenLayout::OPEN_BUTTON, accent, 14);
+        drawer.setSize(scaled(16));
         drawer.putAlignCenter(home,
-            { HomeScreenLayout::OPEN_CARD.x + 16, HomeScreenLayout::OPEN_CARD.y + 4,
-              HomeScreenLayout::OPEN_CARD.width - 32, 24 },
-            chinese ? "打开一张图片" : "Open an image", accent);
-        drawer.setSize(12);
+            toRect({ HomeScreenLayout::OPEN_BUTTON.x + 16,
+                HomeScreenLayout::OPEN_BUTTON.y + 7,
+                HomeScreenLayout::OPEN_BUTTON.width - 32, 26 }),
+            chinese ? "打开一张图片" : "Open an image", 0xFFFFFFFFu);
+        drawer.setSize(scaled(12));
         drawer.putAlignCenter(home,
-            { HomeScreenLayout::OPEN_CARD.x + 16, HomeScreenLayout::OPEN_CARD.y + 29,
-              HomeScreenLayout::OPEN_CARD.width - 32, 24 },
-            chinese ? "Ctrl + O    ·    拖入图片    ·    双击已关联文件" :
-                "Ctrl + O    ·    Drop an image    ·    Open an associated file",
-            primary);
+            toRect({ HomeScreenLayout::OPEN_BUTTON.x + 16,
+                HomeScreenLayout::OPEN_BUTTON.y + 35,
+                HomeScreenLayout::OPEN_BUTTON.width - 32, 22 }),
+            chinese ? "点击这里选择图片，也可以直接拖入图片" :
+                "Click here to choose an image, or drop one into this window",
+            buttonHint);
 
         const std::array<const char*, 3> titles = chinese ?
             std::array<const char*, 3>{ "浏览", "查看", "更多" } :
             std::array<const char*, 3>{ "BROWSE", "VIEW", "MORE" };
         const std::array<std::array<const char*, 3>, 3> lines = chinese ?
             std::array<std::array<const char*, 3>, 3>{
-                std::array<const char*, 3>{ "滚轮  缩放", "Ctrl + 滚轮  切图", "Shift + 滚轮  上下浏览" },
-                std::array<const char*, 3>{ "拖动  平移", "双击 / 最大化  沉浸", "Esc  返回普通窗口" },
-                std::array<const char*, 3>{ "I / Tab  图片信息", "F2  重命名", "右键  更多操作" },
+                std::array<const char*, 3>{ "滚轮  上下浏览", "Ctrl+滚轮  缩放", "Shift+滚轮  左右" },
+                std::array<const char*, 3>{ "拖动  平移图片", "双击/最大化  沉浸", "Esc  退出/关闭" },
+                std::array<const char*, 3>{ "I/Tab  图片信息", "F2  重命名", "F3  自定义快捷键" },
             } :
             std::array<std::array<const char*, 3>, 3>{
-                std::array<const char*, 3>{ "Wheel  Zoom", "Ctrl + wheel  Browse", "Shift + wheel  Pan" },
-                std::array<const char*, 3>{ "Drag  Move image", "Double-click  Immersive", "Esc  Return to window" },
-                std::array<const char*, 3>{ "I / Tab  Image info", "F2  Rename", "Right-click  More actions" },
+                std::array<const char*, 3>{ "Wheel  Vertical", "Ctrl+Wheel  Zoom", "Shift+Wheel  Horizontal" },
+                std::array<const char*, 3>{ "Drag  Pan image", "Double-click  Immersive", "Esc  Exit / close" },
+                std::array<const char*, 3>{ "I/Tab  Image info", "F2  Rename", "F3  Shortcuts" },
             };
 
         for (std::size_t index = 0; index < HomeScreenLayout::GUIDE_CARDS.size(); ++index) {
             const auto& layout = HomeScreenLayout::GUIDE_CARDS[index];
             rounded(layout, card, 14);
-            drawer.setSize(14);
+            drawer.setSize(scaled(14));
             drawer.putAlignLeft(home,
-                { layout.x + 10, layout.y + 4, layout.width - 20, 24 },
+                toRect({ layout.x + 10, layout.y + 4,
+                    layout.width - 20, 24 }),
                 titles[index], accent);
-            drawer.setSize(12);
+            drawer.setSize(scaled(12));
             for (int line = 0; line < 3; ++line) {
                 drawer.putAlignLeft(home,
-                    { layout.x + 10, layout.y + 30 + line * 20,
-                      layout.width - 20, 20 },
+                    toRect({ layout.x + 10, layout.y + 30 + line * 20,
+                        layout.width - 20, 20 }),
                     lines[index][line], line == 0 ? primary : secondary);
             }
         }
 
-        drawer.setSize(12);
+        drawer.setSize(scaled(12));
         drawer.putAlignCenter(home, toRect(HomeScreenLayout::FOOTER),
-            chinese ? "F1  设置    ·    I / Tab  图片信息    ·    右键  查看全部功能" :
-                "F1  Settings    ·    I / Tab  Image info    ·    Right-click  All actions",
+            chinese ? "设置 → 快捷键：所有按键和滚轮操作都可以修改" :
+                "Settings > Shortcuts: customize every key and wheel action",
             secondary);
         return home;
     }

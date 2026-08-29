@@ -1,0 +1,1 @@
+pwsh -File .\packageRelease.ps1
