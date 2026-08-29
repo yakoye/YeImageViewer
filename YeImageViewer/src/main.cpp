@@ -2279,7 +2279,12 @@ public:
             for (int i = 0; i < 3; i++)
                 srcPx[i] = (px1[i] + px2[i] + px3[i] + srcPx[i]) >> 2;
         }
-        return *((uint32_t*)&srcPx) | (255 << 24);
+        // Vec3b 只有 3 字节，按 uint32_t 读会多读 1 字节（越界读，且依赖相邻栈内容），
+        // 这里直接按通道拼装，结果与原来的 “低 3 字节 | 0xFF000000” 一致。
+        return 0xFF000000u |
+            (static_cast<uint32_t>(srcPx[2]) << 16) |
+            (static_cast<uint32_t>(srcPx[1]) << 8) |
+            static_cast<uint32_t>(srcPx[0]);
     }
 
     inline uint32_t compositeSrcPx4(intUnion srcPx, int mainX, int mainY) const {
@@ -2497,6 +2502,41 @@ public:
 
         switch (srcImg.type()) {
         case CV_8UC4: {
+            // 旋转和翻转在整帧内不变，未旋转未翻转是最常见的情形。
+            // 特化这条路径可省掉每像素的坐标变换调用，并把行首指针提到内层循环之外，
+            // 逐像素结果与下面的通用路径完全一致。
+            const bool identityTransform = (curPar.rotation == 0 &&
+                !curPar.flipHorizontal && !curPar.flipVertical);
+
+            if (identityTransform) {
+                concurrency::parallel_for(yStart, yEnd, [&](int y) {
+                    auto ptr = ((uint32_t*)canvas.ptr()) + y * canvasW;
+                    int srcY = (int)((y - deltaH) * zoomInvert);
+                    srcY = std::clamp(srcY, 0, srcH - 1);
+
+                    const intUnion* curRow = (const intUnion*)srcImg.ptr(srcY);
+                    const intUnion* prevRow = (srcY > 0) ?
+                        (const intUnion*)srcImg.ptr(srcY - 1) : nullptr;
+                    const bool blendNeighbors = isLowZoom && (prevRow != nullptr);
+
+                    for (int x = xStart; x < xEnd; x++) {
+                        int srcX = (int)((x - deltaW) * zoomInvert);
+                        srcX = std::clamp(srcX, 0, srcW - 1);
+
+                        intUnion srcPx = curRow[srcX];
+                        if (blendNeighbors && srcX > 0) { // 与 getSrcPx4 的邻域平均保持一致
+                            intUnion px1 = prevRow[srcX - 1];
+                            intUnion px2 = prevRow[srcX];
+                            intUnion px3 = curRow[srcX - 1];
+                            for (int i = 0; i < 4; i++)
+                                srcPx[i] = (px1[i] + px2[i] + px3[i] + srcPx[i]) >> 2;
+                        }
+                        ptr[x] = compositeSrcPx4(srcPx, x, y);
+                    }
+                });
+                break;
+            }
+
             concurrency::parallel_for(yStart, yEnd, [&](int y) {
                 auto ptr = ((uint32_t*)canvas.ptr()) + y * canvasW;
                 //int srcY = (int)((int64_t)(y - deltaH) * curPar.ZOOM_BASE / curPar.zoomCur); // 2K屏 50%缩放一帧34ms 100%缩放一帧14ms
@@ -2516,6 +2556,40 @@ public:
         }break;
 
         case CV_8UC3: {
+            // 与 CV_8UC4 同理：JPEG 等三通道图走这条路径，未旋转未翻转时特化
+            const bool identityTransform = (curPar.rotation == 0 &&
+                !curPar.flipHorizontal && !curPar.flipVertical);
+
+            if (identityTransform) {
+                concurrency::parallel_for(yStart, yEnd, [&](int y) {
+                    auto ptr = ((uint32_t*)canvas.ptr()) + y * canvasW;
+                    int srcY = (int)((y - deltaH) * zoomInvert);
+                    srcY = std::clamp(srcY, 0, srcH - 1);
+
+                    const uint8_t* curRow = srcImg.ptr<uint8_t>(srcY);
+                    const uint8_t* prevRow = (srcY > 0) ? srcImg.ptr<uint8_t>(srcY - 1) : nullptr;
+                    const bool blendNeighbors = isLowZoom && (prevRow != nullptr);
+
+                    for (int x = xStart; x < xEnd; x++) {
+                        int srcX = (int)((x - deltaW) * zoomInvert);
+                        srcX = std::clamp(srcX, 0, srcW - 1);
+
+                        const uint8_t* px = curRow + static_cast<size_t>(srcX) * 3;
+                        uint32_t b = px[0], g = px[1], r = px[2];
+                        if (blendNeighbors && srcX > 0) { // 与 getSrcPx3 的邻域平均保持一致
+                            const uint8_t* p1 = prevRow + static_cast<size_t>(srcX - 1) * 3;
+                            const uint8_t* p2 = prevRow + static_cast<size_t>(srcX) * 3;
+                            const uint8_t* p3 = curRow + static_cast<size_t>(srcX - 1) * 3;
+                            b = (p1[0] + p2[0] + p3[0] + b) >> 2;
+                            g = (p1[1] + p2[1] + p3[1] + g) >> 2;
+                            r = (p1[2] + p2[2] + p3[2] + r) >> 2;
+                        }
+                        ptr[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+                    }
+                });
+                break;
+            }
+
             concurrency::parallel_for(yStart, yEnd, [&](int y) {
                 auto ptr = ((uint32_t*)canvas.ptr()) + y * canvasW;
                 //int srcY = (int)((int64_t)(y - deltaH) * curPar.ZOOM_BASE / curPar.zoomCur);
@@ -3930,6 +4004,9 @@ public:
 
             rotationStore.erase(target);
             rotationStore.save();
+
+            // 文件已删除，缓存必须同步失效，否则之后出现的同名文件会显示旧内容
+            imgDB.erase(std::wstring(target));
 
             imgFileList.erase(imgFileList.begin() + curFileIdx);
 

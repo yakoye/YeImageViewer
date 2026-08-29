@@ -845,6 +845,19 @@ cv::Mat ImageDatabase::loadRaw(wstring_view path, std::span<const uint8_t> buf) 
         return {};
     }
 
+    // 下面按 8 位三通道位图解释 image->data，单色机型(colors==1)或 16 位输出
+    // 会让实际数据小于 width*height*3，必须先确认布局再构造 Mat。
+    const size_t expectedBytes = static_cast<size_t>(image->width) *
+        static_cast<size_t>(image->height) * 3;
+    if (image->type != LIBRAW_IMAGE_BITMAP || image->colors != 3 || image->bits != 8 ||
+        image->width <= 0 || image->height <= 0 || image->data_size < expectedBytes) {
+        JARK_LOG("Unsupported RAW image layout: {} type={} colors={} bits={} {}x{} size={}",
+            jarkUtils::wstringToUtf8(path), (int)image->type, (int)image->colors,
+            (int)image->bits, (int)image->width, (int)image->height, (size_t)image->data_size);
+        LibRaw::dcraw_clear_mem(image);
+        return {};
+    }
+
     cv::Mat retImg;
     cv::cvtColor(cv::Mat(image->height, image->width, CV_8UC3, image->data), retImg, cv::COLOR_RGB2BGRA);
 
@@ -1165,9 +1178,28 @@ static size_t computePixelDataSize(int width, int bitCount, int rows) {
 cv::Mat ImageDatabase::readDibFromMemory(const uint8_t* dibData, const IconDirEntry& entry) {
     if (!dibData) return cv::Mat();
 
+    // dataSize 全部来自文件，本函数的每一处读取都必须落在这段范围内
+    const size_t availableBytes = entry.dataSize;
+    if (availableBytes < sizeof(uint32_t)) {
+        JARK_LOG("DIB data too small for header size field: {}", availableBytes);
+        return cv::Mat();
+    }
+
     const uint32_t headerSize = *reinterpret_cast<const uint32_t*>(dibData);
     if (headerSize < 12 || headerSize > 124) {
         JARK_LOG("Invalid DIB header size: {}", headerSize);
+        return cv::Mat();
+    }
+
+    // headerSize 为 12 时按 12 字节的 BITMAPCOREHEADER 读，其余一律按 40 字节的
+    // BITMAPINFOHEADER 读，因此 12 与 40 之间的头长无法安全解析。
+    if (headerSize != 12 && headerSize < 40) {
+        JARK_LOG("Unsupported DIB header size: {}", headerSize);
+        return cv::Mat();
+    }
+    const size_t headerBytesRead = (headerSize == 12) ? 12u : 40u;
+    if (availableBytes < std::max<size_t>(headerSize, headerBytesRead)) {
+        JARK_LOG("DIB data too small for header: {} < {}", availableBytes, headerSize);
         return cv::Mat();
     }
 
@@ -1265,22 +1297,56 @@ cv::Mat ImageDatabase::readDibFromMemory(const uint8_t* dibData, const IconDirEn
         hasAndMaskInImageData = (absDibHeight == 2 * realHeight);
     }
 
+    // 位宽与尺寸同样取自文件，先收敛到可安全解析的取值，
+    // 否则后续会按错误的位宽和行距越界取样。
+    if (bitCount != 1 && bitCount != 4 && bitCount != 8 &&
+        bitCount != 16 && bitCount != 24 && bitCount != 32) {
+        JARK_LOG("Unsupported DIB bit count: {}", bitCount);
+        return cv::Mat();
+    }
+
+    constexpr int32_t MAX_DIB_SIDE = 4096; // ICO 实际最大 256，这里留足余量同时限制分配规模
+    if (realWidth <= 0 || realHeight <= 0 ||
+        realWidth > MAX_DIB_SIDE || realHeight > MAX_DIB_SIDE) {
+        JARK_LOG("Invalid DIB dimensions: {}x{}", realWidth, realHeight);
+        return cv::Mat();
+    }
+
     int32_t pixelRows = hasAndMaskInImageData ? realHeight : absDibHeight;
+    if (pixelRows <= 0 || pixelRows > MAX_DIB_SIDE * 2) {
+        JARK_LOG("Invalid DIB pixel rows: {}", pixelRows);
+        return cv::Mat();
+    }
 
     // 调色板
     int numColors = 0;
     if (bitCount <= 8) {
-        numColors = (clrUsed == 0) ? (1 << bitCount) : clrUsed;
+        // clrUsed 不可信，按位宽对应的物理上限收敛，避免超大分配和越界读
+        const int maxColors = 1 << bitCount;
+        numColors = (clrUsed == 0 || clrUsed > static_cast<uint32_t>(maxColors)) ?
+            maxColors : static_cast<int>(clrUsed);
     }
     size_t paletteOffset = headerSize;
     const uint8_t* paletteData = dibData + paletteOffset;
     size_t paletteEntrySize = (headerSize == 12) ? 3 : 4;
-    size_t paletteSize = numColors * paletteEntrySize;
+    size_t paletteSize = static_cast<size_t>(numColors) * paletteEntrySize;
 
     // 像素数据位置
     const uint8_t* pixelData = dibData + paletteOffset + paletteSize;
-    size_t pixelRowBytes = ((realWidth * bitCount + 31) / 32) * 4;
+    size_t pixelRowBytes = ((static_cast<size_t>(realWidth) * bitCount + 31) / 32) * 4;
     size_t pixelDataSize = (imageSize == 0) ? computePixelDataSize(realWidth, bitCount, pixelRows) : imageSize;
+
+    // 调色板与 XOR 像素数据必须完整落在 dataSize 内
+    if (paletteOffset + paletteSize > availableBytes) {
+        JARK_LOG("DIB palette exceeds data size: {} > {}", paletteOffset + paletteSize, availableBytes);
+        return cv::Mat();
+    }
+    const size_t pixelBytesNeeded = pixelRowBytes * static_cast<size_t>(pixelRows);
+    if (paletteOffset + paletteSize + pixelBytesNeeded > availableBytes) {
+        JARK_LOG("DIB pixel data exceeds data size: {} > {}",
+            paletteOffset + paletteSize + pixelBytesNeeded, availableBytes);
+        return cv::Mat();
+    }
 
     // 解码调色板
     std::vector<cv::Vec4b> palette(numColors);
@@ -1343,7 +1409,8 @@ cv::Mat ImageDatabase::readDibFromMemory(const uint8_t* dibData, const IconDirEn
             uint32_t rM = redMask ? redMask : 0x7C00;
             uint32_t gM = greenMask ? greenMask : 0x03E0;
             uint32_t bM = blueMask ? blueMask : 0x001F;
-            if (compression == 3 && headerSize == 40) {
+            if (compression == 3 && headerSize == 40 &&
+                availableBytes >= static_cast<size_t>(headerSize) + 3 * sizeof(uint32_t)) {
                 // BITMAPINFOHEADER + BI_BITFIELDS，掩码紧随头部
                 const uint32_t* masks = reinterpret_cast<const uint32_t*>(dibData + headerSize);
                 rM = masks[0];
@@ -1386,7 +1453,8 @@ cv::Mat ImageDatabase::readDibFromMemory(const uint8_t* dibData, const IconDirEn
             }
             else if (compression == 3) { // BI_BITFIELDS
                 uint32_t rM = redMask, gM = greenMask, bM = blueMask, aM = alphaMask;
-                if (headerSize == 40) {
+                if (headerSize == 40 &&
+                    availableBytes >= static_cast<size_t>(headerSize) + 3 * sizeof(uint32_t)) {
                     const uint32_t* masks = reinterpret_cast<const uint32_t*>(dibData + headerSize);
                     rM = masks[0];
                     gM = masks[1];
@@ -1429,8 +1497,16 @@ cv::Mat ImageDatabase::readDibFromMemory(const uint8_t* dibData, const IconDirEn
     }
 
     // AND 掩码处理
-    size_t andRowBytes = ((realWidth + 31) / 32) * 4;
+    size_t andRowBytes = ((static_cast<size_t>(realWidth) + 31) / 32) * 4;
     if (hasAndMaskInImageData) {
+        // 内嵌掩码紧跟在 XOR 像素之后，同样必须落在 dataSize 内
+        const size_t andMaskOffset = paletteOffset + paletteSize + pixelBytesNeeded;
+        const size_t andMaskNeeded = andRowBytes * static_cast<size_t>(realHeight);
+        if (andMaskOffset + andMaskNeeded > availableBytes) {
+            JARK_LOG("DIB AND mask exceeds data size: {} > {}",
+                andMaskOffset + andMaskNeeded, availableBytes);
+            return bgra; // 像素已解码完成，缺少掩码时按不透明返回
+        }
         const uint8_t* andData = pixelData + pixelRows * pixelRowBytes;
         for (int y = 0; y < realHeight; ++y) {
             const uint8_t* rowAnd = andData + y * andRowBytes;
@@ -1449,8 +1525,10 @@ cv::Mat ImageDatabase::readDibFromMemory(const uint8_t* dibData, const IconDirEn
     }
     else {
         // 独立的 AND 掩码
+        // 独立掩码位于 pixelData 之后，判据要含调色板与头部占用，否则仍可能越界
         size_t andOffset = pixelDataSize;
-        if (andOffset + andRowBytes * realHeight <= entry.dataSize) {
+        if (paletteOffset + paletteSize + andOffset +
+            andRowBytes * static_cast<size_t>(realHeight) <= availableBytes) {
             const uint8_t* andData = pixelData + andOffset;
             for (int y = 0; y < realHeight; ++y) {
                 const uint8_t* rowAnd = andData + y * andRowBytes;
@@ -1519,6 +1597,12 @@ std::tuple<cv::Mat, string> ImageDatabase::loadICO(wstring_view path, std::span<
             JARK_LOG("endOffset {} fileBuf.size(): {}", endOffset, buf.size());
             JARK_LOG("entry.dataOffset {}", entry.dataOffset);
             JARK_LOG("entry.dataSize: {}", entry.dataSize);
+            continue;
+        }
+
+        // 下面要按 4 字节比对签名，dataSize 取自文件，过小时不能直接读
+        if (entry.dataSize < 4) {
+            JARK_LOG("Icon entry data too small: {}", entry.dataSize);
             continue;
         }
 
