@@ -1,6 +1,7 @@
 #pragma once
 #include <unordered_map>
 #include <list>
+#include <deque>
 #include <thread>
 #include <chrono>
 #include <mutex>
@@ -31,11 +32,14 @@ private:
     };
 
     std::thread preload_thread;
-    std::queue<PreloadTask> preload_queue;
+    // 用 deque 而非 queue：当前要显示的图需要插到队首，不能排在已有预读任务后面
+    std::deque<PreloadTask> preload_queue;
     std::unordered_map<keyType, std::uint64_t> preload_pending;
     mutable std::shared_mutex cache_mutex;  // 使用读写锁提高性能
     std::mutex preload_mutex;
     std::condition_variable preload_cv;
+    // 缓存写入后唤醒等待方，取代固定间隔轮询
+    std::condition_variable_any cache_cv;
     std::atomic<bool> stop_preload{ false };
     std::uint64_t preload_generation = 0;
 
@@ -55,7 +59,7 @@ private:
             if (stop_preload) break;
 
             PreloadTask task = std::move(preload_queue.front());
-            preload_queue.pop();
+            preload_queue.pop_front();
 
             {
                 std::shared_lock<std::shared_mutex> cache_lock(cache_mutex);
@@ -95,6 +99,9 @@ private:
             cache_list.emplace_front(key, value_ptr);
             cache_map[key] = cache_list.begin();
         }
+
+        // 唤醒 getDataPtr 中等待该 key 的调用方
+        cache_cv.notify_all();
     }
 
 public:
@@ -117,39 +124,49 @@ public:
     virtual valueType loader(const keyType&) = 0;
 
     std::shared_ptr<valueType> getDataPtr(const keyType& key) {
-        int cnt_16ms = 0;
+        // 原先按 10ms 轮询，受 Windows 计时器精度限制每轮实际约 15.6ms，
+        // 即使解码早已完成也要等到下一轮才返回。改为由写入方唤醒，
+        // 超时上限仍保持 60 秒。
+        std::unique_lock<std::shared_mutex> lock(cache_mutex);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+
         while (true) {
-            std::unique_lock<std::shared_mutex> lock(cache_mutex);
             auto it = cache_map.find(key);
             if (it != cache_map.end()) {
                 cache_list.splice(cache_list.begin(), cache_list, it->second);
                 return it->second->second;
             }
-            lock.unlock();
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 因windows系统限制 实际最小 15.625ms
-            if (++cnt_16ms > 3750) // 最多等60秒
+            if (cache_cv.wait_until(lock, deadline) == std::cv_status::timeout)
                 break;
+        }
+
+        // 超时判定与最后一次写入可能相邻，这里再查一次避免错过
+        auto it = cache_map.find(key);
+        if (it != cache_map.end()) {
+            cache_list.splice(cache_list.begin(), cache_list, it->second);
+            return it->second->second;
         }
         return nullptr;
     }
 
     std::shared_ptr<valueType> getSafePtr(const keyType& key) {
-        requestPreload(key);
+        requestPreload(key, true);
         return getDataPtr(key);
     }
 
     std::shared_ptr<valueType> getSafePtr(const keyType& key, const keyType& nextKey) {
-        if (key == nextKey)
-            requestPreload(key);
-        else
-            requestPreloadBatch({ key, nextKey });
+        // 当前要显示的图插到队首：快速翻页时队列里可能还堆着此前的预读任务，
+        // 按先进先出会让正在等的这张排到最后，等成超时。
+        requestPreload(key, true);
+        if (key != nextKey)
+            requestPreload(nextKey);
 
         return getDataPtr(key);
     }
 
-    // 请求预读取指定的key
-    void requestPreload(const keyType& key) {
+    // 请求预读取指定的key。urgent 表示这是当前要显示的图，插到队首优先解码
+    void requestPreload(const keyType& key, bool urgent = false) {
         std::lock_guard<std::mutex> lock(preload_mutex);
 
         if (preload_pending.contains(key))
@@ -163,7 +180,10 @@ public:
             }
         }
 
-        preload_queue.push(PreloadTask{ key, preload_generation });
+        if (urgent)
+            preload_queue.push_front(PreloadTask{ key, preload_generation });
+        else
+            preload_queue.push_back(PreloadTask{ key, preload_generation });
         preload_pending[key] = preload_generation;
         preload_cv.notify_one();
     }
@@ -185,7 +205,7 @@ public:
                 }
             }
 
-            preload_queue.push(PreloadTask{ key, preload_generation });
+            preload_queue.push_back(PreloadTask{ key, preload_generation });
             preload_pending[key] = preload_generation;
             hasNewTask = true;
         }
@@ -210,7 +230,7 @@ public:
         cache_map.clear();
         cache_list.clear();
 
-        std::queue<PreloadTask> empty_queue;
+        std::deque<PreloadTask> empty_queue;
         preload_queue.swap(empty_queue);
         preload_pending.clear();
     }
@@ -231,7 +251,7 @@ public:
         }
 
         // 队列中任务的代号已过期，执行也不会写回，直接丢弃
-        std::queue<PreloadTask> empty_queue;
+        std::deque<PreloadTask> empty_queue;
         preload_queue.swap(empty_queue);
         preload_pending.clear();
     }
