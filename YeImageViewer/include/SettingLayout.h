@@ -29,7 +29,52 @@ inline constexpr int SCROLLBAR_RIGHT_MARGIN = 5;
 
 inline constexpr Rect GENERAL_BEHAVIOR_CARD{ 20, 20, 580, 190 };
 inline constexpr Rect GENERAL_DISPLAY_CARD{ 20, 226, 580, 296 };
-inline constexpr int GENERAL_CONTENT_HEIGHT = 542;
+inline constexpr int GENERAL_EDITOR_CARD_Y = 538;
+inline constexpr int GENERAL_EDITOR_ROW_Y = 578;
+inline constexpr int GENERAL_EDITOR_ROW_HEIGHT = 44;
+inline constexpr int GENERAL_EDITOR_ROW_GAP = 8;
+
+constexpr Rect generalEditorName(int index) {
+    return { 38, GENERAL_EDITOR_ROW_Y + index *
+        (GENERAL_EDITOR_ROW_HEIGHT + GENERAL_EDITOR_ROW_GAP), 138,
+        GENERAL_EDITOR_ROW_HEIGHT };
+}
+
+constexpr Rect generalEditorPath(int index) {
+    return { 184, GENERAL_EDITOR_ROW_Y + index *
+        (GENERAL_EDITOR_ROW_HEIGHT + GENERAL_EDITOR_ROW_GAP), 292,
+        GENERAL_EDITOR_ROW_HEIGHT };
+}
+
+constexpr Rect generalEditorRemove(int index) {
+    return { 484, GENERAL_EDITOR_ROW_Y + index *
+        (GENERAL_EDITOR_ROW_HEIGHT + GENERAL_EDITOR_ROW_GAP), 98,
+        GENERAL_EDITOR_ROW_HEIGHT };
+}
+
+constexpr Rect generalEditorAdd(int editorCount) {
+    return { 408, GENERAL_EDITOR_ROW_Y + editorCount *
+        (GENERAL_EDITOR_ROW_HEIGHT + GENERAL_EDITOR_ROW_GAP), 174,
+        GENERAL_EDITOR_ROW_HEIGHT };
+}
+
+constexpr Rect generalEditorHint(int editorCount) {
+    const auto add = generalEditorAdd(editorCount);
+    return { 38, add.y + add.height + 8, 544, 28 };
+}
+
+constexpr Rect generalEditorCard(int editorCount) {
+    const auto hint = generalEditorHint(editorCount);
+    return { 20, GENERAL_EDITOR_CARD_Y, 580,
+        hint.y + hint.height + 22 - GENERAL_EDITOR_CARD_Y };
+}
+
+constexpr int generalContentHeight(int editorCount) {
+    const auto card = generalEditorCard(editorCount);
+    return card.y + card.height + PAGE_PADDING;
+}
+
+inline constexpr int GENERAL_CONTENT_HEIGHT = generalContentHeight(10);
 
 inline constexpr std::array<Rect, 7> GENERAL_CHECK_BOXES{
     Rect{ 38, 58, 262, 32 },
@@ -146,7 +191,22 @@ constexpr bool generalControlsAreSeparated() {
                 return false;
         }
     }
-    return true;
+    const auto editorCard = generalEditorCard(10);
+    if (!isInsidePage(editorCard, GENERAL_CONTENT_HEIGHT) ||
+        GENERAL_DISPLAY_CARD.y + GENERAL_DISPLAY_CARD.height >= editorCard.y)
+        return false;
+    for (int index = 0; index < 10; ++index) {
+        const auto name = generalEditorName(index);
+        const auto path = generalEditorPath(index);
+        const auto remove = generalEditorRemove(index);
+        if (!isInsidePage(name, GENERAL_CONTENT_HEIGHT) ||
+            !isInsidePage(path, GENERAL_CONTENT_HEIGHT) ||
+            !isInsidePage(remove, GENERAL_CONTENT_HEIGHT) ||
+            overlaps(name, path) || overlaps(path, remove))
+            return false;
+    }
+    return isInsidePage(generalEditorAdd(10), GENERAL_CONTENT_HEIGHT) &&
+        isInsidePage(generalEditorHint(10), GENERAL_CONTENT_HEIGHT);
 }
 
 constexpr bool shortcutItemsAreSeparated() {
@@ -175,7 +235,7 @@ constexpr bool aboutLayoutIsOrdered() {
 
 static_assert(CANVAS_WIDTH == 620 && CANVAS_HEIGHT == 620);
 static_assert(TAB_WIDTH * 4 == CANVAS_WIDTH);
-static_assert(GENERAL_CONTENT_HEIGHT <= CONTENT_VIEW_HEIGHT);
+static_assert(GENERAL_CONTENT_HEIGHT > CONTENT_VIEW_HEIGHT);
 static_assert(SHORTCUT_CONTENT_HEIGHT > CONTENT_VIEW_HEIGHT);
 static_assert(ABOUT_CONTENT_HEIGHT <= CONTENT_VIEW_HEIGHT);
 static_assert(generalControlsAreSeparated());

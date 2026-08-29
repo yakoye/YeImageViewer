@@ -13,6 +13,10 @@ enum class Kind {
     Scrollbar,
     GeneralToggle,
     GeneralRadioOption,
+    GeneralEditorAdd,
+    GeneralEditorRename,
+    GeneralEditorPath,
+    GeneralEditorRemove,
     AssociationSearch,
     AssociationExtension,
     AssociationDefaults,
@@ -40,7 +44,8 @@ constexpr bool contains(const SettingLayout::Rect& rect, int x, int y) {
 }
 
 constexpr Command resolve(int tab, int x, int windowY, int scrollOffset,
-    int associationExtensionCount = 0, int associationButtonsY = 0) {
+    int associationExtensionCount = 0, int associationButtonsY = 0,
+    int externalEditorCount = 0) {
     if (windowY < SettingLayout::TAB_HEIGHT) {
         return { Kind::Tab,
             std::clamp(x / SettingLayout::TAB_WIDTH, 0, 3), -1 };
@@ -66,6 +71,16 @@ constexpr Command resolve(int tab, int x, int windowY, int scrollOffset,
             return { Kind::GeneralRadioOption, index,
                 std::clamp((x - segments.x) / itemWidth, 0, optionCounts[index] - 1) };
         }
+        for (int index = 0; index < externalEditorCount; ++index) {
+            if (contains(SettingLayout::generalEditorName(index), x, y))
+                return { Kind::GeneralEditorRename, index, -1 };
+            if (contains(SettingLayout::generalEditorPath(index), x, y))
+                return { Kind::GeneralEditorPath, index, -1 };
+            if (contains(SettingLayout::generalEditorRemove(index), x, y))
+                return { Kind::GeneralEditorRemove, index, -1 };
+        }
+        if (contains(SettingLayout::generalEditorAdd(externalEditorCount), x, y))
+            return { Kind::GeneralEditorAdd, externalEditorCount, -1 };
         return {};
     }
 

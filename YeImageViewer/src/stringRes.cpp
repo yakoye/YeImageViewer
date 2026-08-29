@@ -125,6 +125,10 @@ std::wstring_view UIStringTableW[STRING_MAX_NUM][2] = {
     {L"文件名过长。", L"The file name is too long."},
     {L"同名文件已存在，请使用其他名称。", L"A file with that name already exists."}, // 55
     {L"重命名失败，错误码", L"Rename failed, error code"},
+    {L"编辑图片 (&E)", L"&Edit image"},
+    {L"在", L"Open in"},
+    {L"选择并设置应用... (&C)", L"&Choose and configure application..."},
+    {L"无法启动外部图片编辑器，错误码", L"Unable to start the external image editor, error code"}, // 60
 };
 
 // 获取字符串

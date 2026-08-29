@@ -19,6 +19,7 @@ $hdrFixture = Join-Path $repoRoot "test\HDR color error\HDR.hdr"
 $sharpSvgFixture = Join-Path $repoRoot "test\SVG Blurring\SittingHuman.svg"
 $textSvgFixture = Join-Path $repoRoot "test\severely jagged\cachetest.drawio.svg"
 $jaggedFixture = Join-Path $repoRoot "test\severely jagged\cachetest.drawio.png"
+$commonPngFixture = Join-Path $repoRoot "test\format corpus\files\common.png"
 $formatCorpusRoot = Join-Path $repoRoot "test\format corpus"
 $formatManifest = Join-Path $formatCorpusRoot "manifest.tsv"
 $currentRestoreFixtures = @(
@@ -67,7 +68,7 @@ if (-not $SkipBuild) {
     }
 }
 
-foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sharpSvgFixture, $textSvgFixture, $jaggedFixture, $appIconPreview, $formatManifest) + $toolbarIcons + $appIcons + $currentRestoreFixtures) {
+foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sharpSvgFixture, $textSvgFixture, $jaggedFixture, $commonPngFixture, $appIconPreview, $formatManifest) + $toolbarIcons + $appIcons + $currentRestoreFixtures) {
     if (-not (Test-Path -LiteralPath $requiredFile)) {
         throw "Required regression-test file is missing: $requiredFile"
     }
@@ -438,6 +439,38 @@ public static class YeImageViewerTestNativeV1365
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetWindowText(IntPtr window, StringBuilder text, int maximumLength);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool SetDlgItemText(IntPtr window, int controlId, string text);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool SetWindowText(IntPtr window, string text);
+
+    [DllImport("user32.dll")]
+    public static extern int GetDlgCtrlID(IntPtr window);
+
+    public static IntPtr FindDescendant(uint processId, IntPtr parent,
+        string expectedClassName, int expectedControlId)
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumWindowsCallback callback = null;
+        callback = delegate(IntPtr window, IntPtr parameter) {
+            StringBuilder className = new StringBuilder(256);
+            GetClassName(window, className, className.Capacity);
+            if (className.ToString() == expectedClassName &&
+                GetDlgCtrlID(window) == expectedControlId) {
+                found = window;
+                return false;
+            }
+            return true;
+        };
+        EnumChildWindows(parent, callback, IntPtr.Zero);
+        return found;
+    }
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumChildWindows(IntPtr parent,
+        EnumWindowsCallback callback, IntPtr parameter);
+
 }
 "@
 }
@@ -446,13 +479,94 @@ public static class YeImageViewerTestNativeV1365
 # rectangles or synthesizing mouse messages on scaled displays.
 [void][YeImageViewerTestNativeV1365]::SetThreadDpiAwarenessContext([IntPtr](-4))
 
+Write-Host "Checking functional startup open button..."
+$homeDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Home-" + [Guid]::NewGuid().ToString("N"))
+$homeViewer = Join-Path $homeDirectory "YeImageViewer.exe"
+$homeProcess = $null
+try {
+    [void](New-Item -ItemType Directory -Path $homeDirectory)
+    Copy-Item -LiteralPath $viewer -Destination $homeViewer
+    $homeProcess = Start-Process -FilePath $homeViewer -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(6)
+    do {
+        Start-Sleep -Milliseconds 100
+        $homeProcess.Refresh()
+    } while (-not $homeProcess.HasExited -and $homeProcess.MainWindowHandle -eq 0 -and
+        [DateTime]::UtcNow -lt $deadline)
+    if ($homeProcess.HasExited -or $homeProcess.MainWindowHandle -eq 0) {
+        throw "Startup-action regression failed: viewer did not open without an image argument."
+    }
+
+    $homeWindow = [IntPtr]$homeProcess.MainWindowHandle
+    $homeClientRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($homeWindow, [ref]$homeClientRect)
+    $homeClientWidth = $homeClientRect.Right - $homeClientRect.Left
+    $homeClientHeight = $homeClientRect.Bottom - $homeClientRect.Top
+    $homeScale = [Math]::Min($homeClientWidth / 500.0, $homeClientHeight / 350.0)
+    $homeRenderedWidth = [int][Math]::Round(500 * $homeScale)
+    $homeRenderedHeight = [int][Math]::Round(350 * $homeScale)
+    $homeLeft = [int][Math]::Round(($homeClientWidth - $homeRenderedWidth) / 2.0)
+    $homeTop = [int][Math]::Round(($homeClientHeight - $homeRenderedHeight) / 2.0)
+    # OPEN_BUTTON is {36,92,428,66}; click its source-space center.
+    $homeOpenX = $homeLeft + [int][Math]::Round(250 * $homeScale)
+    $homeOpenY = $homeTop + [int][Math]::Round(125 * $homeScale)
+    $homeOpenPosition = [IntPtr](($homeOpenY -shl 16) -bor ($homeOpenX -band 0xFFFF))
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $homeWindow, 0x0201, [UIntPtr]1, $homeOpenPosition)
+
+    $dialogDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $homeDialog = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$homeProcess.Id, "#32770")
+    } while ($homeDialog -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $dialogDeadline)
+    if ($homeDialog -eq [IntPtr]::Zero -or
+        [YeImageViewerTestNativeV1365]::IsWindowEnabled($homeWindow)) {
+        throw "Startup-action regression failed: clicking Open image did not show a modal file picker."
+    }
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $homeDialog, 0x0111, [UIntPtr]2, [IntPtr]::Zero)
+    $restoreDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $homeDialog = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$homeProcess.Id, "#32770")
+    } while (($homeDialog -ne [IntPtr]::Zero -or
+        -not [YeImageViewerTestNativeV1365]::IsWindowEnabled($homeWindow)) -and
+        [DateTime]::UtcNow -lt $restoreDeadline)
+    if ($homeDialog -ne [IntPtr]::Zero -or
+        -not [YeImageViewerTestNativeV1365]::IsWindowEnabled($homeWindow)) {
+        throw "Startup-action regression failed: closing the file picker did not restore viewer interaction."
+    }
+    Write-Host "PASS startup uses a real Open image button and restores interaction after picker dismissal."
+}
+finally {
+    if ($homeProcess -and -not $homeProcess.HasExited) {
+        [void]$homeProcess.CloseMainWindow()
+        if (-not $homeProcess.WaitForExit(3000)) {
+            Stop-Process -Id $homeProcess.Id -Force
+            $homeProcess.WaitForExit()
+        }
+    }
+    if (Test-Path -LiteralPath $homeDirectory) {
+        [IO.Directory]::Delete($homeDirectory, $true)
+    }
+}
+
 Write-Host "Checking fresh-install window defaults..."
 $freshDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Fresh-" + [Guid]::NewGuid().ToString("N"))
 $freshViewer = Join-Path $freshDirectory "YeImageViewer.exe"
+$editorProbe = Join-Path $freshDirectory "ExternalEditorProbe.exe"
 $freshProcess = $null
+$editorProbeProcess = $null
 try {
     [void](New-Item -ItemType Directory -Path $freshDirectory)
     Copy-Item -LiteralPath $viewer -Destination $freshViewer
+    Copy-Item -LiteralPath $viewer -Destination $editorProbe
+    $externalEditorSettings = Join-Path $freshDirectory "YeImageViewer.editors.ini"
+    $externalEditorProbeConfig = "[Editors]`r`nCount=1`r`nName0=ExternalEditorProbe`r`nPath0=$editorProbe`r`n"
+    [IO.File]::WriteAllText($externalEditorSettings, $externalEditorProbeConfig,
+        [Text.UTF8Encoding]::new($true))
     $freshProcess = Start-Process -FilePath $freshViewer -ArgumentList ('"' + $sharpSvgFixture + '"') -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds(6)
     do {
@@ -534,10 +648,21 @@ try {
         throw "Fresh-install regression failed: framed window remained disabled after leaving presentation mode."
     }
     $freshThreadId = [YeImageViewerTestNativeV1365]::GetWindowThreadProcessId($freshWindow, [IntPtr]::Zero)
-    $freshThreadInfo = New-Object YeImageViewerTestNativeV1365+GUITHREADINFO
-    $freshThreadInfo.Size = [Runtime.InteropServices.Marshal]::SizeOf($freshThreadInfo)
-    if (-not [YeImageViewerTestNativeV1365]::GetGUIThreadInfo($freshThreadId, [ref]$freshThreadInfo) -or
-        $freshThreadInfo.Active -ne $freshWindow -or $freshThreadInfo.Focus -ne $freshWindow -or
+    $interactionDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        $freshThreadInfo = New-Object YeImageViewerTestNativeV1365+GUITHREADINFO
+        $freshThreadInfo.Size = [Runtime.InteropServices.Marshal]::SizeOf($freshThreadInfo)
+        $freshThreadInfoAvailable = [YeImageViewerTestNativeV1365]::GetGUIThreadInfo(
+            $freshThreadId, [ref]$freshThreadInfo)
+        if ($freshThreadInfoAvailable -and $freshThreadInfo.Active -eq $freshWindow -and
+            $freshThreadInfo.Focus -eq $freshWindow -and
+            $freshThreadInfo.Capture -eq [IntPtr]::Zero) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $interactionDeadline)
+    if (-not $freshThreadInfoAvailable -or $freshThreadInfo.Active -ne $freshWindow -or
+        $freshThreadInfo.Focus -ne $freshWindow -or
         $freshThreadInfo.Capture -ne [IntPtr]::Zero) {
         throw "Fresh-install regression failed: framed window did not restore active mouse and keyboard interaction."
     }
@@ -593,9 +718,14 @@ try {
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0100, [UIntPtr]0x27, [IntPtr]::Zero)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0101, [UIntPtr]0x27, [IntPtr]::Zero)
-    Start-Sleep -Milliseconds 700
-    $freshSwitchedRect = New-Object YeImageViewerTestNativeV1365+RECT
-    [void][YeImageViewerTestNativeV1365]::GetClientRect($freshWindow, [ref]$freshSwitchedRect)
+    $browseDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $freshSwitchedRect = New-Object YeImageViewerTestNativeV1365+RECT
+        [void][YeImageViewerTestNativeV1365]::GetClientRect($freshWindow, [ref]$freshSwitchedRect)
+    } while ((($freshSwitchedRect.Right - $freshSwitchedRect.Left) -ne $freshFramedWidth -or
+        ($freshSwitchedRect.Bottom - $freshSwitchedRect.Top) -ne $freshFramedHeight) -and
+        [DateTime]::UtcNow -lt $browseDeadline)
     if (($freshSwitchedRect.Right - $freshSwitchedRect.Left) -ne $freshFramedWidth -or
         ($freshSwitchedRect.Bottom - $freshSwitchedRect.Top) -ne $freshFramedHeight) {
         throw "Fresh-install regression failed: browsing images changed the anchored framed window size."
@@ -634,6 +764,75 @@ try {
         throw "Rename-shortcut regression failed: cancelling rename left the viewer disabled."
     }
     Write-Host "PASS F2 opens Rename, not Settings, and cancel restores viewer interaction."
+
+    # The chooser must remain a real modal executable picker. Cancel it and
+    # verify that the viewer is usable again; the configured command below then
+    # exercises the complete ShellExecute image-path launch contract.
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $freshWindow, 0x0111, [UIntPtr]1025, [IntPtr]::Zero)
+    $editorDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $editorDialog = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$freshProcess.Id, "#32770")
+    } while ($editorDialog -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $editorDeadline)
+    $editorNameEdit = if ($editorDialog -ne [IntPtr]::Zero) {
+        [YeImageViewerTestNativeV1365]::FindDescendant(
+            [uint32]$freshProcess.Id, $editorDialog, "Edit", 1148)
+    } else { [IntPtr]::Zero }
+    if ($editorDialog -eq [IntPtr]::Zero -or $editorNameEdit -eq [IntPtr]::Zero) {
+        throw "External-editor regression failed: Choose application did not expose a usable executable picker."
+    }
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $editorDialog, 0x0111, [UIntPtr]2, [IntPtr]::Zero)
+    $editorDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $editorDialog = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$freshProcess.Id, "#32770")
+    } while ($editorDialog -ne [IntPtr]::Zero -and [DateTime]::UtcNow -lt $editorDeadline)
+    if ($editorDialog -ne [IntPtr]::Zero -or
+        -not [YeImageViewerTestNativeV1365]::IsWindowEnabled($freshWindow)) {
+        throw "External-editor regression failed: cancelling the executable picker did not restore the viewer."
+    }
+
+    [void][YeImageViewerTestNativeV1365]::PostMessage(
+        $freshWindow, 0x0111, [UIntPtr]1015, [IntPtr]::Zero)
+    $editorDeadline = [DateTime]::UtcNow.AddSeconds(7)
+    do {
+        Start-Sleep -Milliseconds 150
+        $editorProbeProcess = Get-Process -Name "ExternalEditorProbe" -ErrorAction SilentlyContinue |
+            Sort-Object StartTime -Descending | Select-Object -First 1
+    } while (-not $editorProbeProcess -and [DateTime]::UtcNow -lt $editorDeadline)
+    if (-not $editorProbeProcess) {
+        throw "External-editor regression failed: the persisted default application did not launch."
+    }
+    $editorProbeDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $editorProbeProcess.Refresh()
+    } while (-not $editorProbeProcess.HasExited -and
+        ($editorProbeProcess.MainWindowHandle -eq 0 -or
+            -not $editorProbeProcess.MainWindowTitle.Contains(
+                [IO.Path]::GetFileName($sharpSvgFixture))) -and
+        [DateTime]::UtcNow -lt $editorProbeDeadline)
+    if ($editorProbeProcess.HasExited -or $editorProbeProcess.MainWindowHandle -eq 0 -or
+        -not $editorProbeProcess.MainWindowTitle.Contains(
+            [IO.Path]::GetFileName($sharpSvgFixture))) {
+        throw "External-editor regression failed: the configured application did not receive the current image path."
+    }
+    [void]$editorProbeProcess.CloseMainWindow()
+    if (-not $editorProbeProcess.WaitForExit(3000)) {
+        Stop-Process -Id $editorProbeProcess.Id -Force
+        $editorProbeProcess.WaitForExit()
+    }
+    $editorProbeProcess = $null
+    if (-not (Test-Path -LiteralPath $externalEditorSettings -PathType Leaf) -or
+        (Get-Item -LiteralPath $externalEditorSettings).Length -le 2 -or
+        -not (Get-Content -LiteralPath $externalEditorSettings -Raw -Encoding UTF8).Contains("ExternalEditorProbe")) {
+        throw "External-editor regression failed: the named editor was not persisted in its dedicated INI file."
+    }
+    Write-Host "PASS external-editor picker restores interaction and the submenu opens the current image in its configured application."
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0111, [UIntPtr]1010, [IntPtr]::Zero)
     $settingDeadline = [DateTime]::UtcNow.AddSeconds(3)
@@ -740,6 +939,10 @@ try {
     Write-Host "PASS image rotation persists across a real process restart."
 }
 finally {
+    if ($editorProbeProcess -and -not $editorProbeProcess.HasExited) {
+        Stop-Process -Id $editorProbeProcess.Id -Force
+        $editorProbeProcess.WaitForExit()
+    }
     if ($freshProcess -and -not $freshProcess.HasExited) {
         [void]$freshProcess.CloseMainWindow()
         if (-not $freshProcess.WaitForExit(3000)) {
@@ -749,7 +952,9 @@ finally {
     }
     foreach ($freshFile in @(
         $freshViewer,
+        $editorProbe,
         (Join-Path $freshDirectory "YeImageViewer.db"),
+        (Join-Path $freshDirectory "YeImageViewer.editors.ini"),
         (Join-Path $freshDirectory "YeImageViewer.rotations.db"),
         (Join-Path $freshDirectory "YeImageViewer.rotations.db.tmp")
     )) {
@@ -759,6 +964,116 @@ finally {
     }
     if (Test-Path -LiteralPath $freshDirectory) {
         Remove-Item -LiteralPath $freshDirectory
+    }
+}
+
+Write-Host "Checking installed Paint and RIOT through configured editor commands..."
+$installedEditorDefinitions = @(
+    @{
+        Name = "画图"
+        Path = "C:\Program Files\WindowsApps\Microsoft.Paint_11.2605.81.0_x64__8wekyb3d8bbwe\PaintApp\mspaint.exe"
+        ProcessName = "mspaint"
+    },
+    @{
+        Name = "RIOT 压缩"
+        Path = "C:\Program Files\Riot\Riot.exe"
+        ProcessName = "Riot"
+    }
+)
+$availableInstalledEditors = @($installedEditorDefinitions | Where-Object {
+    Test-Path -LiteralPath $_.Path -PathType Leaf
+})
+if ($availableInstalledEditors.Count -eq 0) {
+    Write-Host "SKIP Paint/RIOT real-editor smoke test: neither optional application is installed."
+}
+else {
+    $installedEditorDirectory = Join-Path ([IO.Path]::GetTempPath()) (
+        "YeImageViewer-InstalledEditors-" + [Guid]::NewGuid().ToString("N"))
+    $installedEditorViewer = Join-Path $installedEditorDirectory "YeImageViewer.exe"
+    $installedEditorProcess = $null
+    $launchedInstalledEditor = $null
+    try {
+        [void](New-Item -ItemType Directory -Path $installedEditorDirectory)
+        Copy-Item -LiteralPath $viewer -Destination $installedEditorViewer
+        $configLines = [Collections.Generic.List[string]]::new()
+        $configLines.Add("[Editors]")
+        $configLines.Add("Count=$($availableInstalledEditors.Count)")
+        for ($index = 0; $index -lt $availableInstalledEditors.Count; $index++) {
+            $configLines.Add("Name$index=$($availableInstalledEditors[$index].Name)")
+            $configLines.Add("Path$index=$($availableInstalledEditors[$index].Path)")
+        }
+        [IO.File]::WriteAllText(
+            (Join-Path $installedEditorDirectory "YeImageViewer.editors.ini"),
+            ($configLines -join "`r`n") + "`r`n", [Text.UTF8Encoding]::new($true))
+
+        $installedEditorProcess = Start-Process -FilePath $installedEditorViewer -ArgumentList ('"' + $commonPngFixture + '"') -PassThru
+        $deadline = [DateTime]::UtcNow.AddSeconds(6)
+        do {
+            Start-Sleep -Milliseconds 150
+            $installedEditorProcess.Refresh()
+        } while (-not $installedEditorProcess.HasExited -and
+            $installedEditorProcess.MainWindowHandle -eq 0 -and
+            [DateTime]::UtcNow -lt $deadline)
+        if ($installedEditorProcess.HasExited -or
+            $installedEditorProcess.MainWindowHandle -eq 0) {
+            throw "Installed-editor regression failed: viewer did not open."
+        }
+        $installedEditorWindow = [IntPtr]$installedEditorProcess.MainWindowHandle
+
+        for ($index = 0; $index -lt $availableInstalledEditors.Count; $index++) {
+            $definition = $availableInstalledEditors[$index]
+            $existingIds = @(Get-Process -Name $definition.ProcessName -ErrorAction SilentlyContinue |
+                ForEach-Object Id)
+            if ($existingIds.Count -gt 0) {
+                Write-Host "SKIP $($definition.Name) launch: an existing user process is already open."
+                continue
+            }
+            [void][YeImageViewerTestNativeV1365]::PostMessage(
+                $installedEditorWindow, 0x0111, [UIntPtr](1015 + $index), [IntPtr]::Zero)
+            $deadline = [DateTime]::UtcNow.AddSeconds(10)
+            do {
+                Start-Sleep -Milliseconds 200
+                $launchedInstalledEditor = Get-Process -Name $definition.ProcessName -ErrorAction SilentlyContinue |
+                    Where-Object { $existingIds -notcontains $_.Id } |
+                    Sort-Object StartTime -Descending | Select-Object -First 1
+                if ($launchedInstalledEditor) {
+                    $launchedInstalledEditor.Refresh()
+                }
+            } while ((-not $launchedInstalledEditor -or
+                $launchedInstalledEditor.MainWindowHandle -eq 0 -or
+                -not $launchedInstalledEditor.MainWindowTitle.Contains(
+                    [IO.Path]::GetFileName($commonPngFixture))) -and
+                [DateTime]::UtcNow -lt $deadline)
+            if (-not $launchedInstalledEditor -or $launchedInstalledEditor.HasExited -or
+                $launchedInstalledEditor.MainWindowHandle -eq 0 -or
+                -not $launchedInstalledEditor.MainWindowTitle.Contains(
+                    [IO.Path]::GetFileName($commonPngFixture))) {
+                throw "Installed-editor regression failed: $($definition.Name) did not open the configured image."
+            }
+            Write-Host "PASS YeImageViewer opened common.png in $($definition.Name)."
+            [void]$launchedInstalledEditor.CloseMainWindow()
+            if (-not $launchedInstalledEditor.WaitForExit(3000)) {
+                Stop-Process -Id $launchedInstalledEditor.Id -Force
+                $launchedInstalledEditor.WaitForExit()
+            }
+            $launchedInstalledEditor = $null
+        }
+    }
+    finally {
+        if ($launchedInstalledEditor -and -not $launchedInstalledEditor.HasExited) {
+            Stop-Process -Id $launchedInstalledEditor.Id -Force
+            $launchedInstalledEditor.WaitForExit()
+        }
+        if ($installedEditorProcess -and -not $installedEditorProcess.HasExited) {
+            [void]$installedEditorProcess.CloseMainWindow()
+            if (-not $installedEditorProcess.WaitForExit(3000)) {
+                Stop-Process -Id $installedEditorProcess.Id -Force
+                $installedEditorProcess.WaitForExit()
+            }
+        }
+        if (Test-Path -LiteralPath $installedEditorDirectory) {
+            [IO.Directory]::Delete($installedEditorDirectory, $true)
+        }
     }
 }
 

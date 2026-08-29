@@ -19,6 +19,8 @@
 #include <span>
 #include <print>
 
+#include "ExternalEditorConfig.h"
+
 using std::vector;
 using std::string;
 using std::wstring;
@@ -388,6 +390,9 @@ enum class ContextMenu :int {
     openNewImage = 1000, copyImageInfo, copyImagePath, copyImageData, toggleExifDisplay, openContainerFloder, deleteImage,
     openFileProperties, printImage, toggleFullScreen, openSetting, openHelp, aboutSoftware, exitSoftware,
     renameImage = 1014,
+    editImageFirst = 1015,
+    editImageLast = 1024,
+    editImageChoose = 1025,
     backgroundTransparent = 1100, backgroundWhite, backgroundBlack, backgroundFrostedGlass
 };
 
@@ -489,6 +494,8 @@ struct GlobalVar {
     static inline ThemeColor currentTheme = deepTheme;
 
     static inline wstring settingPath;
+    static inline wstring externalEditorsPath;
+    static inline std::vector<ExternalEditorConfig::Entry> externalEditors;
     static inline string_view settingHeader{ "YeImageViewerSetting" };
     static inline SettingParameter settingParameter;
 };
@@ -573,6 +580,9 @@ public:
 
     // 选取文件
     static std::wstring SelectFile(HWND hWnd);
+
+    // 选择外部图片编辑器。
+    static std::wstring SelectExecutable(HWND hWnd);
 
     // 图像另存为 选取文件路径
     static std::pair<std::wstring, bool> saveImageDialogW(wstring_view title);

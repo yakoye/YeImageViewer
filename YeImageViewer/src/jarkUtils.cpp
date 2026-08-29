@@ -574,6 +574,26 @@ std::wstring jarkUtils::SelectFile(HWND hWnd) {
     }
 }
 
+std::wstring jarkUtils::SelectExecutable(HWND hWnd) {
+    OPENFILENAMEW ofn{};
+    wchar_t filePath[32768]{};
+
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hWnd;
+    ofn.lpstrFile = filePath;
+    ofn.nMaxFile = ARRAYSIZE(filePath);
+    ofn.lpstrFilter = GlobalVar::settingParameter.UI_LANG == 0 ?
+        L"应用程序 (*.exe)\0*.exe\0所有文件 (*.*)\0*.*\0" :
+        L"Applications (*.exe)\0*.exe\0All files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrTitle = GlobalVar::settingParameter.UI_LANG == 0 ?
+        L"选择外部图片编辑器" : L"Choose an external image editor";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST |
+        OFN_NOCHANGEDIR | OFN_EXPLORER;
+
+    return GetOpenFileNameW(&ofn) == TRUE ? std::wstring(filePath) : L"";
+}
+
 // ext需要带点 ".png"
 static bool isExt(const std::wstring& path, const std::wstring& ext) {
     if (ext.empty() || path.length() <= ext.length())

@@ -124,7 +124,6 @@ END
 
 IDB_PNG_TIPS            PNG                     "file\\tips.png"
 
-IDB_PNG_HOME            PNG                     "..\\ico.png"
 
 IDB_PNG_MAIN_RES        PNG                     "file\\mainRes.png"
 

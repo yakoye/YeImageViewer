@@ -49,6 +49,8 @@ private:
     std::string associationFilter;
     bool associationSearchActive = false;
     std::optional<ShortcutConfig::Action> shortcutCapture;
+    std::optional<std::size_t> editorNameCapture;
+    std::wstring editorNameBuffer;
 
     uint32_t primaryText() const {
         return GlobalVar::isCurrentUIDarkMode ?
@@ -166,7 +168,8 @@ private:
 
     int contentHeightForTab(int tab) const {
         switch (tab) {
-        case 0: return SettingLayout::GENERAL_CONTENT_HEIGHT;
+        case 0: return SettingLayout::generalContentHeight(
+            static_cast<int>(GlobalVar::externalEditors.size()));
         case 1: return associationContentHeight();
         case 2: return SettingLayout::SHORTCUT_CONTENT_HEIGHT;
         default: return SettingLayout::ABOUT_CONTENT_HEIGHT;
@@ -231,6 +234,52 @@ private:
             chinese ? "显示与交互" : "DISPLAY & INPUT");
         for (const auto& radio : generalTabRadioList)
             drawSegment(page, radio);
+
+        const int editorCount = static_cast<int>(GlobalVar::externalEditors.size());
+        const auto editorCard = SettingLayout::generalEditorCard(editorCount);
+        drawCard(page, toCvRect(editorCard));
+        drawSectionTitle(page, toCvRect(editorCard),
+            chinese ? "外部图片编辑器" : "EXTERNAL EDITOR");
+        for (int index = 0; index < editorCount; ++index) {
+            const auto& editor = GlobalVar::externalEditors[index];
+            const cv::Rect nameRect = toCvRect(SettingLayout::generalEditorName(index));
+            const cv::Rect pathRect = toCvRect(SettingLayout::generalEditorPath(index));
+            const cv::Rect removeRect = toCvRect(SettingLayout::generalEditorRemove(index));
+            fillRoundedRect(page, nameRect, GlobalVar::currentTheme.BG_DEEP, 7);
+            fillRoundedRect(page, pathRect, GlobalVar::currentTheme.BG_DEEP, 7);
+            fillRoundedRect(page, removeRect, GlobalVar::currentTheme.BG_TAG, 7);
+            cv::rectangle(page, nameRect, jarkUtils::to_cv_scalar(
+                editorNameCapture && *editorNameCapture == index ?
+                    GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG),
+                editorNameCapture && *editorNameCapture == index ? 2 : 1);
+            cv::rectangle(page, pathRect,
+                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+            const std::wstring visibleName =
+                editorNameCapture && *editorNameCapture == index ?
+                    editorNameBuffer + L"|" : editor.name;
+            const std::string nameText = jarkUtils::wstringToUtf8(visibleName);
+            const std::string pathText = jarkUtils::wstringToUtf8(editor.path);
+            textDrawer.putAlignLeft(page,
+                { nameRect.x + 10, nameRect.y, nameRect.width - 20, nameRect.height },
+                nameText.c_str(), primaryText());
+            textDrawer.putAlignLeft(page,
+                { pathRect.x + 10, pathRect.y, pathRect.width - 20, pathRect.height },
+                pathText.c_str(), secondaryText());
+            textDrawer.putAlignCenter(page, removeRect,
+                chinese ? "删除" : "Remove", primaryText());
+        }
+
+        const auto addRect = toCvRect(SettingLayout::generalEditorAdd(editorCount));
+        fillRoundedRect(page, addRect, editorCount < ExternalEditorConfig::MAX_EDITORS ?
+            GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG, 7);
+        textDrawer.putAlignCenter(page, addRect,
+            chinese ? "添加应用..." : "Add application...",
+            editorCount < ExternalEditorConfig::MAX_EDITORS ? 0xFFFFFFFFu : secondaryText());
+        textDrawer.putAlignLeft(page,
+            toCvRect(SettingLayout::generalEditorHint(editorCount)),
+            chinese ? "点击名称可编辑；点击路径可更换程序（最多 10 个）" :
+                "Click a name to edit it or a path to replace it (up to 10)",
+            secondaryText());
     }
 
     void refreshAssociateTab(cv::Mat& page) {
@@ -526,6 +575,73 @@ private:
         }
     }
 
+    void saveExternalEditors() {
+        ExternalEditorConfig::save(GlobalVar::externalEditorsPath,
+            GlobalVar::externalEditors);
+    }
+
+    void commitEditorName() {
+        if (!editorNameCapture || *editorNameCapture >= GlobalVar::externalEditors.size()) {
+            editorNameCapture.reset();
+            editorNameBuffer.clear();
+            return;
+        }
+        auto& editor = GlobalVar::externalEditors[*editorNameCapture];
+        editor.name = ExternalEditorConfig::resolvedName(editorNameBuffer,
+            editor.path);
+        editorNameCapture.reset();
+        editorNameBuffer.clear();
+        saveExternalEditors();
+        isNeedRefreshUI = true;
+    }
+
+    void handleExternalEditor(const SettingCommand::Command& command) {
+        if (command.kind == SettingCommand::Kind::GeneralEditorAdd) {
+            if (GlobalVar::externalEditors.size() >= ExternalEditorConfig::MAX_EDITORS)
+                return;
+            const std::wstring selected = jarkUtils::SelectExecutable(m_hwnd);
+            if (selected.empty())
+                return;
+            ExternalEditorConfig::Entry entry{
+                ExternalEditorConfig::defaultName(selected), selected };
+            if (ExternalEditorConfig::add(GlobalVar::externalEditors, entry)) {
+                const auto added = std::find_if(GlobalVar::externalEditors.begin(),
+                    GlobalVar::externalEditors.end(), [&](const auto& editor) {
+                        return _wcsicmp(editor.path.c_str(), selected.c_str()) == 0;
+                    });
+                editorNameCapture = static_cast<std::size_t>(
+                    std::distance(GlobalVar::externalEditors.begin(), added));
+                editorNameBuffer = added->name;
+                saveExternalEditors();
+            }
+        }
+        else if (command.index >= 0 &&
+            command.index < static_cast<int>(GlobalVar::externalEditors.size())) {
+            const std::size_t index = static_cast<std::size_t>(command.index);
+            if (command.kind == SettingCommand::Kind::GeneralEditorRename) {
+                editorNameCapture = index;
+                editorNameBuffer = GlobalVar::externalEditors[index].name;
+            }
+            else if (command.kind == SettingCommand::Kind::GeneralEditorPath) {
+                const std::wstring selected = jarkUtils::SelectExecutable(m_hwnd);
+                if (!selected.empty()) {
+                    GlobalVar::externalEditors[index].path = selected;
+                    saveExternalEditors();
+                }
+            }
+            else if (command.kind == SettingCommand::Kind::GeneralEditorRemove) {
+                GlobalVar::externalEditors.erase(
+                    GlobalVar::externalEditors.begin() + index);
+                editorNameCapture.reset();
+                editorNameBuffer.clear();
+                saveExternalEditors();
+                scrollOffsets[0] = SettingLayout::clampScrollOffset(
+                    contentHeightForTab(0), scrollOffsets[0]);
+            }
+        }
+        isNeedRefreshUI = true;
+    }
+
     template<typename T>
     void toggle(std::set<T>& values, const T& value) {
         if (!values.insert(value).second)
@@ -675,7 +791,14 @@ private:
             static_cast<int>(filteredExtensions().size()) : 0;
         const auto command = SettingCommand::resolve(curTabIdx, m_x, m_y,
             scrollOffsets[curTabIdx], visibleExtensionCount,
-            curTabIdx == 1 ? associationButtonsY() : 0);
+            curTabIdx == 1 ? associationButtonsY() : 0,
+            static_cast<int>(GlobalVar::externalEditors.size()));
+
+        if (editorNameCapture &&
+            !(command.kind == SettingCommand::Kind::GeneralEditorRename &&
+                command.index == static_cast<int>(*editorNameCapture))) {
+            commitEditorName();
+        }
 
         if (command.kind == SettingCommand::Kind::Tab) {
             const int newTab = command.index;
@@ -701,6 +824,12 @@ private:
         case SettingCommand::Kind::GeneralToggle:
         case SettingCommand::Kind::GeneralRadioOption:
             handleGeneralTab(contentX, contentY);
+            break;
+        case SettingCommand::Kind::GeneralEditorAdd:
+        case SettingCommand::Kind::GeneralEditorRename:
+        case SettingCommand::Kind::GeneralEditorPath:
+        case SettingCommand::Kind::GeneralEditorRemove:
+            handleExternalEditor(command);
             break;
         case SettingCommand::Kind::AssociationSearch:
         case SettingCommand::Kind::AssociationExtension:
@@ -734,6 +863,18 @@ private:
     }
 
     void onKeyDown(WPARAM key) override {
+        if (curTabIdx == 0 && editorNameCapture) {
+            if (key == VK_ESCAPE) {
+                editorNameCapture.reset();
+                editorNameBuffer.clear();
+                isNeedRefreshUI = true;
+                return;
+            }
+            if (key == VK_RETURN) {
+                commitEditorName();
+                return;
+            }
+        }
         if (curTabIdx == 2 && shortcutCapture) {
             if (key == VK_ESCAPE) {
                 shortcutCapture.reset();
@@ -777,6 +918,23 @@ private:
     }
 
     void onChar(WPARAM character) override {
+        if (curTabIdx == 0 && editorNameCapture) {
+            if (character == 8) {
+                if (!editorNameBuffer.empty())
+                    editorNameBuffer.pop_back();
+            }
+            else if (character == 13 || character == 27) {
+                return;
+            }
+            else if (character >= 32 && editorNameBuffer.size() < 80) {
+                editorNameBuffer.push_back(static_cast<wchar_t>(character));
+            }
+            else {
+                return;
+            }
+            isNeedRefreshUI = true;
+            return;
+        }
         if (curTabIdx != 1 || !associationSearchActive)
             return;
         if (character == 8) {
@@ -805,6 +963,8 @@ private:
             return;
         hwnd = m_hwnd;
         runMessageLoop();
+        if (editorNameCapture)
+            commitEditorName();
         if (curTabIdx == 1)
             finishAssociateTab();
     }
@@ -818,6 +978,8 @@ private:
             fwrite(&GlobalVar::settingParameter, 1, sizeof(SettingParameter), file);
             fclose(file);
         }
+        ExternalEditorConfig::save(GlobalVar::externalEditorsPath,
+            GlobalVar::externalEditors);
     }
 
 public:

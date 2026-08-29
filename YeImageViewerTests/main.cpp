@@ -3,6 +3,7 @@
 #include "BackgroundRenderer.h"
 #include "BackgroundPolicy.h"
 #include "EscapeBehavior.h"
+#include "ExternalEditorConfig.h"
 #include "FramePacingPolicy.h"
 #include "HomeScreenLayout.h"
 #include "ImageInterpolation.h"
@@ -808,6 +809,14 @@ void expectSettingLayout() {
         everySettingControlHasHitTarget &= hasCenter(rect, SettingLayout::GENERAL_CONTENT_HEIGHT);
     for (const auto& rect : SettingLayout::GENERAL_RADIOS)
         everySettingControlHasHitTarget &= hasCenter(rect, SettingLayout::GENERAL_CONTENT_HEIGHT);
+    for (int index = 0; index < 10; ++index) {
+        everySettingControlHasHitTarget &=
+            hasCenter(SettingLayout::generalEditorName(index), SettingLayout::GENERAL_CONTENT_HEIGHT) &&
+            hasCenter(SettingLayout::generalEditorPath(index), SettingLayout::GENERAL_CONTENT_HEIGHT) &&
+            hasCenter(SettingLayout::generalEditorRemove(index), SettingLayout::GENERAL_CONTENT_HEIGHT);
+    }
+    everySettingControlHasHitTarget &= hasCenter(
+        SettingLayout::generalEditorAdd(10), SettingLayout::GENERAL_CONTENT_HEIGHT);
     everySettingControlHasHitTarget &= hasCenter(SettingLayout::ASSOCIATION_SEARCH, 600);
     for (int index = 0; index < 4; ++index)
         everySettingControlHasHitTarget &= hasCenter(
@@ -845,6 +854,40 @@ void expectSettingLayout() {
             everySettingControlRoutes &= command.kind == SettingCommand::Kind::GeneralRadioOption &&
                 command.index == rowIndex && command.option == option;
         }
+    }
+    {
+        const int generalMaxScroll = SettingLayout::maxScrollOffset(
+            SettingLayout::generalContentHeight(10));
+        for (int index = 0; index < 10; ++index) {
+            constexpr std::array<SettingCommand::Kind, 3> editorKinds{
+                SettingCommand::Kind::GeneralEditorRename,
+                SettingCommand::Kind::GeneralEditorPath,
+                SettingCommand::Kind::GeneralEditorRemove };
+            const std::array<SettingLayout::Rect, 3> editorRects{
+                SettingLayout::generalEditorName(index),
+                SettingLayout::generalEditorPath(index),
+                SettingLayout::generalEditorRemove(index) };
+            for (int part = 0; part < 3; ++part) {
+                const auto rect = editorRects[part];
+                const int generalScroll = std::clamp(
+                    rect.y + rect.height / 2 -
+                        SettingLayout::CONTENT_VIEW_HEIGHT / 2,
+                    0, generalMaxScroll);
+                const auto command = SettingCommand::resolve(0,
+                    rect.x + rect.width / 2,
+                    SettingLayout::TAB_HEIGHT + rect.y + rect.height / 2 - generalScroll,
+                    generalScroll, 0, 0, 10);
+                everySettingControlRoutes &= command.kind == editorKinds[part] &&
+                    command.index == index;
+            }
+        }
+        const auto add = SettingLayout::generalEditorAdd(10);
+        const int generalScroll = generalMaxScroll;
+        everySettingControlRoutes &= SettingCommand::resolve(0,
+            add.x + add.width / 2,
+            SettingLayout::TAB_HEIGHT + add.y + add.height / 2 - generalScroll,
+            generalScroll, 0, 0, 10).kind ==
+            SettingCommand::Kind::GeneralEditorAdd;
     }
     constexpr int associationCount = 24;
     constexpr int associationButtonsY = 185;
@@ -930,7 +973,7 @@ void expectSettingLayout() {
             SettingLayout::shortcutKeyboardRow(SettingLayout::SHORTCUT_KEYBOARD_ROW_COUNT - 1).y &&
         SettingLayout::shortcutItemsAreSeparated());
     passOrFail("only overflowing settings pages enable a compact scrollbar",
-        SettingLayout::maxScrollOffset(SettingLayout::GENERAL_CONTENT_HEIGHT) == 0 &&
+        SettingLayout::maxScrollOffset(SettingLayout::GENERAL_CONTENT_HEIGHT) > 0 &&
         SettingLayout::maxScrollOffset(SettingLayout::ABOUT_CONTENT_HEIGHT) == 0 &&
         SettingLayout::maxScrollOffset(SettingLayout::SHORTCUT_CONTENT_HEIGHT) > 0 &&
         SettingLayout::scrollbarThumbHeight(SettingLayout::SHORTCUT_CONTENT_HEIGHT) >= 32 &&
@@ -949,17 +992,84 @@ void expectSettingLayout() {
             SettingLayout::maxScrollOffset(SettingLayout::SHORTCUT_CONTENT_HEIGHT));
 }
 
+void expectExternalEditorConfig() {
+    std::vector<ExternalEditorConfig::Entry> editors;
+    const auto paintPath = L"C:\\Windows\\System32\\mspaint.exe";
+    passOrFail("external editor defaults to the executable name when no custom name is supplied",
+        ExternalEditorConfig::defaultName(paintPath) == L"mspaint" &&
+        ExternalEditorConfig::resolvedName(L"   ", paintPath) == L"mspaint" &&
+        ExternalEditorConfig::add(editors, { L"画图", paintPath }));
+    passOrFail("external editor menu labels use a space without parentheses",
+        ExternalEditorConfig::menuLabel(editors.front(), true) == L"在 画图" &&
+        ExternalEditorConfig::menuLabel(editors.front(), false) == L"Open in 画图" &&
+        ExternalEditorConfig::menuLabel(editors.front(), true).find(L'（') ==
+            std::wstring::npos &&
+        ExternalEditorConfig::menuLabel(editors.front(), true).find(L'(') ==
+            std::wstring::npos);
+
+    for (int index = 1; index < 10; ++index) {
+        ExternalEditorConfig::add(editors,
+            { L"编辑器 " + std::to_wstring(index),
+                L"C:\\Editors\\editor" + std::to_wstring(index) + L".exe" });
+    }
+    passOrFail("external editor settings accept ten user-named applications and reject an eleventh",
+        editors.size() == ExternalEditorConfig::MAX_EDITORS &&
+        !ExternalEditorConfig::add(editors,
+            { L"Too many", L"C:\\Editors\\extra.exe" }));
+
+    passOrFail("selecting an existing editor path updates its custom display name without duplication",
+        ExternalEditorConfig::add(editors, { L"日常画图", paintPath }) &&
+        editors.size() == ExternalEditorConfig::MAX_EDITORS &&
+        editors.front().name == L"日常画图");
+
+    const auto tempDirectory = std::filesystem::temp_directory_path() /
+        (L"YeImageViewer-ExternalEditors-" + std::to_wstring(GetCurrentProcessId()));
+    const auto configFile = tempDirectory / ExternalEditorConfig::FILE_NAME;
+    std::error_code ignored;
+    std::filesystem::create_directories(tempDirectory, ignored);
+    const bool saved = ExternalEditorConfig::save(configFile.wstring(), editors);
+    const auto loaded = ExternalEditorConfig::load(configFile.wstring());
+    passOrFail("external editor names and Unicode executable paths persist in a dedicated INI file",
+        saved && loaded == editors && std::filesystem::file_size(configFile, ignored) > 2);
+    std::filesystem::remove(configFile, ignored);
+    std::filesystem::remove(tempDirectory, ignored);
+
+    passOrFail("external editor image argument preserves spaces and Unicode with quotes",
+        ExternalEditorConfig::quoteImageArgument(L"D:\\Pictures\\测试 图片.png") ==
+            L"\"D:\\Pictures\\测试 图片.png\"");
+}
+
 void expectHomeScreenLayout() {
-    passOrFail("startup help is code-laid out instead of the legacy JarkViewer diagram",
+    passOrFail("startup is a code-laid-out functional page without a raster hero image",
         !HomeScreenLayout::USES_LEGACY_JARKVIEWER_DIAGRAM &&
+        !HomeScreenLayout::USES_RASTER_HERO_IMAGE &&
         HomeScreenLayout::WIDTH == 500 && HomeScreenLayout::HEIGHT == 350 &&
         HomeScreenLayout::hasSeparatedGuideCards());
-    passOrFail("startup opening guide and footer stay inside the canvas",
-        HomeScreenLayout::isInside(HomeScreenLayout::OPEN_CARD) &&
+    passOrFail("startup primary open button and footer stay inside the canvas",
+        HomeScreenLayout::isInside(HomeScreenLayout::OPEN_BUTTON) &&
         HomeScreenLayout::isInside(HomeScreenLayout::FOOTER) &&
-        HomeScreenLayout::OPEN_CARD.y < HomeScreenLayout::GUIDE_CARDS.front().y &&
+        HomeScreenLayout::OPEN_BUTTON.y < HomeScreenLayout::GUIDE_CARDS.front().y &&
         HomeScreenLayout::GUIDE_CARDS.front().y +
             HomeScreenLayout::GUIDE_CARDS.front().height < HomeScreenLayout::FOOTER.y);
+    passOrFail("startup text is generated at native monitor DPI without post-raster enlargement",
+        HomeScreenLayout::nativeCanvas(96).width == 500 &&
+        HomeScreenLayout::nativeCanvas(96).height == 350 &&
+        HomeScreenLayout::nativeCanvas(144).width == 750 &&
+        HomeScreenLayout::nativeCanvas(144).height == 525);
+    const int buttonCenterX = HomeScreenLayout::OPEN_BUTTON.x +
+        HomeScreenLayout::OPEN_BUTTON.width / 2;
+    const int buttonCenterY = HomeScreenLayout::OPEN_BUTTON.y +
+        HomeScreenLayout::OPEN_BUTTON.height / 2;
+    passOrFail("startup open button hit target follows native and DPI-scaled rendering",
+        HomeScreenLayout::hitOpenButton(
+            { 0, 0, HomeScreenLayout::WIDTH, HomeScreenLayout::HEIGHT },
+            buttonCenterX, buttonCenterY) &&
+        HomeScreenLayout::hitOpenButton(
+            { 50, 75, HomeScreenLayout::WIDTH * 2, HomeScreenLayout::HEIGHT * 2 },
+            50 + buttonCenterX * 2, 75 + buttonCenterY * 2) &&
+        !HomeScreenLayout::hitOpenButton(
+            { 50, 75, HomeScreenLayout::WIDTH * 2, HomeScreenLayout::HEIGHT * 2 },
+            50 + 8, 75 + 8));
 }
 
 void expectTextRendering() {
@@ -1208,6 +1318,7 @@ int main(int argc, char* argv[]) {
     expectWindowTitlePresentation();
     expectWheelInput();
     expectShortcutConfig();
+    expectExternalEditorConfig();
     expectRotationPersistence();
     expectRenamePolicy();
     if (argc >= 2) {
