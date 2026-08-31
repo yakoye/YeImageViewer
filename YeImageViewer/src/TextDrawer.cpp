@@ -49,15 +49,15 @@ void TextDrawer::putText(cv::Mat& img, const int x, const int y, const char* str
             codePoint = str[i];
             i++;
         }
-        else if ((str[i] & 0xe0) == 0xc0) { // 110x'xxxx 10xx'xxxx
+        else if ((str[i] & 0xe0) == 0xc0 && i + 1 < len) { // 110x'xxxx 10xx'xxxx
             codePoint = ((str[i] & 0x1f) << 6) | (str[i + 1] & 0x3f);
             i += 2;
         }
-        else if ((str[i] & 0xf0) == 0xe0) { // 1110'xxxx 10xx'xxxx 10xx'xxxx
+        else if ((str[i] & 0xf0) == 0xe0 && i + 2 < len) { // 1110'xxxx 10xx'xxxx 10xx'xxxx
             codePoint = ((str[i] & 0x0f) << 12) | ((str[i + 1] & 0x3f) << 6) | (str[i + 2] & 0x3f);
             i += 3;
         }
-        else if ((str[i] & 0xf8) == 0xf0) { // 1111'0xxx 10xx'xxxx 10xx'xxxx 10xx'xxxx
+        else if ((str[i] & 0xf8) == 0xf0 && i + 3 < len) { // 1111'0xxx 10xx'xxxx 10xx'xxxx 10xx'xxxx
             codePoint = ((str[i] & 0x07) << 18) | ((str[i + 1] & 0x3f) << 12) | ((str[i + 2] & 0x3f) << 6) | (str[i + 3] & 0x3f);
             i += 4;
         }
@@ -95,15 +95,15 @@ void TextDrawer::putAlignCenter(cv::Mat& img, cv::Rect rect, const char* str, in
             codePoint = str[i];
             i++;
         }
-        else if ((str[i] & 0xe0) == 0xc0) { // 110x'xxxx 10xx'xxxx
+        else if ((str[i] & 0xe0) == 0xc0 && i + 1 < len) { // 110x'xxxx 10xx'xxxx
             codePoint = ((str[i] & 0x1f) << 6) | (str[i + 1] & 0x3f);
             i += 2;
         }
-        else if ((str[i] & 0xf0) == 0xe0) { // 1110'xxxx 10xx'xxxx 10xx'xxxx
+        else if ((str[i] & 0xf0) == 0xe0 && i + 2 < len) { // 1110'xxxx 10xx'xxxx 10xx'xxxx
             codePoint = ((str[i] & 0x0f) << 12) | ((str[i + 1] & 0x3f) << 6) | (str[i + 2] & 0x3f);
             i += 3;
         }
-        else if ((str[i] & 0xf8) == 0xf0) { // 1111'0xxx 10xx'xxxx 10xx'xxxx 10xx'xxxx
+        else if ((str[i] & 0xf8) == 0xf0 && i + 3 < len) { // 1111'0xxx 10xx'xxxx 10xx'xxxx 10xx'xxxx
             codePoint = ((str[i] & 0x07) << 18) | ((str[i + 1] & 0x3f) << 12) | ((str[i + 2] & 0x3f) << 6) | (str[i + 3] & 0x3f);
             i += 4;
         }
@@ -168,15 +168,15 @@ void TextDrawer::putAlignLeft(cv::Mat& img, cv::Rect rect, const char* str, intU
             codePoint = str[i];
             i++;
         }
-        else if ((str[i] & 0xe0) == 0xc0) { // 110x'xxxx 10xx'xxxx
+        else if ((str[i] & 0xe0) == 0xc0 && i + 1 < len) { // 110x'xxxx 10xx'xxxx
             codePoint = ((str[i] & 0x1f) << 6) | (str[i + 1] & 0x3f);
             i += 2;
         }
-        else if ((str[i] & 0xf0) == 0xe0) { // 1110'xxxx 10xx'xxxx 10xx'xxxx
+        else if ((str[i] & 0xf0) == 0xe0 && i + 2 < len) { // 1110'xxxx 10xx'xxxx 10xx'xxxx
             codePoint = ((str[i] & 0x0f) << 12) | ((str[i + 1] & 0x3f) << 6) | (str[i + 2] & 0x3f);
             i += 3;
         }
-        else if ((str[i] & 0xf8) == 0xf0) { // 1111'0xxx 10xx'xxxx 10xx'xxxx 10xx'xxxx
+        else if ((str[i] & 0xf8) == 0xf0 && i + 3 < len) { // 1111'0xxx 10xx'xxxx 10xx'xxxx 10xx'xxxx
             codePoint = ((str[i] & 0x07) << 18) | ((str[i + 1] & 0x3f) << 12) | ((str[i + 2] & 0x3f) << 6) | (str[i + 3] & 0x3f);
             i += 4;
         }
