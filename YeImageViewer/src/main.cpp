@@ -483,6 +483,15 @@ class YeImageViewerApp : public D3D11App {
 public:
     static inline bool isLowZoom = false;
 
+    // 导出帧在后台线程写文件。进程退出会直接终止这些线程，未落盘的内容会丢失，
+    // 因此记录在执行的任务数，退出前等它们写完。
+    static inline std::atomic<int> activeExportTasks{ 0 };
+
+    // 在线程体开头构造，无论正常结束还是抛出都会把计数减回去
+    struct ExportTaskScope {
+        ~ExportTaskScope() { --activeExportTasks; }
+    };
+
     OperateQueue operateQueue;
 
     CursorPos cursorPos = CursorPos::centerArea;
@@ -1598,8 +1607,10 @@ public:
             if (IDYES == MessageBoxW(m_hWnd,
                 std::format(L"{}{}", getUIStringW(5), frames.size()).c_str(),
                 getUIStringW(6), MB_YESNO | MB_ICONQUESTION)) {
+                ++activeExportTasks; // 在线程启动前计数，避免刚请求就退出时漏等
                 std::thread saveThread([](std::wstring filePath,
                     std::shared_ptr<ImageAsset> imageAssetPtr) {
+                        ExportTaskScope exportScope;
                         auto& sourceFrames = imageAssetPtr->frames;
                         auto dotIdx = filePath.find_last_of(L".");
                         if (dotIdx == std::string::npos)
@@ -1838,7 +1849,9 @@ public:
                     getUIStringW(6),
                     MB_YESNO | MB_ICONQUESTION
                 )) {
+                    ++activeExportTasks; // 在线程启动前计数，避免刚请求就退出时漏等
                     std::thread saveThread([](std::wstring filePath, std::shared_ptr<ImageAsset> imageAssetPtr) {
+                        ExportTaskScope exportScope;
                         auto& frames = imageAssetPtr->frames;
                         auto dotIdx = filePath.find_last_of(L".");
                         if (dotIdx == string::npos)
@@ -4146,6 +4159,11 @@ public:
     void OnRequestExitOtherWindows() {
         Printer::requestExit();
         Setting::requestExit();
+
+        // 等后台导出把文件写完再退出，否则进程终止会留下被截断的 PNG。
+        // 设 10 秒上限，避免异常情况下卡住关闭流程。
+        for (int waited = 0; waited < 200 && activeExportTasks.load() > 0; ++waited)
+            Sleep(50);
     }
 };
 
