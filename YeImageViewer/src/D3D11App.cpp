@@ -276,6 +276,11 @@ HRESULT D3D11App::Initialize(HINSTANCE hInstance) {
     hr = m_hWnd ? S_OK : E_FAIL;
 
     if (SUCCEEDED(hr)) {
+        // 主窗口只响应单键快捷键，不需要输入法：把它从这个窗口摘掉，按键原样送达。
+        // 不能用 ImmDisableIME —— 那是线程级且不可撤销的开关，会让重命名框也
+        // 打不出中文。按窗口摘除只影响这一个窗口。
+        ::ImmAssociateContext(m_hWnd, nullptr);
+
         CreateDeviceResources();
         ApplyWindowBackgroundMode();
 

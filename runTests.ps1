@@ -74,7 +74,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.36.29.0"
+$expectedFileVersion = "1.36.30.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -392,6 +392,9 @@ public static class YeImageViewerTestNativeV1365
 
     [DllImport("user32.dll")]
     public static extern bool GetGUIThreadInfo(uint threadId, ref GUITHREADINFO info);
+
+    [DllImport("imm32.dll")]
+    public static extern IntPtr ImmGetDefaultIMEWnd(IntPtr window);
 
     [DllImport("user32.dll")]
     public static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
@@ -1293,6 +1296,126 @@ finally {
     }
     if (Test-Path -LiteralPath $renameTestDirectory) {
         Remove-Item -LiteralPath $renameTestDirectory
+    }
+}
+
+Write-Host "Checking rename-dialog input-method availability..."
+$imeSourceGlobs = @(
+    (Join-Path $repoRoot "YeImageViewer\src\*.cpp"),
+    (Join-Path $repoRoot "YeImageViewer\include\*.h")
+)
+$imeThreadDisableHits = @(Select-String -Path $imeSourceGlobs -SimpleMatch -Pattern "ImmDisableIME(")
+if ($imeThreadDisableHits.Count -gt 0) {
+    throw "IME regression failed: ImmDisableIME is thread-wide and cannot be undone, so it also strips Chinese input from the rename dialog. Detach the input method per window instead. Found at $($imeThreadDisableHits[0].Path):$($imeThreadDisableHits[0].LineNumber)."
+}
+foreach ($imeDetachSite in @(
+    @{ Path = (Join-Path $repoRoot "YeImageViewer\src\D3D11App.cpp"); Marker = "ImmAssociateContext(m_hWnd, nullptr)" },
+    @{ Path = (Join-Path $repoRoot "YeImageViewer\include\MatWindow.h"); Marker = "ImmAssociateContext(m_hwnd, nullptr)" }
+)) {
+    if (-not (Select-String -LiteralPath $imeDetachSite.Path -SimpleMatch -Pattern $imeDetachSite.Marker -Quiet)) {
+        throw "IME regression failed: $($imeDetachSite.Path) must keep '$($imeDetachSite.Marker)' so an active input method cannot swallow single-key shortcuts."
+    }
+}
+if (Select-String -LiteralPath (Join-Path $repoRoot "YeImageViewer\src\main.cpp") -SimpleMatch -Pattern "ImmAssociateContext" -Quiet) {
+    throw "IME regression failed: the rename dialog must keep the default input context, so main.cpp must not detach the input method."
+}
+$imeTestDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Ime-" + [Guid]::NewGuid().ToString("N"))
+$imeTestViewer = Join-Path $imeTestDirectory "YeImageViewer.exe"
+$imeFixture = Join-Path $imeTestDirectory "ime-fixture.png"
+$imeTestProcess = $null
+try {
+    [void](New-Item -ItemType Directory -Path $imeTestDirectory)
+    Copy-Item -LiteralPath $viewer -Destination $imeTestViewer
+    Copy-Item -LiteralPath $jaggedFixture -Destination $imeFixture
+    $imeTestProcess = Start-Process -FilePath $imeTestViewer -ArgumentList ('"' + $imeFixture + '"') -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(6)
+    do {
+        Start-Sleep -Milliseconds 200
+        $imeTestProcess.Refresh()
+    } while (-not $imeTestProcess.HasExited -and $imeTestProcess.MainWindowHandle -eq 0 -and [DateTime]::UtcNow -lt $deadline)
+    if ($imeTestProcess.HasExited -or $imeTestProcess.MainWindowHandle -eq 0 -or -not $imeTestProcess.Responding) {
+        throw "IME regression failed: the viewer did not open the input-method fixture."
+    }
+
+    # A thread-wide ImmDisableIME leaves the whole process without a default IME
+    # window, so no text service ever loads. Detaching the context per window does
+    # not. That difference is what this check reads.
+    $imeMainWindow = [IntPtr]$imeTestProcess.MainWindowHandle
+    if ([YeImageViewerTestNativeV1365]::ImmGetDefaultIMEWnd($imeMainWindow) -eq [IntPtr]::Zero) {
+        throw "IME regression failed: the viewer thread has no default IME window, so no input method can load into the process and the rename dialog cannot type Chinese."
+    }
+
+    [void][YeImageViewerTestNativeV1365]::PostMessage($imeMainWindow, 0x0100, [UIntPtr]0x71, [IntPtr]::Zero)
+    $imeDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $imeRenameWindow = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$imeTestProcess.Id, "YeImageViewerRenameWnd")
+    } while ($imeRenameWindow -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $imeDeadline)
+    if ($imeRenameWindow -eq [IntPtr]::Zero) {
+        throw "IME regression failed: F2 did not open the rename window."
+    }
+    $imeRenameEdit = [YeImageViewerTestNativeV1365]::GetDlgItem($imeRenameWindow, 1001)
+    if ($imeRenameEdit -eq [IntPtr]::Zero) {
+        throw "IME regression failed: the rename edit control was not available."
+    }
+    if ([YeImageViewerTestNativeV1365]::ImmGetDefaultIMEWnd($imeRenameEdit) -eq [IntPtr]::Zero) {
+        throw "IME regression failed: the rename edit control has no default IME window."
+    }
+
+    # Composition lands in the focused window, so the edit control has to own focus.
+    $imeThreadId = [YeImageViewerTestNativeV1365]::GetWindowThreadProcessId($imeMainWindow, [IntPtr]::Zero)
+    $imeThreadInfo = New-Object YeImageViewerTestNativeV1365+GUITHREADINFO
+    $imeThreadInfo.Size = [Runtime.InteropServices.Marshal]::SizeOf($imeThreadInfo)
+    $imeThreadInfoAvailable = $false
+    $imeFocusDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        $imeThreadInfoAvailable = [YeImageViewerTestNativeV1365]::GetGUIThreadInfo(
+            $imeThreadId, [ref]$imeThreadInfo)
+        if ($imeThreadInfoAvailable -and $imeThreadInfo.Focus -eq $imeRenameEdit) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $imeFocusDeadline)
+    if (-not $imeThreadInfoAvailable -or $imeThreadInfo.Focus -ne $imeRenameEdit) {
+        throw "IME regression failed: the rename edit control never took keyboard focus, so an input method would compose into the wrong window."
+    }
+
+    [void][YeImageViewerTestNativeV1365]::SendMessage($imeRenameWindow, 0x0111, [UIntPtr]2, [IntPtr]::Zero)
+    $imeDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $imeRenameWindow = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$imeTestProcess.Id, "YeImageViewerRenameWnd")
+    } while ($imeRenameWindow -ne [IntPtr]::Zero -and [DateTime]::UtcNow -lt $imeDeadline)
+    if ($imeRenameWindow -ne [IntPtr]::Zero -or
+        -not [YeImageViewerTestNativeV1365]::IsWindowEnabled($imeMainWindow) -or
+        -not (Test-Path -LiteralPath $imeFixture)) {
+        throw "IME regression failed: cancelling the rename dialog did not restore the viewer."
+    }
+    Write-Host "PASS the process keeps a loadable input method and the rename edit control owns keyboard focus."
+}
+finally {
+    if ($imeTestProcess -and -not $imeTestProcess.HasExited) {
+        [void]$imeTestProcess.CloseMainWindow()
+        if (-not $imeTestProcess.WaitForExit(3000)) {
+            Stop-Process -Id $imeTestProcess.Id -Force
+            $imeTestProcess.WaitForExit()
+        }
+    }
+    foreach ($imeFile in @(
+        $imeTestViewer,
+        $imeFixture,
+        (Join-Path $imeTestDirectory "YeImageViewer.db"),
+        (Join-Path $imeTestDirectory "YeImageViewer.rotations.db"),
+        (Join-Path $imeTestDirectory "YeImageViewer.rotations.db.tmp")
+    )) {
+        if (Test-Path -LiteralPath $imeFile) {
+            Remove-Item -LiteralPath $imeFile -Force
+        }
+    }
+    if (Test-Path -LiteralPath $imeTestDirectory) {
+        Remove-Item -LiteralPath $imeTestDirectory
     }
 }
 
