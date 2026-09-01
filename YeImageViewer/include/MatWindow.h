@@ -53,6 +53,10 @@ protected:
         if (!m_hwnd)
             return false;
 
+        // 设置/打印窗口靠单键快捷键和快捷键录制工作，文本输入也是自绘的、不走
+        // IME 合成，所以把输入法从窗口摘掉，保证按键原样送达。
+        ::ImmAssociateContext(m_hwnd, nullptr);
+
         jarkUtils::disableWindowResize(m_hwnd);
 
         // 设置图标

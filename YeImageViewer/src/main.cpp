@@ -38,8 +38,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.36.29";
-constinit int appVersionCode = 13629; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.36.30";
+constinit int appVersionCode = 13630; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -4239,7 +4239,6 @@ int WINAPI wWinMain(
     ::_wputenv_s(L"OPENCV_IO_ENABLE_OPENEXR", L"1");
 
     Exiv2::enableBMFF();
-    ::ImmDisableIME(GetCurrentThreadId()); // 禁用输入法，防止干扰按键操作
 
     ::HeapSetInformation(nullptr, HeapEnableTerminationOnCorruption, nullptr, 0);
     if (!SUCCEEDED(::CoInitialize(nullptr)))
