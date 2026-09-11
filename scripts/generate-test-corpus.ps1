@@ -67,6 +67,37 @@ function Write-Step {
     Write-Host "  $Message"
 }
 
+# 往 JPEG 里插入一段只含 Orientation 的最小 EXIF APP1。
+#
+# 不能指望 ImageMagick 的 -orient：源图是 PNG 时它没有 EXIF 结构可写，方向只留在内部
+# 属性里，产出的 JPEG 里 EXIF:Orientation 是空的——那样测的就成了素材缺陷，而不是
+# 查看器的方向处理。
+function Add-ExifOrientation {
+    param([string]$Path, [int]$Orientation)
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 2 -or $bytes[0] -ne 0xFF -or $bytes[1] -ne 0xD8) {
+        throw "不是 JPEG，无法写入 EXIF：$Path"
+    }
+
+    # TIFF 头（小端）+ 一条 IFD0 记录：tag 0x0112 (Orientation)，类型 SHORT，值内联。
+    $tiff = [byte[]]@(
+        0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
+        0x01, 0x00,
+        0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00,
+        [byte]$Orientation, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00
+    )
+    $payload = [Text.Encoding]::ASCII.GetBytes("Exif") + [byte[]]@(0x00, 0x00) + $tiff
+    $segmentLength = $payload.Length + 2   # 段长度含这两个长度字节本身
+    $app1 = [byte[]]@(0xFF, 0xE1,
+        [byte](($segmentLength -shr 8) -band 0xFF),
+        [byte]($segmentLength -band 0xFF)) + $payload
+
+    $rest = $bytes[2..($bytes.Length - 1)]
+    [IO.File]::WriteAllBytes($Path, ([byte[]]@(0xFF, 0xD8) + $app1 + $rest))
+}
+
 # ---------------------------------------------------------------- reference
 # 人工视觉参考图：方向、镜像、裁切、缩放算法出问题时，这几张图能一眼看出来。
 function Build-Reference {
@@ -403,8 +434,10 @@ function Build-Exif {
         $name = "exif_orientation_{0}.jpg" -f $entry.Index
         $target = Join-Path $dir $name
         if (-not (Test-ShouldBuild $target)) { continue }
-        $args = @($base) + $entry.Transform + @('-quality', '92', '-orient', $entry.Orient, $target)
+        # 先出干净的 JPEG（-strip 去掉 ImageMagick 自己带的元数据），再插入 EXIF 方向。
+        $args = @($base) + $entry.Transform + @('-strip', '-quality', '92', $target)
         Invoke-Magick $args
+        Add-ExifOrientation -Path $target -Orientation $entry.Index
         Write-Step $name
     }
 

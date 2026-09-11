@@ -75,3 +75,17 @@ ImageMagick。
 | `KNOWN_LIMITATION` | 能打开，但存在明确登记的已知限制 |
 | `SKIPPED` | 素材不在本地，未执行 |
 | `ERROR` | 测试框架自身出错——绝不记为 PASS |
+
+## 一条教训：先证明素材是对的
+
+`12-exif/` 最初用 ImageMagick 的 `-orient` 生成，测出 Orientation 5～8 失败，一度被当成
+查看器的缺陷。实际是素材问题：源图是 PNG，没有 EXIF 结构，`-orient` 只把方向记在
+ImageMagick 的内部属性里，产出的 JPEG 中 `EXIF:Orientation` 是空的——测的是素材缺陷，
+不是产品行为。改为手工插入最小 EXIF APP1 段后，八个方向全部通过；把代码改动撤掉重测
+同样全部通过，可见方向处理原本就是对的。
+
+所以新增一类素材时，先用独立工具验证素材本身带着预期的属性，再让它参与判定：
+
+```powershell
+magick identify -format "%[EXIF:Orientation]" test\corpus\12-exif\exif_orientation_6.jpg
+```
