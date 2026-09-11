@@ -1,0 +1,1174 @@
+{
+  "version": 1,
+  "generatedAt": "2026-09-12T07:31:10+08:00",
+  "note": "由 scripts/build-corpus-manifest.ps1 生成；人工条目写在 manifest.overrides.json。",
+  "suites": {
+    "core": [
+      "reference",
+      "dimensions",
+      "extension-mismatch",
+      "path-filename",
+      "exif"
+    ],
+    "corrupt": [
+      "corrupt"
+    ],
+    "large": [
+      "large-image"
+    ]
+  },
+  "cases": [
+    {
+      "id": "00-reference-alpha_gradient-png",
+      "path": "00-reference/alpha_gradient.png",
+      "category": "reference",
+      "extension": "png",
+      "bytes": 1137,
+      "sha256": "48A2BB93AAB324B7170D62622477062B2527CE99CED0D38A75356F365CF803D5",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 256,
+        "height": 128
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "00-reference-checkerboard-png",
+      "path": "00-reference/checkerboard.png",
+      "category": "reference",
+      "extension": "png",
+      "bytes": 989,
+      "sha256": "FE7DF950C1016C9A9C59AB221FECC0221394789F37D6B4E6386CDE3EABB41D4D",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 512,
+        "height": 512
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "00-reference-color_corners-png",
+      "path": "00-reference/color_corners.png",
+      "category": "reference",
+      "extension": "png",
+      "bytes": 687,
+      "sha256": "625FE3A9C39078B32AC9D17D7882BC3BDFADA260F1C0E915CA3F27A047F895A9",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 400,
+        "height": 400
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "00-reference-grayscale_0_255-png",
+      "path": "00-reference/grayscale_0_255.png",
+      "category": "reference",
+      "extension": "png",
+      "bytes": 825,
+      "sha256": "C4AB41BE890F7E5C9D38FD41C3D40BC016A270A190F34CA8D585471169D4DC3D",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 128,
+        "height": 256
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "00-reference-one_pixel_grid-png",
+      "path": "00-reference/one_pixel_grid.png",
+      "category": "reference",
+      "extension": "png",
+      "bytes": 342,
+      "sha256": "6D4809472DAAC2267EF074F684FF0A0D759B28A04D3E6924951ED56D2CAA4541",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 256,
+        "height": 256
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "00-reference-orientation_text-png",
+      "path": "00-reference/orientation_text.png",
+      "category": "reference",
+      "extension": "png",
+      "bytes": 6235,
+      "sha256": "81EC2FDBBFFB9EF9B07272B1C4A5388CC319D798F824B917C3509AC70977D89E",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 600,
+        "height": 400
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "00-reference-resolution_grid-png",
+      "path": "00-reference/resolution_grid.png",
+      "category": "reference",
+      "extension": "png",
+      "bytes": 510,
+      "sha256": "7FF113D2DCDC9A7BD0D8D42B87BA8CF7D90BD9A2F30742ECF50EBB190963C4E5",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 512,
+        "height": 512
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "00-reference-rgb_bars-png",
+      "path": "00-reference/rgb_bars.png",
+      "category": "reference",
+      "extension": "png",
+      "bytes": 565,
+      "sha256": "F2C372283931D42B467B1757A115FE717D0B2D108DEB6C1720E1731D58B881D1",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 480,
+        "height": 480
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "12-exif-exif_orientation_1-jpg",
+      "path": "12-exif/exif_orientation_1.jpg",
+      "category": "exif",
+      "extension": "jpg",
+      "bytes": 13444,
+      "sha256": "FA78C029C300E5BA836D505EB6B5FC899EA05043BF5E039005B735B8E6CC6AF2",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 600,
+        "height": 400
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "12-exif-exif_orientation_2-jpg",
+      "path": "12-exif/exif_orientation_2.jpg",
+      "category": "exif",
+      "extension": "jpg",
+      "bytes": 13442,
+      "sha256": "7FF450C6B0B39B95C2FCCBDE0F04EC145B3C705F207ACFA3517D1A834F7C7FA9",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 600,
+        "height": 400
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "12-exif-exif_orientation_3-jpg",
+      "path": "12-exif/exif_orientation_3.jpg",
+      "category": "exif",
+      "extension": "jpg",
+      "bytes": 13437,
+      "sha256": "57C519F5B12BD840D7EB0ADF5854CBBAF43DF606CBA311B357BAE89DC7E6B289",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 600,
+        "height": 400
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "12-exif-exif_orientation_4-jpg",
+      "path": "12-exif/exif_orientation_4.jpg",
+      "category": "exif",
+      "extension": "jpg",
+      "bytes": 13440,
+      "sha256": "DB28BA4F2F7D3BA5C97156658A8A964A30F9415594DECB32A764F5ED9A469BC3",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 600,
+        "height": 400
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "12-exif-exif_orientation_5-jpg",
+      "path": "12-exif/exif_orientation_5.jpg",
+      "category": "exif",
+      "extension": "jpg",
+      "bytes": 13478,
+      "sha256": "6C7975BA42A043465BAA3ECB04A720D434A69A5D19D1734406FB332A1F8EDEFE",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 600,
+        "height": 400
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "12-exif-exif_orientation_6-jpg",
+      "path": "12-exif/exif_orientation_6.jpg",
+      "category": "exif",
+      "extension": "jpg",
+      "bytes": 13471,
+      "sha256": "7301324B7FDAA2D3CF1C33F6E8A979F48B7F9D9F60A45313E1547E1AC87E5774",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 600,
+        "height": 400
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "12-exif-exif_orientation_7-jpg",
+      "path": "12-exif/exif_orientation_7.jpg",
+      "category": "exif",
+      "extension": "jpg",
+      "bytes": 13490,
+      "sha256": "E243B6D4306A5C86DDAD5D16655C673EB4DADEB4FE373755BEDE3D379FD066E3",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 600,
+        "height": 400
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "12-exif-exif_orientation_8-jpg",
+      "path": "12-exif/exif_orientation_8.jpg",
+      "category": "exif",
+      "extension": "jpg",
+      "bytes": 13489,
+      "sha256": "F98FAE05D305C7CA48A652EB2BDD9CC644680F632467DC5249319BBE9792CE99",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 600,
+        "height": 400
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "12-exif-large_exif-jpg",
+      "path": "12-exif/large_exif.jpg",
+      "category": "exif",
+      "extension": "jpg",
+      "bytes": 43448,
+      "sha256": "6D40D81509A7F425FB49E1EC111191C06C4248444D8268A3D4FC7265AB5C2955",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 600,
+        "height": 400
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "12-exif-no_exif-jpg",
+      "path": "12-exif/no_exif.jpg",
+      "category": "exif",
+      "extension": "jpg",
+      "bytes": 13444,
+      "sha256": "FA78C029C300E5BA836D505EB6B5FC899EA05043BF5E039005B735B8E6CC6AF2",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 600,
+        "height": 400
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-10000x1-jpg",
+      "path": "13-dimensions/10000x1.jpg",
+      "category": "dimensions",
+      "extension": "jpg",
+      "bytes": 1444,
+      "sha256": "9244A4CBB516066072EBABD9CC493CA1E819168EA961474CE70C668373991ED4",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 10000,
+        "height": 1
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-10000x1-png",
+      "path": "13-dimensions/10000x1.png",
+      "category": "dimensions",
+      "extension": "png",
+      "bytes": 1259,
+      "sha256": "5EED718CB83AA9E3D371743AF45FAA43F4E752D6FC664CDB624523FD8A9FA347",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 10000,
+        "height": 1
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-101x99-jpg",
+      "path": "13-dimensions/101x99.jpg",
+      "category": "dimensions",
+      "extension": "jpg",
+      "bytes": 584,
+      "sha256": "92E2724273D89D7B4AAEC11D5481636D5D6D61F561039A24737540C02CA5DBAE",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 101,
+        "height": 99
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-101x99-png",
+      "path": "13-dimensions/101x99.png",
+      "category": "dimensions",
+      "extension": "png",
+      "bytes": 908,
+      "sha256": "03D7E9158F06CD97EEE5B9B45B52BCA3A33F94C137C8769DFED97FCB90D9A247",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 101,
+        "height": 99
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-19200x200-jpg",
+      "path": "13-dimensions/19200x200.jpg",
+      "category": "dimensions",
+      "extension": "jpg",
+      "bytes": 82214,
+      "sha256": "F223F36228C7821E2B7B9D9562A736323C8C0D06E40D91DEDBA72594286164AE",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 19200,
+        "height": 200
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-19200x200-png",
+      "path": "13-dimensions/19200x200.png",
+      "category": "dimensions",
+      "extension": "png",
+      "bytes": 24168,
+      "sha256": "59BA2112633E66750C084433F6732A55DD9A22FAA595AD29AD171667117E5400",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 19200,
+        "height": 200
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-1x1-jpg",
+      "path": "13-dimensions/1x1.jpg",
+      "category": "dimensions",
+      "extension": "jpg",
+      "bytes": 288,
+      "sha256": "FDFE07FCC5390A4877DC73937003A1604A553927F69F7A473C7B50B8BA49FF91",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 1,
+        "height": 1
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-1x1-png",
+      "path": "13-dimensions/1x1.png",
+      "category": "dimensions",
+      "extension": "png",
+      "bytes": 311,
+      "sha256": "0B8EDC93C51991CD445D5E456EE6F574B91B372FAB98C9D3A54FCF9DFDAC46AF",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 1,
+        "height": 1
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-1x10000-jpg",
+      "path": "13-dimensions/1x10000.jpg",
+      "category": "dimensions",
+      "extension": "jpg",
+      "bytes": 1448,
+      "sha256": "F5404F2BF63DE4B6C892A1E4558FEE6CEB078CE5CE8EF0E9780F8CD4628FBFBD",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 1,
+        "height": 10000
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-1x10000-png",
+      "path": "13-dimensions/1x10000.png",
+      "category": "dimensions",
+      "extension": "png",
+      "bytes": 1393,
+      "sha256": "B4AED436B01756E9B43779551BA7EF6AB944587AA9C89CF4FC64A6CCBD48FCE8",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 1,
+        "height": 10000
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-1x2-jpg",
+      "path": "13-dimensions/1x2.jpg",
+      "category": "dimensions",
+      "extension": "jpg",
+      "bytes": 299,
+      "sha256": "48BD30DC87A0C753CEBD1F0CFAF707B1C66ADC2DB2D9C8E73BFBED7B87A9EC7C",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 1,
+        "height": 2
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-1x2-png",
+      "path": "13-dimensions/1x2.png",
+      "category": "dimensions",
+      "extension": "png",
+      "bytes": 316,
+      "sha256": "2F67AE4C93DC834AC86A44CF1885AE143ACEED07BB432C3497D3359A9C8635EE",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 1,
+        "height": 2
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-200x19200-jpg",
+      "path": "13-dimensions/200x19200.jpg",
+      "category": "dimensions",
+      "extension": "jpg",
+      "bytes": 25117,
+      "sha256": "0BD08262976A101A06A34FE501793C4E3553B8C4AC03B2E077074E7604C0609E",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 200,
+        "height": 19200
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-200x19200-png",
+      "path": "13-dimensions/200x19200.png",
+      "category": "dimensions",
+      "extension": "png",
+      "bytes": 67225,
+      "sha256": "8587132931812ECBB309D5AE6AD7420915DB194A130B72CE564A59C3AA32224D",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 200,
+        "height": 19200
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-2x1-jpg",
+      "path": "13-dimensions/2x1.jpg",
+      "category": "dimensions",
+      "extension": "jpg",
+      "bytes": 320,
+      "sha256": "A200A2FCFB5FA89B76EC07FAD1C4A70ED2CCF1B58785AB000C51A78E664EDAF9",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 2,
+        "height": 1
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-2x1-png",
+      "path": "13-dimensions/2x1.png",
+      "category": "dimensions",
+      "extension": "png",
+      "bytes": 314,
+      "sha256": "B736B6ACE686E6AAED226325A2A2CDB4B0A1202C45F2E34576A3FAD4E380552A",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 2,
+        "height": 1
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-4095x4097-jpg",
+      "path": "13-dimensions/4095x4097.jpg",
+      "category": "dimensions",
+      "extension": "jpg",
+      "bytes": 125093,
+      "sha256": "00CCD5512411FFA75D4117520388DAD7A0C6ABCB16E9447C3BABE6F85584454D",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 4095,
+        "height": 4097
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-4095x4097-png",
+      "path": "13-dimensions/4095x4097.png",
+      "category": "dimensions",
+      "extension": "png",
+      "bytes": 111285,
+      "sha256": "B1625DA5416672B5E742A65DD272FC841673D5A9C314CF6984FE6AFC7D96C559",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 4095,
+        "height": 4097
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-8191x8193-jpg",
+      "path": "13-dimensions/8191x8193.jpg",
+      "category": "dimensions",
+      "extension": "jpg",
+      "bytes": 446437,
+      "sha256": "E3AD13818A46AC4274847649B86C7B839A09F6ADBBAE8C803343832BB819C627",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 8191,
+        "height": 8193
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "13-dimensions-8191x8193-png",
+      "path": "13-dimensions/8191x8193.png",
+      "category": "dimensions",
+      "extension": "png",
+      "bytes": 438888,
+      "sha256": "E59B84B5F27EA7A3DA6BBDC5005373EAB993B5C7867ADAFE3E1DF7DE336BB233",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 8191,
+        "height": 8193
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-empty-gif",
+      "path": "14-corrupt/empty.gif",
+      "category": "corrupt",
+      "extension": "gif",
+      "bytes": 0,
+      "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-empty-jpg",
+      "path": "14-corrupt/empty.jpg",
+      "category": "corrupt",
+      "extension": "jpg",
+      "bytes": 0,
+      "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-empty-png",
+      "path": "14-corrupt/empty.png",
+      "category": "corrupt",
+      "extension": "png",
+      "bytes": 0,
+      "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-empty-webp",
+      "path": "14-corrupt/empty.webp",
+      "category": "corrupt",
+      "extension": "webp",
+      "bytes": 0,
+      "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-gif_bad_frame-gif",
+      "path": "14-corrupt/gif_bad_frame.gif",
+      "category": "corrupt",
+      "extension": "gif",
+      "bytes": 5536,
+      "sha256": "84BFFA176ACDE1BDD3456CB8091A6F10E944483480502960FF85E6F4520713A6",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-huge_dimension_header-png",
+      "path": "14-corrupt/huge_dimension_header.png",
+      "category": "corrupt",
+      "extension": "png",
+      "bytes": 4460,
+      "sha256": "20A0122FDC54E02A66C338EF95BD318782A1E221BAD29B563FDA41327E433B7C",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-jpeg_cut_10percent-jpg",
+      "path": "14-corrupt/jpeg_cut_10percent.jpg",
+      "category": "corrupt",
+      "extension": "jpg",
+      "bytes": 1090,
+      "sha256": "000B9D0EEB3AB9F17F57A69E7DF2CA4C84A62929FF13CB7885A82CA86E5248EB",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-jpeg_cut_1percent-jpg",
+      "path": "14-corrupt/jpeg_cut_1percent.jpg",
+      "category": "corrupt",
+      "extension": "jpg",
+      "bytes": 109,
+      "sha256": "AB97F212A12CF06ECB9D9837A82EC4B308145F9520C9D39ACC7CDD4F73BA6DE9",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-jpeg_cut_50percent-jpg",
+      "path": "14-corrupt/jpeg_cut_50percent.jpg",
+      "category": "corrupt",
+      "extension": "jpg",
+      "bytes": 5448,
+      "sha256": "C8099E3726805E185A69C1CE0F658DDD304A1F313236006D13F38FD79B3EF942",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-jpeg_cut_99percent-jpg",
+      "path": "14-corrupt/jpeg_cut_99percent.jpg",
+      "category": "corrupt",
+      "extension": "jpg",
+      "bytes": 10787,
+      "sha256": "2A90B6EC55C2CAE1C7862E0A94804AA95EBBFA64AF44561AF151C0022085565E",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-png_bad_crc-png",
+      "path": "14-corrupt/png_bad_crc.png",
+      "category": "corrupt",
+      "extension": "png",
+      "bytes": 4460,
+      "sha256": "A4A5C5594409A98EA104FF267C7787F71D57F4DE13937A01EF3AC6C409D2F68E",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-png_bad_signature-png",
+      "path": "14-corrupt/png_bad_signature.png",
+      "category": "corrupt",
+      "extension": "png",
+      "bytes": 4460,
+      "sha256": "42E96888F60194CD3BFC18C07ABA12F8A319ECD487600491A162A11A3DF05820",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-png_missing_iend-png",
+      "path": "14-corrupt/png_missing_iend.png",
+      "category": "corrupt",
+      "extension": "png",
+      "bytes": 4448,
+      "sha256": "428547D2186BD8EAB4DDEFF9AB8076C9C6FF0A629A78F72FA24805BA92CCDA6F",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-random_bytes-jpg",
+      "path": "14-corrupt/random_bytes.jpg",
+      "category": "corrupt",
+      "extension": "jpg",
+      "bytes": 4096,
+      "sha256": "FAB1D3652676E52369DA3698DC38BA4CB65851672C2F39F2C1B8D2CD06DAD3E0",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-tiff_bad_ifd-tif",
+      "path": "14-corrupt/tiff_bad_ifd.tif",
+      "category": "corrupt",
+      "extension": "tif",
+      "bytes": 461064,
+      "sha256": "B2F06CF39F36CFA500E189B1F065FEB743F9A428A0DA56FE22BEC6B0C59C9A01",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-webp_bad_chunk-webp",
+      "path": "14-corrupt/webp_bad_chunk.webp",
+      "category": "corrupt",
+      "extension": "webp",
+      "bytes": 654,
+      "sha256": "09D4D439D6C65A0A42D0A57C3E33872BC15A8F9BBA02B97802F94107256B999C",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "15-extension-mismatch-jpeg_named_png-png",
+      "path": "15-extension-mismatch/jpeg_named_png.png",
+      "category": "extension-mismatch",
+      "extension": "png",
+      "bytes": 3036,
+      "sha256": "04C6EDCD7255CB68838ABE0DEB27D29364320AEBD446C11BA59A3EB3E01ABFA0",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 320,
+        "height": 200
+      },
+      "severity": "normal"
+    },
+    {
+      "id": "15-extension-mismatch-mixed-jpeg",
+      "path": "15-extension-mismatch/MiXeD.JpEg",
+      "category": "extension-mismatch",
+      "extension": "jpeg",
+      "bytes": 3036,
+      "sha256": "04C6EDCD7255CB68838ABE0DEB27D29364320AEBD446C11BA59A3EB3E01ABFA0",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 320,
+        "height": 200
+      },
+      "severity": "normal"
+    },
+    {
+      "id": "15-extension-mismatch-png_named_jpg-jpg",
+      "path": "15-extension-mismatch/png_named_jpg.jpg",
+      "category": "extension-mismatch",
+      "extension": "jpg",
+      "bytes": 1484,
+      "sha256": "EB48F7F6C160730882A76D0C75EE6CBA9CB5C36336CD9EA07B7467D0945FA464",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 320,
+        "height": 200
+      },
+      "severity": "normal"
+    },
+    {
+      "id": "15-extension-mismatch-real_png-no_extension",
+      "path": "15-extension-mismatch/real_png.no_extension",
+      "category": "extension-mismatch",
+      "extension": "no_extension",
+      "bytes": 1484,
+      "sha256": "EB48F7F6C160730882A76D0C75EE6CBA9CB5C36336CD9EA07B7467D0945FA464",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 320,
+        "height": 200
+      },
+      "severity": "normal"
+    },
+    {
+      "id": "15-extension-mismatch-uppercase-jpg",
+      "path": "15-extension-mismatch/UPPERCASE.JPG",
+      "category": "extension-mismatch",
+      "extension": "jpg",
+      "bytes": 3036,
+      "sha256": "04C6EDCD7255CB68838ABE0DEB27D29364320AEBD446C11BA59A3EB3E01ABFA0",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 320,
+        "height": 200
+      },
+      "severity": "normal"
+    },
+    {
+      "id": "15-extension-mismatch-webp_named_jpg-jpg",
+      "path": "15-extension-mismatch/webp_named_jpg.jpg",
+      "category": "extension-mismatch",
+      "extension": "jpg",
+      "bytes": 600,
+      "sha256": "A18DA3A438F0D9D5A9388FA3C8FB9F7DE9916CFB7D7F66395CC1DB39C3B85FA3",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 320,
+        "height": 200
+      },
+      "severity": "normal"
+    },
+    {
+      "id": "16-path-filename-'quote'-png",
+      "path": "16-path-filename/'quote'.png",
+      "category": "path-filename",
+      "extension": "png",
+      "bytes": 1060,
+      "sha256": "AF3E8EC44D2A61E78726034269F39BC981C7DDE257D0901A2B6AC9E19BD0275F",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-(test)-webp",
+      "path": "16-path-filename/(test).webp",
+      "category": "path-filename",
+      "extension": "webp",
+      "bytes": 392,
+      "sha256": "29454F9B071713C26E545D27C4202FFBF473F49D217AAFC04265343D693B26CF",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-[test]-jpg",
+      "path": "16-path-filename/[test].jpg",
+      "category": "path-filename",
+      "extension": "jpg",
+      "bytes": 2210,
+      "sha256": "4B7D8A14B9B82072D9AD674461801C6F43506C36F8CEBEC03FA0047870CAA9EC",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-#test-png",
+      "path": "16-path-filename/#test.png",
+      "category": "path-filename",
+      "extension": "png",
+      "bytes": 1060,
+      "sha256": "AF3E8EC44D2A61E78726034269F39BC981C7DDE257D0901A2B6AC9E19BD0275F",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-🌍🌊🌌-jpg",
+      "path": "16-path-filename/🌍🌊🌌.jpg",
+      "category": "path-filename",
+      "extension": "jpg",
+      "bytes": 2210,
+      "sha256": "4B7D8A14B9B82072D9AD674461801C6F43506C36F8CEBEC03FA0047870CAA9EC",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-😀-png",
+      "path": "16-path-filename/😀.png",
+      "category": "path-filename",
+      "extension": "png",
+      "bytes": 1060,
+      "sha256": "AF3E8EC44D2A61E78726034269F39BC981C7DDE257D0901A2B6AC9E19BD0275F",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-日本語画像-webp",
+      "path": "16-path-filename/日本語画像.webp",
+      "category": "path-filename",
+      "extension": "webp",
+      "bytes": 392,
+      "sha256": "29454F9B071713C26E545D27C4202FFBF473F49D217AAFC04265343D693B26CF",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-深层路径-图片测试-中文-很深-很深-很深-很深-很深-图片-jpg",
+      "path": "16-path-filename/深层路径/图片测试/中文/很深/很深/很深/很深/很深/图片.jpg",
+      "category": "path-filename",
+      "extension": "jpg",
+      "bytes": 2600,
+      "sha256": "4B9C3211E5DAAFC353B81BAAEAA41F26AACB3AE0673800F93F514C679A6CA390",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-中文 空格 图片-png",
+      "path": "16-path-filename/中文 空格 图片.png",
+      "category": "path-filename",
+      "extension": "png",
+      "bytes": 1060,
+      "sha256": "AF3E8EC44D2A61E78726034269F39BC981C7DDE257D0901A2B6AC9E19BD0275F",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-中文图片-jpg",
+      "path": "16-path-filename/中文图片.jpg",
+      "category": "path-filename",
+      "extension": "jpg",
+      "bytes": 2210,
+      "sha256": "4B7D8A14B9B82072D9AD674461801C6F43506C36F8CEBEC03FA0047870CAA9EC",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-a b c-jpg",
+      "path": "16-path-filename/a b c.jpg",
+      "category": "path-filename",
+      "extension": "jpg",
+      "bytes": 2210,
+      "sha256": "4B7D8A14B9B82072D9AD674461801C6F43506C36F8CEBEC03FA0047870CAA9EC",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-a-b-c-jpg",
+      "path": "16-path-filename/a.b.c.jpg",
+      "category": "path-filename",
+      "extension": "jpg",
+      "bytes": 2210,
+      "sha256": "4B7D8A14B9B82072D9AD674461801C6F43506C36F8CEBEC03FA0047870CAA9EC",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-verylongfilename_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-jpg",
+      "path": "16-path-filename/VeryLongFilename_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.jpg",
+      "category": "path-filename",
+      "extension": "jpg",
+      "bytes": 2210,
+      "sha256": "4B7D8A14B9B82072D9AD674461801C6F43506C36F8CEBEC03FA0047870CAA9EC",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "16-path-filename-한글사진-jpg",
+      "path": "16-path-filename/한글사진.jpg",
+      "category": "path-filename",
+      "extension": "jpg",
+      "bytes": 2210,
+      "sha256": "4B7D8A14B9B82072D9AD674461801C6F43506C36F8CEBEC03FA0047870CAA9EC",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 240,
+        "height": 160
+      },
+      "severity": "release-blocker"
+    }
+  ]
+}
