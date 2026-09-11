@@ -482,6 +482,28 @@ public static class YeImageViewerTestNativeV1365
 # rectangles or synthesizing mouse messages on scaled displays.
 [void][YeImageViewerTestNativeV1365]::SetThreadDpiAwarenessContext([IntPtr](-4))
 
+# Mirrors OverlayLayout::toolbarScale / OverlayLayout::scaled. The viewer is
+# PerMonitorHighDPIAware, so the overlay sizes itself by DPI and only shrinks
+# when the window is too narrow; these helpers keep the synthetic click
+# coordinates on the same geometry the viewer actually draws.
+function Get-ToolbarScale {
+    param([int]$CanvasWidth, [int]$Dpi)
+    if ($Dpi -le 0) { $Dpi = 96 }
+    $target = [int][Math]::Floor($Dpi * 1000 / 96)
+    $minimum = [int][Math]::Floor(400 * $target / 1000)
+    if ($CanvasWidth -le 16) {
+        return [int][Math]::Floor(600 * $target / 1000)
+    }
+    $widthScale = [int][Math]::Floor(($CanvasWidth - 16) * 1000 / 580)
+    $value = [Math]::Min($widthScale, $target)
+    return [Math]::Min([Math]::Max($value, $minimum), $target)
+}
+
+function Get-ScaledValue {
+    param([int]$Value, [int]$Scale)
+    return [Math]::Max(1, [int][Math]::Floor(($Value * $Scale + 500) / 1000))
+}
+
 Write-Host "Checking functional startup open button..."
 $homeDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Home-" + [Guid]::NewGuid().ToString("N"))
 $homeViewer = Join-Path $homeDirectory "YeImageViewer.exe"
@@ -675,12 +697,14 @@ try {
     [void][YeImageViewerTestNativeV1365]::GetWindowText(
         $freshWindow, $freshFramedTitle, $freshFramedTitle.Capacity)
     $freshFramedTitleText = $freshFramedTitle.ToString()
-    if ($freshFramedTitleText -notmatch '\[\d+/\d+\]\s*\|\s*\d+%\s*\|\s*\d+\s*×\s*\d+\s*px\s*\|\s*[^|]+\s*\|' -or
-        $freshFramedTitleText -notmatch '\|\s*[^|\\/:]+\.[A-Za-z0-9]+(?:\s*\|.*)?$' -or
+    # The filename leads the title: Windows truncates from the right, and the
+    # taskbar preview and Alt+Tab only ever show the opening segment.
+    if ($freshFramedTitleText -notmatch '^[^|\\/:]+\.[A-Za-z0-9]+\s*\|' -or
+        $freshFramedTitleText -notmatch '\|\s*\[\d+/\d+\]\s*\|\s*\d+%\s*\|\s*\d+\s*×\s*\d+\s*px\s*\|' -or
         $freshFramedTitleText.Contains([IO.Path]::GetDirectoryName($sharpSvgFixture))) {
-        throw "Title regression failed: framed title did not cleanly separate zoom, dimensions, size, and filename. Actual: $freshFramedTitleText"
+        throw "Title regression failed: framed title must lead with the filename before position, zoom, dimensions, and size. Actual: $freshFramedTitleText"
     }
-    Write-Host "PASS framed title cleanly separates zoom, dimensions, size, and filename."
+    Write-Host "PASS framed title leads with the filename before position, zoom, dimensions, and size."
 
     # WM_MOUSEWHEEL packs modifier flags in the low word and the signed wheel
     # delta in the high word. The requested defaults are Ctrl=zoom,
@@ -852,14 +876,17 @@ try {
     do {
         [void][YeImageViewerTestNativeV1365]::GetClientRect($settingWindow, [ref]$settingRect)
         $settingDpi = [YeImageViewerTestNativeV1365]::GetDpiForWindow($settingWindow)
-        # GetClientRect can be DPI-virtualized to the PowerShell caller even
-        # though the viewer itself owns the requested 620x620 physical canvas.
-        $expectedSettingWidth = [int][Math]::Round(620 * 96.0 / $settingDpi)
-        $expectedSettingHeight = [int][Math]::Round(620 * 96.0 / $settingDpi)
+        # The drawing canvas stays a logical 620x620; the window scales itself up by
+        # DPI because the process is PerMonitorHighDPIAware and Windows does no
+        # stretching of its own. The viewer caps that scaling so the window still
+        # fits the work area, so the client is a square between 620 and the full
+        # DPI-scaled size.
+        $expectedSettingWidth = [int][Math]::Round(620 * $settingDpi / 96.0)
+        $expectedSettingHeight = $expectedSettingWidth
         $actualSettingWidth = $settingRect.Right - $settingRect.Left
         $actualSettingHeight = $settingRect.Bottom - $settingRect.Top
-        $settingSizeMatches = ($actualSettingWidth -eq 620 -and $actualSettingHeight -eq 620) -or
-            ($actualSettingWidth -eq $expectedSettingWidth -and $actualSettingHeight -eq $expectedSettingHeight)
+        $settingSizeMatches = ($actualSettingWidth -eq $actualSettingHeight) -and
+            ($actualSettingWidth -ge 620) -and ($actualSettingWidth -le $expectedSettingWidth)
         $settingLayoutReady = $settingSizeMatches -and
             [YeImageViewerTestNativeV1365]::IsWindowEnabled($settingWindow)
         if (-not $settingLayoutReady) {
@@ -868,7 +895,7 @@ try {
     } while (-not $settingLayoutReady -and [DateTime]::UtcNow -lt $settingLayoutDeadline)
     if (-not $settingLayoutReady) {
         $actualSettingSize = "$(($settingRect.Right - $settingRect.Left))x$(($settingRect.Bottom - $settingRect.Top))"
-        throw "Settings-layout regression failed: expected 620x620 physical (${expectedSettingWidth}x${expectedSettingHeight} virtualized), got $actualSettingSize."
+        throw "Settings-layout regression failed: expected a logical 620x620 canvas (${expectedSettingWidth}x${expectedSettingHeight} physical at ${settingDpi} DPI), got $actualSettingSize."
     }
     $initialSettingWidth = $settingRect.Right - $settingRect.Left
     $initialSettingHeight = $settingRect.Bottom - $settingRect.Top
@@ -887,7 +914,7 @@ try {
             throw "Settings-layout regression failed: switching tabs changed the fixed client size or interaction state."
         }
     }
-    Write-Host "PASS Settings keeps a fixed 620x620 client area across all tabs and scrolls Shortcuts content."
+    Write-Host "PASS Settings keeps a fixed logical 620x620 client area, DPI-scaled, across all tabs and scrolls Shortcuts content."
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0112, [UIntPtr]0xF060, [IntPtr]::Zero)
     if (-not $freshProcess.WaitForExit(3000)) {
@@ -1108,9 +1135,16 @@ try {
     if ($escapeSettingWindow -eq [IntPtr]::Zero) {
         throw "Configured-Escape regression failed: Settings did not open."
     }
-    # General checkbox 6 is "Esc closes image". Click its center in the fixed canvas.
-    $escapeToggleX = 318 + 131
-    $escapeToggleY = 52 + 138 + 16
+    # General checkbox 6 is "Esc closes image". Its coordinates live in the fixed
+    # logical 620x620 canvas, but mouse messages carry physical client pixels.
+    # Derive the factor from the real client width rather than from the DPI: the
+    # viewer caps its own scaling when the window would not fit the work area.
+    $escapeSettingRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($escapeSettingWindow, [ref]$escapeSettingRect)
+    $escapeSettingWidth = $escapeSettingRect.Right - $escapeSettingRect.Left
+    if ($escapeSettingWidth -le 0) { $escapeSettingWidth = 620 }
+    $escapeToggleX = [int][Math]::Round((318 + 131) * $escapeSettingWidth / 620.0)
+    $escapeToggleY = [int][Math]::Round((52 + 138 + 16) * $escapeSettingWidth / 620.0)
     $escapeTogglePosition = [IntPtr](($escapeToggleY -shl 16) -bor ($escapeToggleX -band 0xFFFF))
     [void][YeImageViewerTestNativeV1365]::SendMessage(
         $escapeSettingWindow, 0x0201, [UIntPtr]1, $escapeTogglePosition)
@@ -1621,9 +1655,10 @@ try {
 
     $targetClientWidth = $clientWidth
     $targetClientHeight = $clientHeight
-    $toolbarWidth = [Math]::Min(580, [Math]::Max([int][Math]::Round(580 * 0.4), $targetClientWidth - 16))
-    $toolbarHeight = [int][Math]::Round(50 * $toolbarWidth / 580.0)
-    $toolbarBottom = [int][Math]::Round(20 * $toolbarWidth / 580.0)
+    $toolbarScale = Get-ToolbarScale -CanvasWidth $targetClientWidth -Dpi $windowDpi
+    $toolbarWidth = Get-ScaledValue -Value 580 -Scale $toolbarScale
+    $toolbarHeight = Get-ScaledValue -Value 50 -Scale $toolbarScale
+    $toolbarBottom = Get-ScaledValue -Value 20 -Scale $toolbarScale
     $toolbarX = [int]($targetClientWidth / 2)
     $toolbarY = $targetClientHeight - $toolbarBottom - [int]($toolbarHeight / 2)
     $mousePosition = [IntPtr](($toolbarY -shl 16) -bor ($toolbarX -band 0xFFFF))
@@ -1635,14 +1670,12 @@ try {
     }
     Write-Host "PASS centered reference toolbar hover remains responsive."
 
-    $toolbarScale = [Math]::Min(1000, [Math]::Max(400,
-        [int][Math]::Floor(($targetClientWidth - 16) * 1000.0 / 580.0)))
-    $scaledToolbarWidth = [int][Math]::Floor((580 * $toolbarScale + 500) / 1000.0)
-    $scaledButtonSize = [int][Math]::Floor((34 * $toolbarScale + 500) / 1000.0)
-    $scaledPadding = [int][Math]::Floor((8 * $toolbarScale + 500) / 1000.0)
-    $scaledZoomTextOffset = [int][Math]::Floor((491 * $toolbarScale + 500) / 1000.0)
-    $scaledZoomTextWidth = [int][Math]::Floor((50 * $toolbarScale + 500) / 1000.0)
-    $scaledNextOffset = [int][Math]::Floor((300 * $toolbarScale + 500) / 1000.0)
+    $scaledToolbarWidth = Get-ScaledValue -Value 580 -Scale $toolbarScale
+    $scaledButtonSize = Get-ScaledValue -Value 34 -Scale $toolbarScale
+    $scaledPadding = Get-ScaledValue -Value 8 -Scale $toolbarScale
+    $scaledZoomTextOffset = Get-ScaledValue -Value 491 -Scale $toolbarScale
+    $scaledZoomTextWidth = Get-ScaledValue -Value 50 -Scale $toolbarScale
+    $scaledNextOffset = Get-ScaledValue -Value 300 -Scale $toolbarScale
     $toolbarLeft = [int][Math]::Floor(($targetClientWidth - $scaledToolbarWidth) / 2.0)
     $zoomTextX = $toolbarLeft + $scaledPadding + $scaledZoomTextOffset +
         [int][Math]::Floor($scaledZoomTextWidth / 2.0)
@@ -1831,8 +1864,14 @@ try {
     $presentationClientRect = New-Object YeImageViewerTestNativeV1365+RECT
     [void][YeImageViewerTestNativeV1365]::GetClientRect($window, [ref]$presentationClientRect)
     $presentationWidth = $presentationClientRect.Right - $presentationClientRect.Left
-    $closeX = $presentationWidth - 12 - 21
-    $closeY = 12 + 21
+    # The close button scales with DPI too, so derive its centre instead of
+    # assuming the 96-DPI 42px button at a 12px margin.
+    $presentationDpi = [YeImageViewerTestNativeV1365]::GetDpiForWindow($window)
+    $presentationScale = [int][Math]::Floor($presentationDpi * 1000 / 96)
+    $closeSize = Get-ScaledValue -Value 42 -Scale $presentationScale
+    $closeMargin = Get-ScaledValue -Value 12 -Scale $presentationScale
+    $closeX = $presentationWidth - $closeMargin - [int][Math]::Floor($closeSize / 2)
+    $closeY = $closeMargin + [int][Math]::Floor($closeSize / 2)
     $closePosition = [IntPtr](($closeY -shl 16) -bor ($closeX -band 0xFFFF))
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0200, [UIntPtr]::Zero, $closePosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0201, [UIntPtr]1, $closePosition)

@@ -238,12 +238,6 @@ inline int clampScrollOffset(int contentHeight, int viewportHeight, int offset) 
     return std::clamp(offset, 0, std::max(0, contentHeight - viewportHeight));
 }
 
-inline bool useLightPalette(uint8_t blue, uint8_t green, uint8_t red) {
-    const int luminance = (static_cast<int>(red) * 299 + static_cast<int>(green) * 587 +
-        static_cast<int>(blue) * 114) / 1000;
-    return luminance > 128;
-}
-
 inline Model build(std::string_view raw, bool chinese, std::string_view colorMode = {}) {
     const auto rows = parseRows(raw);
     Model model;

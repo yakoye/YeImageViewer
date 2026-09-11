@@ -363,6 +363,7 @@ private:
             ShortcutItem{ ShortcutConfig::Action::ZoomIn, "放大", "Zoom in" },
             ShortcutItem{ ShortcutConfig::Action::ZoomOut, "缩小", "Zoom out" },
             ShortcutItem{ ShortcutConfig::Action::ZoomFit, "适合窗口", "Fit window" },
+            ShortcutItem{ ShortcutConfig::Action::ZoomActual, "实际大小", "Actual size" },
             ShortcutItem{ ShortcutConfig::Action::PreviousImage, "上一张", "Previous image" },
             ShortcutItem{ ShortcutConfig::Action::NextImage, "下一张", "Next image" },
             ShortcutItem{ ShortcutConfig::Action::FirstImage, "第一张", "First image" },

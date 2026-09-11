@@ -117,8 +117,10 @@ inline constexpr Rect SHORTCUT_RESET_BUTTON{ 404, 204, 180, 36 };
 inline constexpr Rect SHORTCUT_KEYBOARD_HEADER{ 36, 252, 548, 32 };
 inline constexpr int SHORTCUT_KEYBOARD_ROW_Y = 288;
 inline constexpr int SHORTCUT_KEYBOARD_ROW_HEIGHT = 40;
-inline constexpr int SHORTCUT_KEYBOARD_ROW_COUNT = 30;
-inline constexpr int SHORTCUT_CONTENT_HEIGHT = 1550;
+// 必须与 ShortcutConfig::Action::Count 一致；这里不引用那个头以保持布局可独立测试，
+// 由单元测试断言两者相等。新增动作时行数和内容高度都要跟着加一行。
+inline constexpr int SHORTCUT_KEYBOARD_ROW_COUNT = 31;
+inline constexpr int SHORTCUT_CONTENT_HEIGHT = 1590;
 
 constexpr Rect shortcutWheelRow(int index) {
     return { 36, SHORTCUT_WHEEL_ROW_Y + index * SHORTCUT_WHEEL_ROW_HEIGHT,
