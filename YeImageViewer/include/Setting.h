@@ -3,7 +3,6 @@
 #include "BuildInfo.h"
 #include "FileAssociationManager.h"
 #include "MatWindow.h"
-#include "SettingGeneralPanel.h"
 #include "SettingCommand.h"
 #include "SettingLayout.h"
 #include "TextDrawer.h"
@@ -45,7 +44,6 @@ private:
     static inline std::vector<generalTabRadio> generalTabRadioList;
 
     TextDrawer textDrawer;
-    SettingGeneralPanel::Panel generalPanel;
     cv::Mat winCanvas;
     std::array<int, 4> scrollOffsets{};
     std::string associationFilter;
@@ -67,6 +65,33 @@ private:
         return { rect.x, rect.y, rect.width, rect.height };
     }
 
+    // 画布按物理像素绘制、文字直接渲染在目标分辨率上，逻辑坐标一律乘以 DPI 比例。
+    // 命中判定仍在逻辑坐标系里做——MatWindow 已把鼠标坐标换算回逻辑，SettingCommand
+    // 也是按逻辑常量匹配——所以缓存在控件列表里的 rect 保持逻辑值不动，只有绘制这一
+    // 侧缩放。
+    int S(int value) const {
+        return MulDiv(value, m_dpi, USER_DEFAULT_SCREEN_DPI);
+    }
+
+    cv::Rect scaleRect(const cv::Rect& rect) const {
+        return { S(rect.x), S(rect.y), S(rect.width), S(rect.height) };
+    }
+
+    cv::Rect toCanvasRect(const SettingLayout::Rect& rect) const {
+        return scaleRect(toCvRect(rect));
+    }
+
+    // 字号取系统界面字体的像素高度，和窗口标题栏用的是同一套度量。按逻辑 FONT_SIZE
+    // 乘 DPI 会得到比标题还大一圈的字，观感不对。
+    int uiFontPixelSize() const {
+        NONCLIENTMETRICSW metrics{ sizeof(NONCLIENTMETRICSW) };
+        if (SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
+            &metrics, 0, static_cast<UINT>(m_dpi)) && metrics.lfMessageFont.lfHeight != 0) {
+            return std::abs(static_cast<int>(metrics.lfMessageFont.lfHeight));
+        }
+        return S(12);
+    }
+
     static void fillRoundedRect(cv::Mat& canvas, const cv::Rect& rect,
         uint32_t color, int radius = 10) {
         const cv::Scalar scalar = jarkUtils::to_cv_scalar(color);
@@ -86,21 +111,24 @@ private:
             { rect.x + rect.width - radius - 1, rect.y + rect.height - radius - 1 }, radius, scalar, -1);
     }
 
+    // 以下绘制函数接收的都是已经缩放好的画布坐标，内部的字面量偏移再各自缩放。
     void drawCard(cv::Mat& canvas, const cv::Rect& rect) {
-        fillRoundedRect(canvas, rect, GlobalVar::currentTheme.BG, 10);
-        cv::rectangle(canvas, rect, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+        fillRoundedRect(canvas, rect, GlobalVar::currentTheme.BG, S(10));
+        cv::rectangle(canvas, rect, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG),
+            std::max(1, S(1)));
     }
 
     void drawSectionTitle(cv::Mat& canvas, const cv::Rect& card, const char* title) {
         textDrawer.putAlignLeft(canvas,
-            { card.x + 18, card.y + 10, 180, 28 }, title, GlobalVar::currentTheme.CHECK);
-        cv::line(canvas, { card.x + 150, card.y + 25 },
-            { card.x + card.width - 18, card.y + 25 },
-            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+            { card.x + S(18), card.y + S(10), S(180), S(28) }, title,
+            GlobalVar::currentTheme.CHECK);
+        cv::line(canvas, { card.x + S(150), card.y + S(25) },
+            { card.x + card.width - S(18), card.y + S(25) },
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), std::max(1, S(1)));
     }
 
     void Init(int tabIdx = 0) {
-        textDrawer.setSize(SettingLayout::FONT_SIZE);
+        textDrawer.setSize(uiFontPixelSize());
         winCanvas = cv::Mat(winHeight, winWidth, CV_8UC4,
             jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_DEEP));
         curTabIdx = std::clamp(tabIdx, 0, 3);
@@ -196,14 +224,16 @@ private:
     }
 
     void drawToggle(cv::Mat& canvas, const generalTabCheckBox& toggle) {
-        const cv::Rect track{ toggle.rect.x, toggle.rect.y + 6, 40, 20 };
+        const cv::Rect box = scaleRect(toggle.rect);
+        const cv::Rect track{ box.x, box.y + S(6), S(40), S(20) };
         fillRoundedRect(canvas, track,
-            *toggle.valuePtr ? GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG, 10);
-        const int knobX = *toggle.valuePtr ? track.x + 22 : track.x + 2;
-        cv::circle(canvas, { knobX + 8, track.y + 10 }, 8,
+            *toggle.valuePtr ? GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG,
+            S(10));
+        const int knobX = *toggle.valuePtr ? track.x + S(22) : track.x + S(2);
+        cv::circle(canvas, { knobX + S(8), track.y + S(10) }, S(8),
             jarkUtils::to_cv_scalar(*toggle.valuePtr ? 0xFFFFFFFFu : GlobalVar::currentTheme.FG), -1);
         textDrawer.putAlignLeft(canvas,
-            { toggle.rect.x + 52, toggle.rect.y, toggle.rect.width - 52, toggle.rect.height },
+            { box.x + S(52), box.y, box.width - S(52), box.height },
             getUIString(toggle.stringID),
             *toggle.valuePtr ? primaryText() : secondaryText());
     }
@@ -211,20 +241,21 @@ private:
     void drawSegment(cv::Mat& canvas, const generalTabRadio& radio) {
         const int selected = std::min<int>(*radio.valuePtr,
             static_cast<int>(radio.stringIDs.size()) - 2);
-        constexpr int labelWidth = 138;
-        const cv::Rect segments{ radio.rect.x + labelWidth, radio.rect.y + 5,
-            radio.rect.width - labelWidth, radio.rect.height - 10 };
+        const cv::Rect row = scaleRect(radio.rect);
+        const int labelWidth = S(138);
+        const cv::Rect segments{ row.x + labelWidth, row.y + S(5),
+            row.width - labelWidth, row.height - S(10) };
         textDrawer.putAlignLeft(canvas,
-            { radio.rect.x, radio.rect.y, labelWidth - 10, radio.rect.height },
+            { row.x, row.y, labelWidth - S(10), row.height },
             getUIString(radio.stringIDs.front()), secondaryText());
-        fillRoundedRect(canvas, segments, GlobalVar::currentTheme.BG_DEEP, 7);
+        fillRoundedRect(canvas, segments, GlobalVar::currentTheme.BG_DEEP, S(7));
         cv::rectangle(canvas, segments,
-            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), std::max(1, S(1)));
         const int optionCount = static_cast<int>(radio.stringIDs.size()) - 1;
         const int itemWidth = segments.width / optionCount;
-        const cv::Rect selectedRect{ segments.x + selected * itemWidth + 2,
-            segments.y + 2, itemWidth - 4, segments.height - 4 };
-        fillRoundedRect(canvas, selectedRect, GlobalVar::currentTheme.CHECK, 5);
+        const cv::Rect selectedRect{ segments.x + selected * itemWidth + S(2),
+            segments.y + S(2), itemWidth - S(4), segments.height - S(4) };
+        fillRoundedRect(canvas, selectedRect, GlobalVar::currentTheme.CHECK, S(5));
         for (int index = 0; index < optionCount; ++index) {
             textDrawer.putAlignCenter(canvas,
                 { segments.x + index * itemWidth, segments.y, itemWidth, segments.height },
@@ -235,32 +266,28 @@ private:
 
     void refreshGeneralTab(cv::Mat& page) {
         const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
-        // 行为与显示两组已由原生控件面板接管，这里不再自绘——面板会盖在上面，
-        // 画了也看不见，还会在面板创建失败时露出两套外观。
-        if (!generalPanel.isCreated()) {
-            drawCard(page, toCvRect(SettingLayout::GENERAL_BEHAVIOR_CARD));
-            drawSectionTitle(page, toCvRect(SettingLayout::GENERAL_BEHAVIOR_CARD),
-                chinese ? "行为" : "BEHAVIOR");
-            for (const auto& item : generalTabCheckBoxList)
-                drawToggle(page, item);
+        drawCard(page, toCanvasRect(SettingLayout::GENERAL_BEHAVIOR_CARD));
+        drawSectionTitle(page, toCanvasRect(SettingLayout::GENERAL_BEHAVIOR_CARD),
+            chinese ? "行为" : "BEHAVIOR");
+        for (const auto& item : generalTabCheckBoxList)
+            drawToggle(page, item);
 
-            drawCard(page, toCvRect(SettingLayout::GENERAL_DISPLAY_CARD));
-            drawSectionTitle(page, toCvRect(SettingLayout::GENERAL_DISPLAY_CARD),
-                chinese ? "显示与交互" : "DISPLAY & INPUT");
-            for (const auto& radio : generalTabRadioList)
-                drawSegment(page, radio);
-        }
+        drawCard(page, toCanvasRect(SettingLayout::GENERAL_DISPLAY_CARD));
+        drawSectionTitle(page, toCanvasRect(SettingLayout::GENERAL_DISPLAY_CARD),
+            chinese ? "显示与交互" : "DISPLAY & INPUT");
+        for (const auto& radio : generalTabRadioList)
+            drawSegment(page, radio);
 
         const int editorCount = static_cast<int>(GlobalVar::externalEditors.size());
         const auto editorCard = SettingLayout::generalEditorCard(editorCount);
-        drawCard(page, toCvRect(editorCard));
-        drawSectionTitle(page, toCvRect(editorCard),
+        drawCard(page, toCanvasRect(editorCard));
+        drawSectionTitle(page, toCanvasRect(editorCard),
             chinese ? "外部图片编辑器" : "EXTERNAL EDITOR");
         for (int index = 0; index < editorCount; ++index) {
             const auto& editor = GlobalVar::externalEditors[index];
-            const cv::Rect nameRect = toCvRect(SettingLayout::generalEditorName(index));
-            const cv::Rect pathRect = toCvRect(SettingLayout::generalEditorPath(index));
-            const cv::Rect removeRect = toCvRect(SettingLayout::generalEditorRemove(index));
+            const cv::Rect nameRect = toCanvasRect(SettingLayout::generalEditorName(index));
+            const cv::Rect pathRect = toCanvasRect(SettingLayout::generalEditorPath(index));
+            const cv::Rect removeRect = toCanvasRect(SettingLayout::generalEditorRemove(index));
             fillRoundedRect(page, nameRect, GlobalVar::currentTheme.BG_DEEP, 7);
             fillRoundedRect(page, pathRect, GlobalVar::currentTheme.BG_DEEP, 7);
             fillRoundedRect(page, removeRect, GlobalVar::currentTheme.BG_TAG, 7);
@@ -285,14 +312,14 @@ private:
                 chinese ? "删除" : "Remove", primaryText());
         }
 
-        const auto addRect = toCvRect(SettingLayout::generalEditorAdd(editorCount));
+        const auto addRect = toCanvasRect(SettingLayout::generalEditorAdd(editorCount));
         fillRoundedRect(page, addRect, editorCount < ExternalEditorConfig::MAX_EDITORS ?
             GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG, 7);
         textDrawer.putAlignCenter(page, addRect,
             chinese ? "添加应用..." : "Add application...",
             editorCount < ExternalEditorConfig::MAX_EDITORS ? 0xFFFFFFFFu : secondaryText());
         textDrawer.putAlignLeft(page,
-            toCvRect(SettingLayout::generalEditorHint(editorCount)),
+            toCanvasRect(SettingLayout::generalEditorHint(editorCount)),
             chinese ? "点击名称可编辑；点击路径可更换程序（最多 10 个）" :
                 "Click a name to edit it or a path to replace it (up to 10)",
             secondaryText());
@@ -300,7 +327,7 @@ private:
 
     void refreshAssociateTab(cv::Mat& page) {
         const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
-        const cv::Rect search = toCvRect(SettingLayout::ASSOCIATION_SEARCH);
+        const cv::Rect search = toCanvasRect(SettingLayout::ASSOCIATION_SEARCH);
         drawCard(page, search);
         cv::circle(page, { search.x + 20, search.y + search.height / 2 - 2 }, 6,
             jarkUtils::to_cv_scalar(secondaryText()), 2);
@@ -406,14 +433,14 @@ private:
 
     void refreshShortcutTab(cv::Mat& page) {
         const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
-        drawCard(page, toCvRect(SettingLayout::SHORTCUT_CARD));
-        textDrawer.putAlignLeft(page, toCvRect(SettingLayout::SHORTCUT_WHEEL_HEADER),
+        drawCard(page, toCanvasRect(SettingLayout::SHORTCUT_CARD));
+        textDrawer.putAlignLeft(page, toCanvasRect(SettingLayout::SHORTCUT_WHEEL_HEADER),
             chinese ? "鼠标滚轮（点击右侧选项可切换）" :
                 "MOUSE WHEEL (click an option to change)", GlobalVar::currentTheme.CHECK);
         static constexpr std::array<const char*, 3> wheelZH{ "滚轮", "Ctrl + 滚轮", "Shift + 滚轮" };
         static constexpr std::array<const char*, 3> wheelEN{ "Wheel", "Ctrl + wheel", "Shift + wheel" };
         for (int index = 0; index < 3; ++index) {
-            const cv::Rect row = toCvRect(SettingLayout::shortcutWheelRow(index));
+            const cv::Rect row = toCanvasRect(SettingLayout::shortcutWheelRow(index));
             cv::line(page, { row.x, row.y }, { row.x + row.width, row.y },
                 jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
             textDrawer.putAlignLeft(page, { row.x + 8, row.y, 220, row.height },
@@ -424,16 +451,16 @@ private:
                 ShortcutConfig::getWheelAction(GlobalVar::settingParameter.reserve, index), chinese),
                 GlobalVar::currentTheme.CHECK);
         }
-        const cv::Rect reset = toCvRect(SettingLayout::SHORTCUT_RESET_BUTTON);
+        const cv::Rect reset = toCanvasRect(SettingLayout::SHORTCUT_RESET_BUTTON);
         fillRoundedRect(page, reset, GlobalVar::currentTheme.BG_TAG, 6);
         textDrawer.putAlignCenter(page, reset, chinese ? "恢复默认" : "Restore defaults", primaryText());
 
-        textDrawer.putAlignLeft(page, toCvRect(SettingLayout::SHORTCUT_KEYBOARD_HEADER),
+        textDrawer.putAlignLeft(page, toCanvasRect(SettingLayout::SHORTCUT_KEYBOARD_HEADER),
             chinese ? "键盘快捷键（点击右侧按键后重新输入）" :
                 "KEYBOARD (click a key, then press a replacement)", GlobalVar::currentTheme.CHECK);
         for (int index = 0; index < static_cast<int>(shortcutItems.size()); ++index) {
             const auto& item = shortcutItems[index];
-            const cv::Rect row = toCvRect(SettingLayout::shortcutKeyboardRow(index));
+            const cv::Rect row = toCanvasRect(SettingLayout::shortcutKeyboardRow(index));
             cv::line(page, { row.x, row.y }, { row.x + row.width, row.y },
                 jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
             textDrawer.putAlignLeft(page, { row.x + 8, row.y, 290, row.height },
@@ -453,7 +480,7 @@ private:
 
     void refreshAboutTab(cv::Mat& page) {
         const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
-        const cv::Rect hero = toCvRect(SettingLayout::ABOUT_HERO_CARD);
+        const cv::Rect hero = toCanvasRect(SettingLayout::ABOUT_HERO_CARD);
         drawCard(page, hero);
         const cv::Rect icon{ hero.x + hero.width / 2 - 32, hero.y + 34, 64, 64 };
         fillRoundedRect(page, icon, GlobalVar::currentTheme.CHECK, 14);
@@ -484,8 +511,8 @@ private:
             { hero.x + 30, hero.y + 350, hero.width - 60, 36 },
             commitText.c_str(), secondaryText());
 
-        const auto projectButton = toCvRect(SettingLayout::ABOUT_PROJECT_BUTTON);
-        const auto upstreamButton = toCvRect(SettingLayout::ABOUT_UPSTREAM_BUTTON);
+        const auto projectButton = toCanvasRect(SettingLayout::ABOUT_PROJECT_BUTTON);
+        const auto upstreamButton = toCanvasRect(SettingLayout::ABOUT_UPSTREAM_BUTTON);
         fillRoundedRect(page, projectButton, GlobalVar::currentTheme.CHECK, 8);
         fillRoundedRect(page, upstreamButton, GlobalVar::currentTheme.BG_TAG, 8);
         textDrawer.putAlignCenter(page, projectButton,
@@ -495,17 +522,17 @@ private:
     }
 
     void drawTabs() {
-        cv::rectangle(winCanvas, { 0, 0, winWidth, tabHeight },
+        cv::rectangle(winCanvas, { 0, 0, S(winWidth), S(tabHeight) },
             jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG), -1);
-        cv::line(winCanvas, { 0, tabHeight - 1 }, { winWidth, tabHeight - 1 },
-            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+        cv::line(winCanvas, { 0, S(tabHeight) - 1 }, { S(winWidth), S(tabHeight) - 1 },
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), std::max(1, S(1)));
         for (int index = 0; index < 4; ++index) {
             textDrawer.putAlignCenter(winCanvas,
-                { index * tabWidth, 0, tabWidth, tabHeight }, getUIString(2 + index),
+                { S(index * tabWidth), 0, S(tabWidth), S(tabHeight) }, getUIString(2 + index),
                 index == curTabIdx ? primaryText() : secondaryText());
         }
         cv::rectangle(winCanvas,
-            { curTabIdx * tabWidth + 18, tabHeight - 3, tabWidth - 36, 3 },
+            { S(curTabIdx * tabWidth + 18), S(tabHeight - 3), S(tabWidth - 36), S(3) },
             jarkUtils::to_cv_scalar(GlobalVar::currentTheme.CHECK), -1);
     }
 
@@ -513,22 +540,24 @@ private:
         const int thumbHeight = SettingLayout::scrollbarThumbHeight(contentHeight);
         if (thumbHeight == 0)
             return;
-        const int x = winWidth - SettingLayout::SCROLLBAR_RIGHT_MARGIN -
-            SettingLayout::SCROLLBAR_WIDTH;
-        const cv::Rect track{ x, tabHeight + 6, SettingLayout::SCROLLBAR_WIDTH,
-            SettingLayout::CONTENT_VIEW_HEIGHT - 12 };
-        fillRoundedRect(winCanvas, track, GlobalVar::currentTheme.BG_TAG, 2);
-        const cv::Rect thumb{ x, SettingLayout::scrollbarThumbY(
-            contentHeight, scrollOffsets[curTabIdx]), SettingLayout::SCROLLBAR_WIDTH, thumbHeight };
-        fillRoundedRect(winCanvas, thumb, GlobalVar::currentTheme.CHECK, 2);
+        const int x = S(winWidth - SettingLayout::SCROLLBAR_RIGHT_MARGIN -
+            SettingLayout::SCROLLBAR_WIDTH);
+        const cv::Rect track{ x, S(tabHeight + 6), S(SettingLayout::SCROLLBAR_WIDTH),
+            S(SettingLayout::CONTENT_VIEW_HEIGHT - 12) };
+        fillRoundedRect(winCanvas, track, GlobalVar::currentTheme.BG_TAG, S(2));
+        const cv::Rect thumb{ x, S(SettingLayout::scrollbarThumbY(
+            contentHeight, scrollOffsets[curTabIdx])), S(SettingLayout::SCROLLBAR_WIDTH),
+            S(thumbHeight) };
+        fillRoundedRect(winCanvas, thumb, GlobalVar::currentTheme.CHECK, S(2));
     }
 
     void drawingUI() override {
-        textDrawer.setSize(SettingLayout::FONT_SIZE);
+        // 文字直接以目标分辨率渲染，不再画小了再拉伸；字号对齐系统界面字体。
+        textDrawer.setSize(uiFontPixelSize());
         const int tab = std::clamp(static_cast<int>(curTabIdx), 0, 3);
         const int contentHeight = contentHeightForTab(tab);
         scrollOffsets[tab] = SettingLayout::clampScrollOffset(contentHeight, scrollOffsets[tab]);
-        cv::Mat page(contentHeight, winWidth, CV_8UC4,
+        cv::Mat page(S(contentHeight), S(winWidth), CV_8UC4,
             jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_DEEP));
         switch (tab) {
         case 0: refreshGeneralTab(page); break;
@@ -541,8 +570,13 @@ private:
         drawTabs();
         const int visibleHeight = std::min(SettingLayout::CONTENT_VIEW_HEIGHT,
             contentHeight - scrollOffsets[tab]);
-        page(cv::Rect{ 0, scrollOffsets[tab], winWidth, visibleHeight }).copyTo(
-            winCanvas(cv::Rect{ 0, tabHeight, winWidth, visibleHeight }));
+        // 裁剪与落位都在物理像素上进行，高度按缩放后的实际行数取小，避免舍入越界。
+        const int visiblePixels = std::min({ S(visibleHeight),
+            page.rows - S(scrollOffsets[tab]), winCanvas.rows - S(tabHeight) });
+        if (visiblePixels > 0) {
+            page(cv::Rect{ 0, S(scrollOffsets[tab]), page.cols, visiblePixels }).copyTo(
+                winCanvas(cv::Rect{ 0, S(tabHeight), page.cols, visiblePixels }));
+        }
         drawScrollbar(contentHeight);
     }
 
@@ -975,68 +1009,14 @@ private:
             PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
     }
 
-    // 常规页的开关与单选改用原生控件：自绘画布在高 DPI 下靠位图拉伸，文字必然发虚。
-    void createGeneralPanel() {
-        std::vector<SettingGeneralPanel::ToggleSpec> toggles;
-        toggles.reserve(generalTabCheckBoxList.size());
-        for (const auto& toggle : generalTabCheckBoxList)
-            toggles.push_back({ toggle.stringID, toggle.valuePtr });
-
-        std::vector<SettingGeneralPanel::ChoiceSpec> choices;
-        choices.reserve(generalTabRadioList.size());
-        for (const auto& radio : generalTabRadioList)
-            choices.push_back({ radio.stringIDs.front(), radio.stringIDs, radio.valuePtr });
-
-        generalPanel.create(m_hwnd, m_dpi, std::move(toggles), std::move(choices));
-        syncGeneralPanel();
-    }
-
-    void syncGeneralPanel() {
-        if (!generalPanel.isCreated())
-            return;
-        const bool active = curTabIdx == 0;
-        generalPanel.setVisible(active);
-        if (!active)
-            return;
-        generalPanel.place(0, toPhysical(tabHeight), toPhysical(winWidth), scrollOffsets[0]);
-    }
-
-    bool onMessage(UINT msg, WPARAM wParam, LPARAM lParam, LRESULT& result) override {
-        // drawingUI() 跑在绘制线程，SetWindowPos/ShowWindow 只能在 UI 线程调用，
-        // 所以面板的显隐与滚动位置在每次绘制完成的消息里同步。
-        if (msg == WM_MATWINDOW_DRAW_DONE) {
-            syncGeneralPanel();
-            return false;
-        }
-        if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORBTN) {
-            if (generalPanel.handleCtlColor(reinterpret_cast<HDC>(wParam),
-                reinterpret_cast<HWND>(lParam), result))
-                return true;
-        }
-        if (msg == WM_COMMAND) {
-            bool needsThemeRefresh = false;
-            bool needsCacheReload = false;
-            if (generalPanel.handleCommand(wParam, needsThemeRefresh, needsCacheReload)) {
-                if (needsCacheReload)
-                    GlobalVar::isNeedReloadImageCache = true;
-                if (needsThemeRefresh) {
-                    updateWindowAttribute();
-                    generalPanel.applyTheme();
-                    generalPanel.refreshTexts();
-                }
-                isNeedRefreshUI = true;
-                result = 0;
-                return true;
-            }
-        }
-        return false;
-    }
-
     void windowsMainLoop() {
         if (!createWindow(winWidth, winHeight, windowsClassName, getUIStringW(39)))
             return;
         hwnd = m_hwnd;
-        createGeneralPanel();
+        // 建好窗口才知道所在显示器的 DPI。画布按物理像素重建，MatWindow 贴图时源和
+        // 目标尺寸一致就是 1:1 拷贝，不会再经过拉伸。
+        winCanvas = cv::Mat(S(winHeight), S(winWidth), CV_8UC4,
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_DEEP));
         runMessageLoop();
         if (editorNameCapture)
             commitEditorName();

@@ -22,6 +22,8 @@ inline constexpr int TAB_WIDTH = CANVAS_WIDTH / 4;
 inline constexpr int CONTENT_VIEW_HEIGHT = CANVAS_HEIGHT - TAB_HEIGHT;
 inline constexpr int PAGE_PADDING = 20;
 inline constexpr int CARD_WIDTH = CANVAS_WIDTH - PAGE_PADDING * 2;
+// 行高、卡片高度等都按这个字号设计。实际绘制取的是系统界面字体的像素高度（见
+// Setting::uiFontPixelSize），这里只作为布局基准，保证行高留得下一行字。
 inline constexpr int FONT_SIZE = 16;
 inline constexpr int ABOUT_TITLE_FONT_SIZE = FONT_SIZE;
 inline constexpr int SCROLLBAR_WIDTH = 4;
