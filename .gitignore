@@ -6,3 +6,7 @@ build
 x64
 /artifacts/
 /FrostedBackdropDemo.obj
+
+# 大体积测试素材：本地存在即参与测试，不进仓库（见 test/corpus/README.md）
+/test/bigimage/
+/test/corpus/_local/
