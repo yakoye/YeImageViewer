@@ -3,6 +3,7 @@
 #include "BuildInfo.h"
 #include "FileAssociationManager.h"
 #include "MatWindow.h"
+#include "SettingGeneralPanel.h"
 #include "SettingCommand.h"
 #include "SettingLayout.h"
 #include "TextDrawer.h"
@@ -44,6 +45,7 @@ private:
     static inline std::vector<generalTabRadio> generalTabRadioList;
 
     TextDrawer textDrawer;
+    SettingGeneralPanel::Panel generalPanel;
     cv::Mat winCanvas;
     std::array<int, 4> scrollOffsets{};
     std::string associationFilter;
@@ -233,17 +235,21 @@ private:
 
     void refreshGeneralTab(cv::Mat& page) {
         const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
-        drawCard(page, toCvRect(SettingLayout::GENERAL_BEHAVIOR_CARD));
-        drawSectionTitle(page, toCvRect(SettingLayout::GENERAL_BEHAVIOR_CARD),
-            chinese ? "行为" : "BEHAVIOR");
-        for (const auto& item : generalTabCheckBoxList)
-            drawToggle(page, item);
+        // 行为与显示两组已由原生控件面板接管，这里不再自绘——面板会盖在上面，
+        // 画了也看不见，还会在面板创建失败时露出两套外观。
+        if (!generalPanel.isCreated()) {
+            drawCard(page, toCvRect(SettingLayout::GENERAL_BEHAVIOR_CARD));
+            drawSectionTitle(page, toCvRect(SettingLayout::GENERAL_BEHAVIOR_CARD),
+                chinese ? "行为" : "BEHAVIOR");
+            for (const auto& item : generalTabCheckBoxList)
+                drawToggle(page, item);
 
-        drawCard(page, toCvRect(SettingLayout::GENERAL_DISPLAY_CARD));
-        drawSectionTitle(page, toCvRect(SettingLayout::GENERAL_DISPLAY_CARD),
-            chinese ? "显示与交互" : "DISPLAY & INPUT");
-        for (const auto& radio : generalTabRadioList)
-            drawSegment(page, radio);
+            drawCard(page, toCvRect(SettingLayout::GENERAL_DISPLAY_CARD));
+            drawSectionTitle(page, toCvRect(SettingLayout::GENERAL_DISPLAY_CARD),
+                chinese ? "显示与交互" : "DISPLAY & INPUT");
+            for (const auto& radio : generalTabRadioList)
+                drawSegment(page, radio);
+        }
 
         const int editorCount = static_cast<int>(GlobalVar::externalEditors.size());
         const auto editorCard = SettingLayout::generalEditorCard(editorCount);
@@ -969,10 +975,68 @@ private:
             PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
     }
 
+    // 常规页的开关与单选改用原生控件：自绘画布在高 DPI 下靠位图拉伸，文字必然发虚。
+    void createGeneralPanel() {
+        std::vector<SettingGeneralPanel::ToggleSpec> toggles;
+        toggles.reserve(generalTabCheckBoxList.size());
+        for (const auto& toggle : generalTabCheckBoxList)
+            toggles.push_back({ toggle.stringID, toggle.valuePtr });
+
+        std::vector<SettingGeneralPanel::ChoiceSpec> choices;
+        choices.reserve(generalTabRadioList.size());
+        for (const auto& radio : generalTabRadioList)
+            choices.push_back({ radio.stringIDs.front(), radio.stringIDs, radio.valuePtr });
+
+        generalPanel.create(m_hwnd, m_dpi, std::move(toggles), std::move(choices));
+        syncGeneralPanel();
+    }
+
+    void syncGeneralPanel() {
+        if (!generalPanel.isCreated())
+            return;
+        const bool active = curTabIdx == 0;
+        generalPanel.setVisible(active);
+        if (!active)
+            return;
+        generalPanel.place(0, toPhysical(tabHeight), toPhysical(winWidth), scrollOffsets[0]);
+    }
+
+    bool onMessage(UINT msg, WPARAM wParam, LPARAM lParam, LRESULT& result) override {
+        // drawingUI() 跑在绘制线程，SetWindowPos/ShowWindow 只能在 UI 线程调用，
+        // 所以面板的显隐与滚动位置在每次绘制完成的消息里同步。
+        if (msg == WM_MATWINDOW_DRAW_DONE) {
+            syncGeneralPanel();
+            return false;
+        }
+        if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORBTN) {
+            if (generalPanel.handleCtlColor(reinterpret_cast<HDC>(wParam),
+                reinterpret_cast<HWND>(lParam), result))
+                return true;
+        }
+        if (msg == WM_COMMAND) {
+            bool needsThemeRefresh = false;
+            bool needsCacheReload = false;
+            if (generalPanel.handleCommand(wParam, needsThemeRefresh, needsCacheReload)) {
+                if (needsCacheReload)
+                    GlobalVar::isNeedReloadImageCache = true;
+                if (needsThemeRefresh) {
+                    updateWindowAttribute();
+                    generalPanel.applyTheme();
+                    generalPanel.refreshTexts();
+                }
+                isNeedRefreshUI = true;
+                result = 0;
+                return true;
+            }
+        }
+        return false;
+    }
+
     void windowsMainLoop() {
         if (!createWindow(winWidth, winHeight, windowsClassName, getUIStringW(39)))
             return;
         hwnd = m_hwnd;
+        createGeneralPanel();
         runMessageLoop();
         if (editorNameCapture)
             commitEditorName();

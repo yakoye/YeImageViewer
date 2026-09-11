@@ -4455,6 +4455,11 @@ int WINAPI wWinMain(
 
     Exiv2::enableBMFF();
 
+    // 视觉样式要先初始化公共控件，设置页的原生勾选框与单选钮才走当前系统主题。
+    INITCOMMONCONTROLSEX commonControls{ sizeof(INITCOMMONCONTROLSEX),
+        ICC_STANDARD_CLASSES | ICC_TAB_CLASSES | ICC_LINK_CLASS };
+    ::InitCommonControlsEx(&commonControls);
+
     ::HeapSetInformation(nullptr, HeapEnableTerminationOnCorruption, nullptr, 0);
     if (!SUCCEEDED(::CoInitialize(nullptr)))
         return 0;
