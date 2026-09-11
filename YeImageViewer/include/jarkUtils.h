@@ -82,6 +82,12 @@ using std::unordered_map;
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "uxtheme.lib")
+
+// 启用 ComCtl32 v6 视觉样式，否则原生控件是 Win95 时代的经典外观：设置页的勾选框
+// 会画成方框加勾，而不是当前系统主题的样式，深色下也无法正确着色。
+#pragma comment(linker, "\"/manifestdependency:type='win32' \
+name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
+processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #pragma comment(lib, "Secur32.lib")
 #pragma comment(lib, "Crypt32.lib")
 #pragma comment(lib, "Cfgmgr32.lib")

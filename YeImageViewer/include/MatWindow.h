@@ -258,7 +258,15 @@ protected:
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
 
+    // 子类先截获消息的钩子：放原生子控件的页面需要自己处理 WM_COMMAND 与
+    // WM_CTLCOLOR*，返回 true 表示已处理，result 即窗口过程的返回值。
+    virtual bool onMessage(UINT, WPARAM, LPARAM, LRESULT&) { return false; }
+
     LRESULT wndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
+        LRESULT handled = 0;
+        if (onMessage(msg, wParam, lParam, handled))
+            return handled;
+
         switch (msg) {
         case WM_PAINT: {
             PAINTSTRUCT ps;
