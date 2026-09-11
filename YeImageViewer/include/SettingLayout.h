@@ -28,9 +28,11 @@ inline constexpr int SCROLLBAR_WIDTH = 4;
 inline constexpr int SCROLLBAR_RIGHT_MARGIN = 5;
 
 inline constexpr Rect GENERAL_BEHAVIOR_CARD{ 20, 20, 580, 190 };
-inline constexpr Rect GENERAL_DISPLAY_CARD{ 20, 226, 580, 296 };
-inline constexpr int GENERAL_EDITOR_CARD_Y = 538;
-inline constexpr int GENERAL_EDITOR_ROW_Y = 578;
+// 显示卡片容纳 8 组单选：末行底边 746，再留 22 的下边距。
+inline constexpr Rect GENERAL_DISPLAY_CARD{ 20, 226, 580, 542 };
+inline constexpr int GENERAL_EDITOR_CARD_Y = 784;
+// 行起点与卡片顶边保持 40 的间距，留出卡片标题。
+inline constexpr int GENERAL_EDITOR_ROW_Y = GENERAL_EDITOR_CARD_Y + 40;
 inline constexpr int GENERAL_EDITOR_ROW_HEIGHT = 44;
 inline constexpr int GENERAL_EDITOR_ROW_GAP = 8;
 
@@ -86,11 +88,18 @@ inline constexpr std::array<Rect, 7> GENERAL_CHECK_BOXES{
     Rect{ 38, 178, 262, 28 },
 };
 
-inline constexpr std::array<Rect, 4> GENERAL_RADIOS{
-    Rect{ 38, 264, 544, 48 },
-    Rect{ 38, 326, 544, 48 },
-    Rect{ 38, 388, 544, 48 },
-    Rect{ 38, 450, 544, 48 },
+inline constexpr int GENERAL_RADIO_FIRST_Y = 264;
+inline constexpr int GENERAL_RADIO_PITCH = 62;
+inline constexpr int GENERAL_RADIO_HEIGHT = 48;
+
+constexpr Rect generalRadioRow(int index) {
+    return { 38, GENERAL_RADIO_FIRST_Y + index * GENERAL_RADIO_PITCH, 544,
+        GENERAL_RADIO_HEIGHT };
+}
+
+inline constexpr std::array<Rect, 8> GENERAL_RADIOS{
+    generalRadioRow(0), generalRadioRow(1), generalRadioRow(2), generalRadioRow(3),
+    generalRadioRow(4), generalRadioRow(5), generalRadioRow(6), generalRadioRow(7),
 };
 
 inline constexpr Rect ASSOCIATION_SEARCH{ 20, 20, 580, 46 };

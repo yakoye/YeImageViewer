@@ -118,6 +118,16 @@ private:
                 { toCvRect(SettingLayout::GENERAL_RADIOS[1]), {24, 25, 26, 27}, &GlobalVar::settingParameter.UI_Mode },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[2]), {28, 30, 31}, &GlobalVar::settingParameter.UI_LANG },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[3]), {36, 37, 38}, &GlobalVar::settingParameter.rightClickAction },
+                // 这四组存在 reserve 里（设置结构固定 4096 字节，加不了新成员），
+                // 正好都是 uint32_t，可以直接交给单选组按值编辑。
+                { toCvRect(SettingLayout::GENERAL_RADIOS[4]), {57, 58, 59, 60},
+                    &GlobalVar::settingParameter.reserve[ViewerOptions::OPEN_MODE_INDEX] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[5]), {61, 62, 63, 64},
+                    &GlobalVar::settingParameter.reserve[ViewerOptions::DOUBLE_CLICK_INDEX] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[6]), {65, 66, 67},
+                    &GlobalVar::settingParameter.reserve[ViewerOptions::EDGE_ARROWS_INDEX] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[7]), {68, 69, 70},
+                    &GlobalVar::settingParameter.reserve[ViewerOptions::DRAG_MOVES_WINDOW_INDEX] },
             };
         }
 

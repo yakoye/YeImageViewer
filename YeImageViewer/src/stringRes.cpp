@@ -64,6 +64,20 @@ std::string_view UIStringTable[STRING_MAX_NUM][2] = {
     {"优先1:1显示", "Prefer 1:1 Display"},
     {"Esc关闭图片", "Close Image with Esc"},
     {"记住最后使用的显示器", "Remember Last Monitor"},
+    {"打开图片方式", "Open Image As"},
+    {"沉浸预览", "Immersive"},
+    {"窗口适应图片", "Fit to Image"},
+    {"记住上次大小", "Last Size"},    // 60
+    {"双击图片", "Double-Click"},
+    {"切换全屏", "Toggle Fullscreen"},
+    {"最大化/还原", "Maximize/Restore"},
+    {"无动作", "Do Nothing"},
+    {"两侧翻页箭头", "Edge Paging Arrows"},
+    {"隐藏", "Hidden"},
+    {"显示", "Shown"},
+    {"拖动图片", "Dragging the Image"},
+    {"仅平移图片", "Always Pan"},
+    {"未放大时移动窗口", "Move Window"},   // 70
 };
 
 

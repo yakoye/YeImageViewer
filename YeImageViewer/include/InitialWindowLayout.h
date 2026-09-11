@@ -18,6 +18,24 @@ struct Result {
     double scale = 1.0;
 };
 
+// 「窗口适应图片尺寸」打开方式：客户区就是图片本身，按 1:1 显示；超过工作区上限时
+// 整体等比缩小，保持图片宽高比，不像默认的固定 4:3 窗口那样留出大片空白。
+inline Result calculateFitImage(int imageWidth, int imageHeight,
+    int workAreaWidth, int workAreaHeight) {
+    if (imageWidth <= 0 || imageHeight <= 0 || workAreaWidth <= 0 || workAreaHeight <= 0)
+        return {};
+
+    const int maximumWidth = std::max(1, workAreaWidth * WINDOW_MAX_WIDTH_PERCENT / 100);
+    const int maximumHeight = std::max(1, workAreaHeight * WINDOW_HEIGHT_PERCENT / 100);
+    const double scale = std::min({ 1.0,
+        static_cast<double>(maximumWidth) / imageWidth,
+        static_cast<double>(maximumHeight) / imageHeight });
+
+    const int renderedWidth = std::max(1, static_cast<int>(std::lround(imageWidth * scale)));
+    const int renderedHeight = std::max(1, static_cast<int>(std::lround(imageHeight * scale)));
+    return { renderedWidth, renderedHeight, renderedWidth, renderedHeight, scale };
+}
+
 inline Result calculate(int imageWidth, int imageHeight, int workAreaWidth, int workAreaHeight) {
     if (imageWidth <= 0 || imageHeight <= 0 || workAreaWidth <= 0 || workAreaHeight <= 0)
         return {};
