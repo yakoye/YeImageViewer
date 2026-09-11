@@ -515,6 +515,9 @@ public:
     bool presentationMode = false;
     bool framedWindowAnchored = false;
     bool presentationClickCandidate = false;
+    bool windowDragActive = false;
+    POINT windowDragCursorStart{};
+    RECT windowDragWindowStart{};
     bool presentationCloseClickCandidate = false;
     DWORD presentationWindowedStyle = 0;
     DWORD presentationWindowedExtendedStyle = 0;
@@ -1222,6 +1225,20 @@ public:
 
             if (presentationMode && cursorPos == CursorPos::centerArea) {
                 const bool insideImage = isPointInsideCurrentImage(x, y);
+                // 沉浸预览里图片区域此前直接吞掉按下事件，双击根本走不到判定。
+                // 图片上的双击要和普通窗口里一样触发配置的动作。
+                if (insideImage) {
+                    const auto now = std::chrono::steady_clock::now();
+                    const auto elapsed = duration_cast<std::chrono::milliseconds>(
+                        now - lastClickTimestamp).count();
+                    lastClickTimestamp = now;
+                    if (10 < elapsed && elapsed < 300) {
+                        presentationClickCandidate = false;
+                        mouseIsPressing = false;
+                        applyDoubleClickAction();
+                        return;
+                    }
+                }
                 presentationClickCandidate = !insideImage;
                 presentationPressPos = { x, y };
                 mousePressPos = { x, y };
@@ -1239,7 +1256,9 @@ public:
                 }
                 else if (ViewerOptions::dragShouldMoveWindow(
                     ViewerOptions::dragMovesWindow(GlobalVar::settingParameter.reserve),
-                    presentationMode, imageHasPanRoom())) {
+                    presentationMode, imageHasPanRoom()) &&
+                    // 最大化和全屏的窗口没法拖着走，这两种状态下保持原来的平移。
+                    !IsZoomed(m_hWnd) && !jarkUtils::IsFullScreen(m_hWnd)) {
                     beginWindowDrag();
                     return;
                 }
@@ -1309,6 +1328,11 @@ public:
         switch ((uint64_t)btnState)
         {
         case WM_LBUTTONUP: {//左键
+            if (windowDragActive) {
+                endWindowDrag();
+                operateQueue.push({ ActionENUM::refresh });
+                return;
+            }
             if (presentationCloseClickCandidate) {
                 const bool shouldClose = presentationMode &&
                     OverlayLayout::presentationCloseRect(winWidth, winHeight, overlayDpi()).contains(x, y);
@@ -1497,6 +1521,11 @@ public:
             cursorPosLast = cursorPos;
         }
 
+        if (windowDragActive) {
+            updateWindowDrag();
+            return;
+        }
+
         if (mouseIsPressing) {
             auto slideDelta = mousePos - mousePressPos;
             mousePressPos = mousePos;
@@ -1505,6 +1534,7 @@ public:
     }
 
     void OnMouseLeave() override {
+        endWindowDrag();
         SetCursor(LoadCursorW(nullptr, IDC_ARROW));
         cursorPosLast = cursorPos = CursorPos::centerArea;
         extraUIFlag = zoomTextEditing ? ShowExtraUI::bottomToolbar : ShowExtraUI::none;
@@ -2297,19 +2327,48 @@ public:
         return shownW > winWidth || shownH > winHeight;
     }
 
-    // 把拖拽交给系统的标题栏拖动循环：自己算偏移要另外处理鼠标捕获、贴边和多显示器，
-    // 没必要重造。
+    // 自己跟踪窗口拖动，不能用 SendMessage(WM_NCLBUTTONDOWN, HTCAPTION)。那会进入系统
+    // 的模态拖拽循环，而本程序的 Run() 是 PeekMessage 轮询加 DrawScene 的自绘循环，
+    // 模态循环期间它一次都不执行，画面直接冻住，看起来就是卡死。
     void beginWindowDrag() {
         mouseIsPressing = false;
+        if (!GetCursorPos(&windowDragCursorStart) ||
+            !GetWindowRect(m_hWnd, &windowDragWindowStart))
+            return;
+        windowDragActive = true;
+        SetCapture(m_hWnd);
+    }
+
+    void updateWindowDrag() {
+        POINT cursor{};
+        if (!windowDragActive || !GetCursorPos(&cursor))
+            return;
+        SetWindowPos(m_hWnd, nullptr,
+            windowDragWindowStart.left + (cursor.x - windowDragCursorStart.x),
+            windowDragWindowStart.top + (cursor.y - windowDragCursorStart.y),
+            0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    void endWindowDrag() {
+        if (!windowDragActive)
+            return;
+        windowDragActive = false;
         ReleaseCapture();
-        SendMessageW(m_hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
     }
 
     // 图片区域双击的动作可配置，默认沿用一直以来的切换全屏。
     void applyDoubleClickAction() {
         switch (ViewerOptions::doubleClickAction(GlobalVar::settingParameter.reserve)) {
         case ViewerOptions::DoubleClickAction::ToggleFullscreen:
-            jarkUtils::ToggleFullScreen(m_hWnd);
+            // 用户视角里的「全屏」就是打开图片时那个无边框沉浸预览。退出时等同于点击
+            // 图片外背景，回到带边框的普通窗口；再双击必须原样回到沉浸预览，而不是把
+            // 普通窗口切成系统全屏——那样背景会变成普通窗口的背景设置。
+            if (jarkUtils::IsFullScreen(m_hWnd))
+                jarkUtils::ToggleFullScreen(m_hWnd);
+            else if (presentationMode)
+                exitPresentationMode();
+            else
+                enterPresentationMode();
             break;
         case ViewerOptions::DoubleClickAction::ToggleMaximize:
             // 全屏和沉浸预览都没有“最大化”可言，这两种状态下双击一律理解为还原。
