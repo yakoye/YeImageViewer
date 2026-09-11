@@ -34,6 +34,7 @@ using std::unordered_map;
 #include "framework.h"
 #include "resource.h"
 #include "ShortcutConfig.h"
+#include "ViewerOptions.h"
 
 #include "psapi.h"
 #include <dxgi.h>
@@ -177,6 +178,7 @@ struct SettingParameter {
         memcpy(extCheckedListStr, defaultExtList.data(), defaultExtList.length() + 1);
         UI_LANG = (PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE) ? 0 : 1;
         ShortcutConfig::initialize(reserve, std::size(reserve));
+        ViewerOptions::initialize(reserve, std::size(reserve));
     }
 
     SettingParameter(const SettingParameter& other) {
@@ -251,6 +253,7 @@ struct SettingParameter {
         lastMonitorDevice[CCHDEVICENAME - 1] = L'\0';
 
         ShortcutConfig::initialize(reserve, std::size(reserve));
+        ViewerOptions::initialize(reserve, std::size(reserve));
 
         // 确保扩展名列表字符串以空字符结尾
         extCheckedListStr[sizeof(extCheckedListStr) - 1] = 0;

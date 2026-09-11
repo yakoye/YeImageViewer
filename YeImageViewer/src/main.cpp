@@ -776,6 +776,54 @@ public:
             SWP_NOACTIVATE | SWP_NOZORDER);
     }
 
+    // 按设置里的打开方式决定初始窗口形态。沉浸预览是默认；另外两种都留在带边框的
+    // 普通窗口里，区别只是窗口尺寸从哪来。
+    void applyConfiguredOpenMode() {
+        const auto mode = ViewerOptions::openMode(GlobalVar::settingParameter.reserve);
+        if (ViewerOptions::opensImmersive(mode) || !hasCurrentImagePath()) {
+            enterPresentationMode();
+            return;
+        }
+
+        if (mode == ViewerOptions::OpenMode::FitImage)
+            applyImageFittedWindowSize();
+        // RememberLastSize 不用做任何事：窗口创建时已经用了上次保存的 rect。
+
+        framedWindowAnchored = true;
+        operateQueue.push({ ActionENUM::refresh });
+    }
+
+    void applyImageFittedWindowSize() {
+        MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
+        if (!GetMonitorInfoW(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST), &monitorInfo))
+            return;
+        const bool upright = curPar.rotation == 0 || curPar.rotation == 2;
+        const int imageWidth = upright ? curPar.width : curPar.height;
+        const int imageHeight = upright ? curPar.height : curPar.width;
+        if (imageWidth <= 0 || imageHeight <= 0)
+            return;
+
+        const int workWidth = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
+        const int workHeight = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
+        const auto layout = InitialWindowLayout::calculateFitImage(
+            imageWidth, imageHeight, workWidth, workHeight);
+        if (layout.clientWidth <= 0 || layout.clientHeight <= 0)
+            return;
+
+        RECT outerRect{ 0, 0, layout.clientWidth, layout.clientHeight };
+        const auto style = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_STYLE));
+        const auto extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_EXSTYLE));
+        if (!AdjustWindowRectExForDpi(&outerRect, style, FALSE, extendedStyle, GetDpiForWindow(m_hWnd)))
+            AdjustWindowRectEx(&outerRect, style, FALSE, extendedStyle);
+
+        const int outerWidth = outerRect.right - outerRect.left;
+        const int outerHeight = outerRect.bottom - outerRect.top;
+        const int x = monitorInfo.rcWork.left + (workWidth - outerWidth) / 2;
+        const int y = monitorInfo.rcWork.top + (workHeight - outerHeight) / 2;
+        SetWindowPos(m_hWnd, nullptr, x, y, outerWidth, outerHeight,
+            SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+
     void applyHomeWindowSize() {
         MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
         if (!GetMonitorInfoW(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST),
@@ -1187,7 +1235,13 @@ public:
                 lastClickTimestamp = now;
 
                 if (10 < elapsed && elapsed < 300) { // 10 ~ 300 ms
-                    jarkUtils::ToggleFullScreen(m_hWnd);
+                    applyDoubleClickAction();
+                }
+                else if (ViewerOptions::dragShouldMoveWindow(
+                    ViewerOptions::dragMovesWindow(GlobalVar::settingParameter.reserve),
+                    presentationMode, imageHasPanRoom())) {
+                    beginWindowDrag();
+                    return;
                 }
                 else {
                     mouseIsPressing = true;
@@ -1197,7 +1251,7 @@ public:
             mousePressPos = { x, y };
 
             const auto toolbarCommand = ToolbarCommand::resolve(
-                OverlayLayout::hitTest(winWidth, winHeight, x, y, overlayDpi()));
+                OverlayLayout::hitTest(winWidth, winHeight, x, y, overlayDpi(), edgeArrowsEnabled()));
             switch (toolbarCommand) {
             case ToolbarCommand::Command::PreviousImage: operateQueue.push({ ActionENUM::preImg }); break;
             case ToolbarCommand::Command::PlayPause: operateQueue.push({ ActionENUM::toggleSlideshow }); break;
@@ -1324,7 +1378,7 @@ public:
             cursorPos = CursorPos::centerArea;
         }
         else {
-            switch (OverlayLayout::hitTest(winWidth, winHeight, x, y, overlayDpi())) {
+            switch (OverlayLayout::hitTest(winWidth, winHeight, x, y, overlayDpi(), edgeArrowsEnabled())) {
             case OverlayLayout::Hit::EdgePreviousImage:
                 cursorPos = CursorPos::leftEdge;
                 break;
@@ -1401,7 +1455,7 @@ public:
         if (cursorPosLast != cursorPos) {
             switch (cursorPos) {
             case CursorPos::leftEdge:
-                extraUIFlag = ShowExtraUI::bottomToolbar;
+                extraUIFlag = ShowExtraUI::leftArrow;
                 break;
             case CursorPos::centerTop:
                 extraUIFlag = curPar.imageAssetPtr->format == ImageFormat::Animated ?
@@ -1412,7 +1466,7 @@ public:
                 extraUIFlag = ShowExtraUI::none;
                 break;
             case CursorPos::rightEdge:
-                extraUIFlag = ShowExtraUI::bottomToolbar;
+                extraUIFlag = ShowExtraUI::rightArrow;
                 break;
             case CursorPos::toolbarRotateLeft:
             case CursorPos::toolbarRotateRight:
@@ -2222,6 +2276,55 @@ public:
         GlobalVar::settingParameter.backgroundMode = static_cast<uint32_t>(mode);
         ApplyWindowBackgroundMode();
         operateQueue.push({ ActionENUM::refresh });
+    }
+
+    // 两侧翻页箭头默认关闭，只有设置里打开后才参与命中和绘制。
+    bool edgeArrowsEnabled() const {
+        return ViewerOptions::edgeArrowsEnabled(GlobalVar::settingParameter.reserve) &&
+            imgFileList.size() > 1;
+    }
+
+    // 图片在窗口里是否还有可平移的余量。缩放后的图片没有任何一边超出窗口时，拖拽只是
+    // 把图片推到一边，没有实际意义。
+    bool imageHasPanRoom() const {
+        const bool upright = curPar.rotation == 0 || curPar.rotation == 2;
+        const int srcW = upright ? curPar.width : curPar.height;
+        const int srcH = upright ? curPar.height : curPar.width;
+        if (srcW <= 0 || srcH <= 0 || curPar.ZOOM_BASE <= 0)
+            return true;
+        const int64_t shownW = static_cast<int64_t>(srcW) * curPar.zoomTarget / curPar.ZOOM_BASE;
+        const int64_t shownH = static_cast<int64_t>(srcH) * curPar.zoomTarget / curPar.ZOOM_BASE;
+        return shownW > winWidth || shownH > winHeight;
+    }
+
+    // 把拖拽交给系统的标题栏拖动循环：自己算偏移要另外处理鼠标捕获、贴边和多显示器，
+    // 没必要重造。
+    void beginWindowDrag() {
+        mouseIsPressing = false;
+        ReleaseCapture();
+        SendMessageW(m_hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+    }
+
+    // 图片区域双击的动作可配置，默认沿用一直以来的切换全屏。
+    void applyDoubleClickAction() {
+        switch (ViewerOptions::doubleClickAction(GlobalVar::settingParameter.reserve)) {
+        case ViewerOptions::DoubleClickAction::ToggleFullscreen:
+            jarkUtils::ToggleFullScreen(m_hWnd);
+            break;
+        case ViewerOptions::DoubleClickAction::ToggleMaximize:
+            // 全屏和沉浸预览都没有“最大化”可言，这两种状态下双击一律理解为还原。
+            // 注意不能走 OnMaximizeRequested()，那是进入沉浸预览而不是最大化窗口。
+            if (jarkUtils::IsFullScreen(m_hWnd))
+                jarkUtils::ToggleFullScreen(m_hWnd);
+            else if (presentationMode)
+                exitPresentationMode();
+            else
+                ShowWindow(m_hWnd, IsZoomed(m_hWnd) ? SW_RESTORE : SW_MAXIMIZE);
+            break;
+        case ViewerOptions::DoubleClickAction::None:
+        case ViewerOptions::DoubleClickAction::Count:
+            break;
+        }
     }
 
     // 浮动工具栏、关闭按钮和缩放指示器都按窗口所在显示器的 DPI 布局，避免高分屏下
@@ -3513,8 +3616,17 @@ public:
             drawViewerToolbar(canvas);
         } break;
         case ShowExtraUI::leftArrow:
-        case ShowExtraUI::rightArrow:
-            break;
+        case ShowExtraUI::rightArrow: {
+            const bool previous = extraUIFlag == ShowExtraUI::leftArrow;
+            const auto target = previous ?
+                OverlayLayout::edgePreviousRect(canvasWidth, canvasHeight, overlayDpi()) :
+                OverlayLayout::edgeNextRect(canvasWidth, canvasHeight, overlayDpi());
+            auto surface = roundedSurface(target.width, target.height,
+                target.width / 2, 0xD10D0F14u, OverlayLayout::TOOLBAR_BORDER);
+            jarkUtils::overlayImg(canvas, surface, target.x, target.y);
+            drawOverlayIcon(canvas, previous ? extraUIRes.leftArrow : extraUIRes.rightArrow,
+                target);
+        } break;
         case ShowExtraUI::animationBar: {
             auto& img = curPar.isAnimationPause ? extraUIRes.animationBarPausing : extraUIRes.animationBarPlaying;
             jarkUtils::overlayImg(canvas, img, (canvasWidth - img.cols) / 2, 0);
@@ -4312,7 +4424,7 @@ int WINAPI wWinMain(
     YeImageViewerApp app(!filePath.empty());
     if (SUCCEEDED(app.InitWindow(hInstance))) {
         app.initOpenFile(filePath);
-        app.enterPresentationMode();
+        app.applyConfiguredOpenMode();
         app.DrawScene();
         app.ShowInitialWindow();
         app.Run();

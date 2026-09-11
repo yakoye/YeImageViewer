@@ -18,6 +18,7 @@
 #include "SettingCommand.h"
 #include "SettingLayout.h"
 #include "ShortcutConfig.h"
+#include "ViewerOptions.h"
 #include "TextRenderingPolicy.h"
 #include "ToolbarCommand.h"
 #include "WheelInput.h"
@@ -348,6 +349,27 @@ void expectOverlayLayout() {
             buttonHighDpi.x + buttonHighDpi.width / 2,
             buttonHighDpi.y + buttonHighDpi.height / 2,
             highDpi) == OverlayLayout::Hit::ToolbarPreviousImage);
+
+    // 两侧翻页按钮默认关闭：关着的时候那片区域必须照旧落回原来的命中结果。
+    constexpr auto edgePrevious = OverlayLayout::edgePreviousRect(width, height);
+    constexpr auto edgeNext = OverlayLayout::edgeNextRect(width, height);
+    const auto edgeHit = [&](OverlayLayout::Rect rect, bool enabled) {
+        return OverlayLayout::hitTest(width, height,
+            rect.x + rect.width / 2, rect.y + rect.height / 2,
+            OverlayLayout::BASE_DPI, enabled);
+    };
+    passOrFail("edge paging buttons sit centred on both sides and scale with DPI",
+        edgePrevious.width == OverlayLayout::BASE_EDGE_ARROW_SIZE &&
+        edgePrevious.x == OverlayLayout::BASE_EDGE_ARROW_MARGIN &&
+        edgePrevious.y + edgePrevious.height / 2 == height / 2 &&
+        edgeNext.x + edgeNext.width == width - OverlayLayout::BASE_EDGE_ARROW_MARGIN &&
+        OverlayLayout::edgePreviousRect(width * 2, height * 2, highDpi).width ==
+            OverlayLayout::BASE_EDGE_ARROW_SIZE * 2);
+    passOrFail("edge paging responds only while the option is enabled",
+        edgeHit(edgePrevious, true) == OverlayLayout::Hit::EdgePreviousImage &&
+        edgeHit(edgeNext, true) == OverlayLayout::Hit::EdgeNextImage &&
+        edgeHit(edgePrevious, false) != OverlayLayout::Hit::EdgePreviousImage &&
+        edgeHit(edgeNext, false) != OverlayLayout::Hit::EdgeNextImage);
     passOrFail("viewer toolbar uses a flat rounded surface without square-corner borders",
         OverlayLayout::TOOLBAR_BORDER == 0x00000000u);
     passOrFail("toolbar keeps one clean visual weight for icons and zoom percentage",
@@ -532,7 +554,81 @@ void expectImageViewTransform() {
         combined.x == 3 && combined.y == 5);
 }
 
+void expectViewerOptions() {
+    std::array<uint32_t, 777> storage{};
+    ViewerOptions::initialize(storage.data(), storage.size());
+    passOrFail("viewer options start from the documented defaults",
+        storage[ViewerOptions::MAGIC_INDEX] == ViewerOptions::STORAGE_MAGIC &&
+        !ViewerOptions::edgeArrowsEnabled(storage.data()) &&
+        ViewerOptions::dragMovesWindow(storage.data()) &&
+        ViewerOptions::doubleClickAction(storage.data()) ==
+            ViewerOptions::DoubleClickAction::ToggleFullscreen &&
+        ViewerOptions::openMode(storage.data()) ==
+            ViewerOptions::OpenMode::ImmersivePreview);
+
+    // 新配置区不能和快捷键区重叠，否则改一个会串掉另一个。
+    passOrFail("viewer options live clear of the shortcut storage range",
+        ViewerOptions::STORAGE_BASE >
+            ShortcutConfig::BINDING_BASE_INDEX + ShortcutConfig::DEFAULT_BINDINGS.size());
+
+    ViewerOptions::setEdgeArrowsEnabled(storage.data(), true);
+    ViewerOptions::setDoubleClickAction(storage.data(),
+        ViewerOptions::DoubleClickAction::ToggleMaximize);
+    ViewerOptions::setOpenMode(storage.data(), ViewerOptions::OpenMode::FitImage);
+    ViewerOptions::setDragMovesWindow(storage.data(), false);
+    ViewerOptions::initialize(storage.data(), storage.size());
+    passOrFail("valid viewer options survive revalidation",
+        ViewerOptions::edgeArrowsEnabled(storage.data()) &&
+        !ViewerOptions::dragMovesWindow(storage.data()) &&
+        ViewerOptions::doubleClickAction(storage.data()) ==
+            ViewerOptions::DoubleClickAction::ToggleMaximize &&
+        ViewerOptions::openMode(storage.data()) == ViewerOptions::OpenMode::FitImage);
+
+    // 设置文件里这块区域可能是旧版留下的任意字节，越界值必须回落到默认。
+    storage[ViewerOptions::DOUBLE_CLICK_INDEX] = 999u;
+    storage[ViewerOptions::OPEN_MODE_INDEX] = 999u;
+    storage[ViewerOptions::EDGE_ARROWS_INDEX] = 7u;
+    ViewerOptions::initialize(storage.data(), storage.size());
+    passOrFail("out-of-range viewer options fall back to defaults",
+        ViewerOptions::doubleClickAction(storage.data()) ==
+            ViewerOptions::DoubleClickAction::ToggleFullscreen &&
+        ViewerOptions::openMode(storage.data()) ==
+            ViewerOptions::OpenMode::ImmersivePreview &&
+        !ViewerOptions::edgeArrowsEnabled(storage.data()));
+
+    std::array<uint32_t, 777> legacy{};
+    ViewerOptions::initialize(legacy.data(), legacy.size());
+    passOrFail("a settings file predating viewer options is seeded rather than left blank",
+        legacy[ViewerOptions::VERSION_INDEX] == ViewerOptions::STORAGE_VERSION &&
+        ViewerOptions::openMode(legacy.data()) == ViewerOptions::OpenMode::ImmersivePreview);
+
+    passOrFail("dragging moves the window only when the image cannot pan",
+        ViewerOptions::dragShouldMoveWindow(true, false, false) &&
+        !ViewerOptions::dragShouldMoveWindow(true, false, true) &&
+        !ViewerOptions::dragShouldMoveWindow(true, true, false) &&
+        !ViewerOptions::dragShouldMoveWindow(false, false, false));
+
+    passOrFail("only the immersive preview mode opens without a window frame",
+        ViewerOptions::opensImmersive(ViewerOptions::OpenMode::ImmersivePreview) &&
+        !ViewerOptions::opensImmersive(ViewerOptions::OpenMode::FitImage) &&
+        !ViewerOptions::opensImmersive(ViewerOptions::OpenMode::RememberLastSize));
+}
+
 void expectInitialWindowLayout() {
+    const auto fitted = InitialWindowLayout::calculateFitImage(640, 480, 1920, 1080);
+    passOrFail("the fit-image window matches the picture one to one when it fits",
+        fitted.scale == 1.0 && fitted.clientWidth == 640 && fitted.clientHeight == 480);
+
+    const auto fittedLarge = InitialWindowLayout::calculateFitImage(3840, 2160, 1920, 1080);
+    passOrFail("an oversized picture shrinks to the work-area cap while keeping its ratio",
+        fittedLarge.clientWidth == 1728 && fittedLarge.clientHeight == 972 &&
+        fittedLarge.scale < 1.0);
+
+    const auto fittedTall = InitialWindowLayout::calculateFitImage(400, 4000, 1920, 1080);
+    passOrFail("a very tall picture is capped by height and stays proportional",
+        fittedTall.clientHeight == 972 &&
+        fittedTall.clientWidth == std::lround(400.0 * 972.0 / 4000.0));
+
     const auto small = InitialWindowLayout::calculate(640, 480, 1920, 1080);
     passOrFail("the hidden startup seed keeps small source dimensions intact",
         small.scale == 1.0 && small.renderedImageWidth == 640 && small.renderedImageHeight == 480 &&
@@ -896,7 +992,10 @@ void expectSettingLayout() {
         everySettingControlRoutes &= command.kind == SettingCommand::Kind::GeneralToggle &&
             command.index == index;
     }
-    constexpr std::array<int, 4> radioOptions{ 3, 3, 2, 2 };
+    // 必须与 SettingCommand::resolve 里的 optionCounts 逐项一致，否则命中判定会用错
+    // 分段宽度。数量与 GENERAL_RADIOS 对齐由下面的静态断言兜住。
+    constexpr std::array<int, 8> radioOptions{ 3, 3, 2, 2, 3, 3, 2, 2 };
+    static_assert(radioOptions.size() == SettingLayout::GENERAL_RADIOS.size());
     for (int rowIndex = 0; rowIndex < static_cast<int>(SettingLayout::GENERAL_RADIOS.size()); ++rowIndex) {
         const auto row = SettingLayout::GENERAL_RADIOS[rowIndex];
         const int segmentX = row.x + 138;
@@ -1398,6 +1497,7 @@ int main(int argc, char* argv[]) {
     expectZoomEditPolicy();
     expectSlideshowPolicy();
     expectImageViewTransform();
+    expectViewerOptions();
     expectInitialWindowLayout();
     expectPresentationLayout();
     expectMonitorPlacement();

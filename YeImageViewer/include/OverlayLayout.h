@@ -27,6 +27,8 @@ inline constexpr int ZOOM_INDICATOR_MARGIN = 24;
 inline constexpr uint32_t TOOLBAR_BORDER = 0x00000000u;
 inline constexpr int BASE_DPI = 96;
 inline constexpr int MINIMUM_TOOLBAR_SCALE = 400;
+inline constexpr int BASE_EDGE_ARROW_SIZE = 40;
+inline constexpr int BASE_EDGE_ARROW_MARGIN = 12;
 // SVG 图标按基准尺寸的若干倍渲染，绘制时只做 INTER_AREA 缩小。高 DPI 下工具栏会
 // 按比例放大，若仍按基准尺寸渲染位图再拉大，图标就是糊的。4 倍覆盖到 384 DPI。
 inline constexpr int ICON_SUPERSAMPLE = 4;
@@ -170,6 +172,21 @@ constexpr Rect zoomTextRect(int width, int height, int dpi = BASE_DPI) {
 }
 constexpr Rect zoomInRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 545, BASE_SMALL_BUTTON_SIZE, dpi); }
 
+// 左右两侧的翻页按钮。默认关闭，由设置里的开关决定是否参与命中与绘制。
+constexpr Rect edgePreviousRect(int, int canvasHeight, int dpi = BASE_DPI) {
+    const int scale = dpiScale(dpi);
+    const int size = scaled(BASE_EDGE_ARROW_SIZE, scale);
+    const int margin = scaled(BASE_EDGE_ARROW_MARGIN, scale);
+    return { margin, (canvasHeight - size) / 2, size, size };
+}
+
+constexpr Rect edgeNextRect(int canvasWidth, int canvasHeight, int dpi = BASE_DPI) {
+    const int scale = dpiScale(dpi);
+    const int size = scaled(BASE_EDGE_ARROW_SIZE, scale);
+    const int margin = scaled(BASE_EDGE_ARROW_MARGIN, scale);
+    return { canvasWidth - margin - size, (canvasHeight - size) / 2, size, size };
+}
+
 constexpr Rect toolbarRevealRect(int canvasWidth, int canvasHeight, int dpi = BASE_DPI) {
     const int scale = toolbarScale(canvasWidth, dpi);
     const auto toolbar = toolbarRect(canvasWidth, canvasHeight, dpi);
@@ -187,11 +204,17 @@ constexpr bool isToolbarControl(Hit hit) {
     return hit >= Hit::ToolbarPreviousImage && hit <= Hit::Toolbar;
 }
 
-constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y, int dpi = BASE_DPI) {
+constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y, int dpi = BASE_DPI,
+    bool edgeArrowsEnabled = false) {
     if (canvasWidth < 100 || canvasHeight < 100)
         return Hit::None;
 
     if (presentationCloseRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::PresentationClose;
+    // 边缘翻页排在工具栏之前判定：唤出工具栏的热区很大，会盖住两侧按钮。
+    if (edgeArrowsEnabled) {
+        if (edgePreviousRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::EdgePreviousImage;
+        if (edgeNextRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::EdgeNextImage;
+    }
     if (toolbarPreviousRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ToolbarPreviousImage;
     if (toolbarPlayPauseRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ToolbarPlayPause;
     if (toolbarNextRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ToolbarNextImage;
