@@ -358,13 +358,25 @@ void expectOverlayLayout() {
             rect.x + rect.width / 2, rect.y + rect.height / 2,
             OverlayLayout::BASE_DPI, enabled);
     };
-    passOrFail("edge paging buttons sit centred on both sides and scale with DPI",
-        edgePrevious.width == OverlayLayout::BASE_EDGE_ARROW_SIZE &&
+    passOrFail("edge paging buttons are upright rectangles centred on both sides",
+        edgePrevious.width == OverlayLayout::BASE_EDGE_ARROW_WIDTH &&
+        edgePrevious.height == OverlayLayout::BASE_EDGE_ARROW_HEIGHT &&
+        edgePrevious.height > edgePrevious.width &&
         edgePrevious.x == OverlayLayout::BASE_EDGE_ARROW_MARGIN &&
         edgePrevious.y + edgePrevious.height / 2 == height / 2 &&
         edgeNext.x + edgeNext.width == width - OverlayLayout::BASE_EDGE_ARROW_MARGIN &&
         OverlayLayout::edgePreviousRect(width * 2, height * 2, highDpi).width ==
-            OverlayLayout::BASE_EDGE_ARROW_SIZE * 2);
+            OverlayLayout::BASE_EDGE_ARROW_WIDTH * 2);
+
+    // 热区比按钮本身大，而且贴着窗口边缘，鼠标扫到边上就能命中。
+    constexpr auto edgePreviousHit = OverlayLayout::edgePreviousHitRect(width, height);
+    constexpr auto edgeNextHit = OverlayLayout::edgeNextHitRect(width, height);
+    passOrFail("edge paging hit areas reach the window edge and exceed the drawn button",
+        edgePreviousHit.x == 0 &&
+        edgeNextHit.x + edgeNextHit.width == width &&
+        edgePreviousHit.width > edgePrevious.width &&
+        edgePreviousHit.height > edgePrevious.height &&
+        edgePreviousHit.y + edgePreviousHit.height / 2 == height / 2);
     passOrFail("edge paging responds only while the option is enabled",
         edgeHit(edgePrevious, true) == OverlayLayout::Hit::EdgePreviousImage &&
         edgeHit(edgeNext, true) == OverlayLayout::Hit::EdgeNextImage &&

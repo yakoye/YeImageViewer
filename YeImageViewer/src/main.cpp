@@ -3681,10 +3681,15 @@ public:
                 OverlayLayout::edgePreviousRect(canvasWidth, canvasHeight, overlayDpi()) :
                 OverlayLayout::edgeNextRect(canvasWidth, canvasHeight, overlayDpi());
             auto surface = roundedSurface(target.width, target.height,
-                target.width / 2, 0xD10D0F14u, OverlayLayout::TOOLBAR_BORDER);
+                target.width / 3, 0xD10D0F14u, OverlayLayout::TOOLBAR_BORDER);
             jarkUtils::overlayImg(canvas, surface, target.x, target.y);
+            // 按钮是竖向长方形，图标按较窄的一边取尺寸并居中，免得被拉长。
+            const int iconSize = std::min(target.width, target.height) * 2 / 3;
+            const OverlayLayout::Rect iconBox{
+                target.x + (target.width - iconSize) / 2,
+                target.y + (target.height - iconSize) / 2, iconSize, iconSize };
             drawOverlayIcon(canvas, previous ? extraUIRes.leftArrow : extraUIRes.rightArrow,
-                target);
+                iconBox);
         } break;
         case ShowExtraUI::animationBar: {
             auto& img = curPar.isAnimationPause ? extraUIRes.animationBarPausing : extraUIRes.animationBarPlaying;
