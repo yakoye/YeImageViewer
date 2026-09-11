@@ -258,15 +258,11 @@ protected:
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
 
-    // 子类先截获消息的钩子：放原生子控件的页面需要自己处理 WM_COMMAND 与
-    // WM_CTLCOLOR*，返回 true 表示已处理，result 即窗口过程的返回值。
-    virtual bool onMessage(UINT, WPARAM, LPARAM, LRESULT&) { return false; }
+    // DPI 变化后的钩子。画布按物理像素绘制的子类必须在这里按新 DPI 重建画布，
+    // 否则窗口尺寸变了而画布没变，内容会填不满客户区或被裁掉。
+    virtual void onDpiChanged() {}
 
     LRESULT wndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
-        LRESULT handled = 0;
-        if (onMessage(msg, wParam, lParam, handled))
-            return handled;
-
         switch (msg) {
         case WM_PAINT: {
             PAINTSTRUCT ps;
@@ -308,6 +304,9 @@ protected:
             // 自己算尺寸，否则窗口仍会超出屏幕。
             applyDpiScaledSize(fittedDpi == updatedDpi ?
                 reinterpret_cast<const RECT*>(lParam) : nullptr);
+            // 窗口尺寸已按新 DPI 变了，画布必须跟着重建，否则内容填不满客户区。
+            onDpiChanged();
+            isNeedRefreshUI = true;
             invalidate();
             return 0;
         }

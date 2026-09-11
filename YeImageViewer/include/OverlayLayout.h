@@ -27,8 +27,13 @@ inline constexpr int ZOOM_INDICATOR_MARGIN = 24;
 inline constexpr uint32_t TOOLBAR_BORDER = 0x00000000u;
 inline constexpr int BASE_DPI = 96;
 inline constexpr int MINIMUM_TOOLBAR_SCALE = 400;
-inline constexpr int BASE_EDGE_ARROW_SIZE = 40;
+// 两侧翻页按钮画成竖向长方形，比正方形更贴合「翻页」的视觉语言，也更容易点中。
+inline constexpr int BASE_EDGE_ARROW_WIDTH = 34;
+inline constexpr int BASE_EDGE_ARROW_HEIGHT = 76;
 inline constexpr int BASE_EDGE_ARROW_MARGIN = 12;
+// 热区比按钮本身宽得多、也高得多：鼠标从画面中间往边上扫时不必精确对准按钮。
+inline constexpr int BASE_EDGE_HIT_WIDTH = 72;
+inline constexpr int BASE_EDGE_HIT_HEIGHT = 220;
 // SVG 图标按基准尺寸的若干倍渲染，绘制时只做 INTER_AREA 缩小。高 DPI 下工具栏会
 // 按比例放大，若仍按基准尺寸渲染位图再拉大，图标就是糊的。4 倍覆盖到 384 DPI。
 inline constexpr int ICON_SUPERSAMPLE = 4;
@@ -175,16 +180,33 @@ constexpr Rect zoomInRect(int width, int height, int dpi = BASE_DPI) { return ba
 // 左右两侧的翻页按钮。默认关闭，由设置里的开关决定是否参与命中与绘制。
 constexpr Rect edgePreviousRect(int, int canvasHeight, int dpi = BASE_DPI) {
     const int scale = dpiScale(dpi);
-    const int size = scaled(BASE_EDGE_ARROW_SIZE, scale);
+    const int width = scaled(BASE_EDGE_ARROW_WIDTH, scale);
+    const int height = std::min(scaled(BASE_EDGE_ARROW_HEIGHT, scale), canvasHeight);
     const int margin = scaled(BASE_EDGE_ARROW_MARGIN, scale);
-    return { margin, (canvasHeight - size) / 2, size, size };
+    return { margin, (canvasHeight - height) / 2, width, height };
 }
 
 constexpr Rect edgeNextRect(int canvasWidth, int canvasHeight, int dpi = BASE_DPI) {
     const int scale = dpiScale(dpi);
-    const int size = scaled(BASE_EDGE_ARROW_SIZE, scale);
+    const int width = scaled(BASE_EDGE_ARROW_WIDTH, scale);
+    const int height = std::min(scaled(BASE_EDGE_ARROW_HEIGHT, scale), canvasHeight);
     const int margin = scaled(BASE_EDGE_ARROW_MARGIN, scale);
-    return { canvasWidth - margin - size, (canvasHeight - size) / 2, size, size };
+    return { canvasWidth - margin - width, (canvasHeight - height) / 2, width, height };
+}
+
+// 命中用的热区：以按钮为中心向外扩，贴着窗口边缘，从画面中间扫过去就能命中。
+constexpr Rect edgePreviousHitRect(int canvasWidth, int canvasHeight, int dpi = BASE_DPI) {
+    const int scale = dpiScale(dpi);
+    const int width = std::min(scaled(BASE_EDGE_HIT_WIDTH, scale), canvasWidth / 3);
+    const int height = std::min(scaled(BASE_EDGE_HIT_HEIGHT, scale), canvasHeight);
+    return { 0, (canvasHeight - height) / 2, width, height };
+}
+
+constexpr Rect edgeNextHitRect(int canvasWidth, int canvasHeight, int dpi = BASE_DPI) {
+    const int scale = dpiScale(dpi);
+    const int width = std::min(scaled(BASE_EDGE_HIT_WIDTH, scale), canvasWidth / 3);
+    const int height = std::min(scaled(BASE_EDGE_HIT_HEIGHT, scale), canvasHeight);
+    return { canvasWidth - width, (canvasHeight - height) / 2, width, height };
 }
 
 constexpr Rect toolbarRevealRect(int canvasWidth, int canvasHeight, int dpi = BASE_DPI) {
@@ -212,8 +234,8 @@ constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y, int dpi =
     if (presentationCloseRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::PresentationClose;
     // 边缘翻页排在工具栏之前判定：唤出工具栏的热区很大，会盖住两侧按钮。
     if (edgeArrowsEnabled) {
-        if (edgePreviousRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::EdgePreviousImage;
-        if (edgeNextRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::EdgeNextImage;
+        if (edgePreviousHitRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::EdgePreviousImage;
+        if (edgeNextHitRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::EdgeNextImage;
     }
     if (toolbarPreviousRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ToolbarPreviousImage;
     if (toolbarPlayPauseRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ToolbarPlayPause;

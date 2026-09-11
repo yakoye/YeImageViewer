@@ -29,10 +29,10 @@ inline constexpr int ABOUT_TITLE_FONT_SIZE = FONT_SIZE;
 inline constexpr int SCROLLBAR_WIDTH = 4;
 inline constexpr int SCROLLBAR_RIGHT_MARGIN = 5;
 
-inline constexpr Rect GENERAL_BEHAVIOR_CARD{ 20, 20, 580, 190 };
-// 显示卡片容纳 8 组单选：末行底边 746，再留 22 的下边距。
-inline constexpr Rect GENERAL_DISPLAY_CARD{ 20, 226, 580, 542 };
-inline constexpr int GENERAL_EDITOR_CARD_Y = 784;
+inline constexpr Rect GENERAL_BEHAVIOR_CARD{ 20, 20, 580, 178 };
+// 显示卡片容纳 8 组单选：首行 252，行距 48，末行底边 252+7*48+38 = 626，留 18 下边距。
+inline constexpr Rect GENERAL_DISPLAY_CARD{ 20, 214, 580, 430 };
+inline constexpr int GENERAL_EDITOR_CARD_Y = 660;
 // 行起点与卡片顶边保持 40 的间距，留出卡片标题。
 inline constexpr int GENERAL_EDITOR_ROW_Y = GENERAL_EDITOR_CARD_Y + 40;
 inline constexpr int GENERAL_EDITOR_ROW_HEIGHT = 44;
@@ -80,19 +80,21 @@ constexpr int generalContentHeight(int editorCount) {
 
 inline constexpr int GENERAL_CONTENT_HEIGHT = generalContentHeight(10);
 
+// 四行两列，行距从 40 收到 36；高度保持 32，仍留得下一行字。
 inline constexpr std::array<Rect, 7> GENERAL_CHECK_BOXES{
-    Rect{ 38, 58, 262, 32 },
-    Rect{ 318, 58, 262, 32 },
-    Rect{ 38, 98, 262, 32 },
-    Rect{ 318, 98, 262, 32 },
-    Rect{ 38, 138, 262, 32 },
-    Rect{ 318, 138, 262, 32 },
-    Rect{ 38, 178, 262, 28 },
+    Rect{ 38, 54, 262, 32 },
+    Rect{ 318, 54, 262, 32 },
+    Rect{ 38, 90, 262, 32 },
+    Rect{ 318, 90, 262, 32 },
+    Rect{ 38, 126, 262, 32 },
+    Rect{ 318, 126, 262, 32 },
+    Rect{ 38, 162, 262, 32 },
 };
 
-inline constexpr int GENERAL_RADIO_FIRST_Y = 264;
-inline constexpr int GENERAL_RADIO_PITCH = 62;
-inline constexpr int GENERAL_RADIO_HEIGHT = 48;
+// 八组单选按 62 的行距排下来会占掉近 500 像素，整页显得松垮，这里收紧到 48。
+inline constexpr int GENERAL_RADIO_FIRST_Y = 252;
+inline constexpr int GENERAL_RADIO_PITCH = 48;
+inline constexpr int GENERAL_RADIO_HEIGHT = 38;
 
 constexpr Rect generalRadioRow(int index) {
     return { 38, GENERAL_RADIO_FIRST_Y + index * GENERAL_RADIO_PITCH, 544,

@@ -1009,14 +1009,25 @@ private:
             PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
     }
 
+    void rebuildCanvasForDpi() {
+        winCanvas = cv::Mat(S(winHeight), S(winWidth), CV_8UC4,
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_DEEP));
+    }
+
+    // 拖到另一块缩放不同的显示器时，窗口尺寸已按新 DPI 调整，画布也要跟着重建，
+    // 否则内容只会占满旧尺寸那一块，右侧和下方露出空白。
+    void onDpiChanged() override {
+        rebuildCanvasForDpi();
+        textDrawer.setSize(uiFontPixelSize());
+    }
+
     void windowsMainLoop() {
         if (!createWindow(winWidth, winHeight, windowsClassName, getUIStringW(39)))
             return;
         hwnd = m_hwnd;
         // 建好窗口才知道所在显示器的 DPI。画布按物理像素重建，MatWindow 贴图时源和
         // 目标尺寸一致就是 1:1 拷贝，不会再经过拉伸。
-        winCanvas = cv::Mat(S(winHeight), S(winWidth), CV_8UC4,
-            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_DEEP));
+        rebuildCanvasForDpi();
         runMessageLoop();
         if (editorNameCapture)
             commitEditorName();
