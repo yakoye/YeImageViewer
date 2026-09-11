@@ -8,7 +8,11 @@
 namespace ShortcutConfig {
 
 inline constexpr uint32_t STORAGE_MAGIC = 0x594B4559u; // "YKEY"
-inline constexpr uint32_t STORAGE_VERSION = 1;
+inline constexpr uint32_t STORAGE_VERSION = 2;
+
+// 版本 1 的动作数量。新动作只能追加在 Action 末尾：动作的枚举值就是它在存储里的
+// 下标，中间插入会让其后所有已保存的自定义绑定整体错位。
+inline constexpr std::size_t VERSION1_BINDING_COUNT = 30;
 inline constexpr std::size_t MAGIC_INDEX = 0;
 inline constexpr std::size_t VERSION_INDEX = 1;
 inline constexpr std::size_t WHEEL_BASE_INDEX = 2;
@@ -51,6 +55,7 @@ enum class Action : uint32_t {
     OpenShortcuts,
     OpenAbout,
     DeleteImage,
+    ZoomActual,
     Count,
 };
 
@@ -98,7 +103,11 @@ inline constexpr std::array<uint32_t, static_cast<std::size_t>(Action::Count)> D
     binding(0x72),             // OpenShortcuts: VK_F3
     binding(0x73),             // OpenAbout: VK_F4
     binding(0x2E),             // DeleteImage: VK_DELETE
+    binding('1'),              // ZoomActual
 };
+
+static_assert(DEFAULT_BINDINGS.size() == static_cast<std::size_t>(Action::Count));
+static_assert(VERSION1_BINDING_COUNT <= DEFAULT_BINDINGS.size());
 
 inline constexpr std::array<WheelAction, 3> DEFAULT_WHEEL_ACTIONS{
     WheelAction::PanVertical,
@@ -130,12 +139,35 @@ inline void reset(uint32_t* storage, std::size_t count) {
         storage[BINDING_BASE_INDEX + index] = DEFAULT_BINDINGS[index];
 }
 
+// 追加动作后把旧配置升级到当前版本：只给新动作填默认键位，已有的绑定一概不动。
+// 直接 reset 会清空用户全部自定义快捷键，所以升级必须是增量的。
+inline void migrate(uint32_t* storage, std::size_t storedBindingCount) {
+    for (std::size_t index = storedBindingCount; index < DEFAULT_BINDINGS.size(); ++index) {
+        const uint32_t preferred = DEFAULT_BINDINGS[index];
+        bool alreadyTaken = false;
+        for (std::size_t probe = 0; probe < storedBindingCount; ++probe) {
+            if (storage[BINDING_BASE_INDEX + probe] == preferred) {
+                alreadyTaken = true;
+                break;
+            }
+        }
+        // 默认键位已被用户改派给别的动作时留空，升级不该悄悄夺走既有快捷键。
+        storage[BINDING_BASE_INDEX + index] = alreadyTaken ? 0 : preferred;
+    }
+}
+
 inline void initialize(uint32_t* storage, std::size_t count) {
     if (!storage || count < BINDING_BASE_INDEX + DEFAULT_BINDINGS.size())
         return;
-    if (storage[MAGIC_INDEX] != STORAGE_MAGIC || storage[VERSION_INDEX] != STORAGE_VERSION) {
+    const uint32_t storedVersion = storage[VERSION_INDEX];
+    if (storage[MAGIC_INDEX] != STORAGE_MAGIC ||
+        storedVersion == 0 || storedVersion > STORAGE_VERSION) {
         reset(storage, count);
         return;
+    }
+    if (storedVersion < STORAGE_VERSION) {
+        migrate(storage, VERSION1_BINDING_COUNT);
+        storage[VERSION_INDEX] = STORAGE_VERSION;
     }
     for (std::size_t index = 0; index < DEFAULT_WHEEL_ACTIONS.size(); ++index) {
         if (storage[WHEEL_BASE_INDEX + index] >= static_cast<uint32_t>(WheelAction::Count))

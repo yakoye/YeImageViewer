@@ -434,6 +434,8 @@ public:
         play, pause,
         presentationClose, animationBarPlaying, animationBarPausing;
 
+    // 按基准尺寸的 ICON_SUPERSAMPLE 倍渲染，绘制时一律 INTER_AREA 缩小。高 DPI 下
+    // 工具栏按比例放大，若按基准尺寸渲染再拉大，图标边缘会糊。
     static cv::Mat loadSvgIcon(int resourceId, int size = OverlayLayout::BASE_ICON_SIZE) {
         const auto rc = jarkUtils::GetResource(resourceId, L"SVG");
         if (!rc.ptr || rc.size == 0)
@@ -442,7 +444,8 @@ public:
             static_cast<const uint8_t*>(rc.ptr), rc.size));
         if (!renderer)
             return {};
-        auto bitmap = renderer->renderToBitmap(size, size);
+        const int renderSize = size * OverlayLayout::ICON_SUPERSAMPLE;
+        auto bitmap = renderer->renderToBitmap(renderSize, renderSize);
         if (bitmap.empty())
             return {};
         return cv::Mat(bitmap.height, bitmap.width, CV_8UC4, bitmap.bgra.data()).clone();
@@ -1128,7 +1131,7 @@ public:
         {
         case WM_LBUTTONDOWN: {//左键
             if (presentationMode &&
-                OverlayLayout::presentationCloseRect(winWidth, winHeight).contains(x, y)) {
+                OverlayLayout::presentationCloseRect(winWidth, winHeight, overlayDpi()).contains(x, y)) {
                 presentationClickCandidate = false;
                 presentationCloseClickCandidate = true;
                 mouseIsPressing = false;
@@ -1159,7 +1162,7 @@ public:
             }
 
             const bool zoomTextClicked = extraUIFlag == ShowExtraUI::bottomToolbar &&
-                OverlayLayout::zoomTextRect(winWidth, winHeight).contains(x, y);
+                OverlayLayout::zoomTextRect(winWidth, winHeight, overlayDpi()).contains(x, y);
             if (zoomTextEditing && !zoomTextClicked)
                 commitZoomTextEdit();
             if (zoomTextClicked) {
@@ -1194,7 +1197,7 @@ public:
             mousePressPos = { x, y };
 
             const auto toolbarCommand = ToolbarCommand::resolve(
-                OverlayLayout::hitTest(winWidth, winHeight, x, y));
+                OverlayLayout::hitTest(winWidth, winHeight, x, y, overlayDpi()));
             switch (toolbarCommand) {
             case ToolbarCommand::Command::PreviousImage: operateQueue.push({ ActionENUM::preImg }); break;
             case ToolbarCommand::Command::PlayPause: operateQueue.push({ ActionENUM::toggleSlideshow }); break;
@@ -1254,7 +1257,7 @@ public:
         case WM_LBUTTONUP: {//左键
             if (presentationCloseClickCandidate) {
                 const bool shouldClose = presentationMode &&
-                    OverlayLayout::presentationCloseRect(winWidth, winHeight).contains(x, y);
+                    OverlayLayout::presentationCloseRect(winWidth, winHeight, overlayDpi()).contains(x, y);
                 presentationCloseClickCandidate = false;
                 mouseIsPressing = false;
                 ReleaseCapture();
@@ -1321,7 +1324,7 @@ public:
             cursorPos = CursorPos::centerArea;
         }
         else {
-            switch (OverlayLayout::hitTest(winWidth, winHeight, x, y)) {
+            switch (OverlayLayout::hitTest(winWidth, winHeight, x, y, overlayDpi())) {
             case OverlayLayout::Hit::EdgePreviousImage:
                 cursorPos = CursorPos::leftEdge;
                 break;
@@ -1701,6 +1704,9 @@ public:
         case ShortcutConfig::Action::ZoomFit:
             operateQueue.push({ ActionENUM::zoomFix });
             break;
+        case ShortcutConfig::Action::ZoomActual:
+            operateQueue.push({ ActionENUM::zoomActual });
+            break;
         case ShortcutConfig::Action::PreviousImage:
             operateQueue.push({ ActionENUM::preImg });
             break;
@@ -1761,6 +1767,7 @@ public:
         };
         return (keyValue == VK_F11 && stillDefault(ShortcutConfig::Action::ToggleFullscreen)) ||
             (keyValue == VK_NUMPAD5 && stillDefault(ShortcutConfig::Action::ZoomFit)) ||
+            (keyValue == VK_NUMPAD1 && stillDefault(ShortcutConfig::Action::ZoomActual)) ||
             (keyValue == VK_PRIOR && stillDefault(ShortcutConfig::Action::PreviousImage)) ||
             (keyValue == VK_NEXT && stillDefault(ShortcutConfig::Action::NextImage)) ||
             (keyValue == VK_TAB && stillDefault(ShortcutConfig::Action::ToggleImageInfo));
@@ -1998,6 +2005,10 @@ public:
                 operateQueue.push({ ActionENUM::zoomFix });
             }break;
 
+            case VK_NUMPAD1: {
+                operateQueue.push({ ActionENUM::zoomActual });
+            }break;
+
             case VK_PRIOR:
             case VK_LEFT: {
                 operateQueue.push({ ActionENUM::preImg });
@@ -2213,17 +2224,45 @@ public:
         operateQueue.push({ ActionENUM::refresh });
     }
 
+    // 浮动工具栏、关闭按钮和缩放指示器都按窗口所在显示器的 DPI 布局，避免高分屏下
+    // 只有物理像素大小、实际显示不到应有尺寸的一半。
+    int overlayDpi() const {
+        return m_hWnd ? static_cast<int>(GetDpiForWindow(m_hWnd)) : OverlayLayout::BASE_DPI;
+    }
+
     uint32_t windowBackgroundPixel() const {
+        // 旋转动画拿它当 warpAffine 的边框常量色，只能是单值：棋盘格取左上角那一格。
         return BackgroundPolicy::windowCanvasPixel(
-            presentationMode, IsFrostedGlassActive(), GlobalVar::currentTheme.BG);
+            currentBackgroundMode(), presentationMode,
+            IsCompositionAlphaActive(), IsFrostedGlassActive(),
+            0, 0, GlobalVar::currentTheme.BG);
     }
 
     void fillCanvasBackground(cv::Mat& canvas) const {
-        const uint32_t canvasPixel = BackgroundPolicy::windowCanvasPixel(
-            presentationMode, IsFrostedGlassActive(), GlobalVar::currentTheme.BG);
-        concurrency::parallel_for(0, canvas.rows, [&, canvasPixel](int y) {
+        const BackgroundMode mode = currentBackgroundMode();
+        const bool alphaSurfaceActive = IsCompositionAlphaActive();
+        const bool frostedGlassActive = IsFrostedGlassActive();
+        const uint32_t themeBackground = GlobalVar::currentTheme.BG;
+
+        if (BackgroundPolicy::usesUniformWindowCanvas(mode, presentationMode)) {
+            const uint32_t canvasPixel = BackgroundPolicy::windowCanvasPixel(
+                mode, presentationMode, alphaSurfaceActive, frostedGlassActive,
+                0, 0, themeBackground);
+            concurrency::parallel_for(0, canvas.rows, [&, canvasPixel](int y) {
+                auto row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
+                std::fill(row, row + canvas.cols, canvasPixel);
+            });
+            return;
+        }
+
+        // 棋盘格按坐标取值，整片铺满窗口。
+        concurrency::parallel_for(0, canvas.rows, [&](int y) {
             auto row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
-            std::fill(row, row + canvas.cols, canvasPixel);
+            for (int x = 0; x < canvas.cols; ++x) {
+                row[x] = BackgroundPolicy::windowCanvasPixel(
+                    mode, presentationMode, alphaSurfaceActive, frostedGlassActive,
+                    x, y, themeBackground);
+            }
         });
     }
 
@@ -3006,14 +3045,12 @@ public:
         return bitsPerChannel ? std::format("{} · {}bpp", name, bitsPerChannel * channels) : name;
     }
 
-    static bool imageInfoUsesLightPalette(const cv::Mat& canvas, const cv::Rect& panel) {
-        const cv::Rect sample = panel & cv::Rect{ 0, 0, canvas.cols, canvas.rows };
-        if (sample.empty())
-            return false;
-        const cv::Scalar average = cv::mean(canvas(sample));
-        return ImageInfoPresentation::useLightPalette(
-            static_cast<uint8_t>(average[0]), static_cast<uint8_t>(average[1]),
-            static_cast<uint8_t>(average[2]));
+    static bool imageInfoUsesLightPalette() {
+        // 面板配色跟随界面主题，不再按面板底下的画布亮度自适应。此前浅色/深色是按
+        // 图片亮度自动选的，深色主题下看白底图仍会得到浅色面板，与主题设置矛盾。
+        // 面板底色 alpha 为 0xD1，深色面板压在纯白图片上文字对比度仍有约 9:1，
+        // 放弃自适应不会损失可读性。
+        return !GlobalVar::isCurrentUIDarkMode;
     }
 
     static void drawInfoPanelBackdrop(cv::Mat& canvas, const cv::Rect& panel,
@@ -3113,7 +3150,7 @@ public:
             return;
         const int panelY = compact ? margin : canvas.rows - margin - panelHeight;
         const cv::Rect panel{ margin, panelY, panelWidth, panelHeight };
-        const bool light = imageInfoUsesLightPalette(canvas, panel);
+        const bool light = imageInfoUsesLightPalette();
         const auto palette = imageInfoPalette(light);
         drawInfoPanelBackdrop(canvas, panel, scaled(compact ? 12 : 14), palette);
 
@@ -3284,7 +3321,7 @@ public:
         if (source.empty() || target.width <= 0 || target.height <= 0)
             return;
         const int iconSize = OverlayLayout::toolbarIconSize(
-            canvas.cols, target, compactControl);
+            canvas.cols, target, compactControl, overlayDpi());
         cv::Mat icon;
         if (source.cols == iconSize && source.rows == iconSize)
             icon = source;
@@ -3353,12 +3390,12 @@ public:
     }
 
     void drawViewerToolbar(cv::Mat& canvas) {
-        const auto toolbar = OverlayLayout::toolbarRect(canvas.cols, canvas.rows);
+        const auto toolbar = OverlayLayout::toolbarRect(canvas.cols, canvas.rows, overlayDpi());
         auto pill = roundedSurface(toolbar.width, toolbar.height,
             std::max(8, toolbar.height / 3), 0xD10D0F14u, OverlayLayout::TOOLBAR_BORDER);
         jarkUtils::overlayImg(canvas, pill, toolbar.x, toolbar.y);
 
-        const int scale = OverlayLayout::toolbarScale(canvas.cols);
+        const int scale = OverlayLayout::toolbarScale(canvas.cols, overlayDpi());
         for (const int baseX : { 42, 199, 342 }) {
             const int x = toolbar.x + OverlayLayout::scaled(
                 OverlayLayout::BASE_TOOLBAR_PADDING + baseX, scale);
@@ -3368,39 +3405,39 @@ public:
                 cv::Scalar(255, 255, 255, 26), 1, cv::LINE_AA);
         }
 
-        drawToolbarButton(canvas, OverlayLayout::settingsRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::settingsRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.setting, CursorPos::toolbarSetting);
-        drawToolbarButton(canvas, OverlayLayout::rotateLeftRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::rotateLeftRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.leftRotate, CursorPos::toolbarRotateLeft);
-        drawToolbarButton(canvas, OverlayLayout::rotateRightRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::rotateRightRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.rightRotate, CursorPos::toolbarRotateRight);
-        drawToolbarButton(canvas, OverlayLayout::flipHorizontalRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::flipHorizontalRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.flipHorizontal, CursorPos::toolbarFlipHorizontal, curPar.flipHorizontal);
-        drawToolbarButton(canvas, OverlayLayout::flipVerticalRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::flipVerticalRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.flipVertical, CursorPos::toolbarFlipVertical, curPar.flipVertical);
 
-        drawToolbarButton(canvas, OverlayLayout::toolbarPreviousRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::toolbarPreviousRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.leftArrow, CursorPos::toolbarPrevious);
-        drawToolbarButton(canvas, OverlayLayout::toolbarPlayPauseRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::toolbarPlayPauseRect(canvas.cols, canvas.rows, overlayDpi()),
             slideshowPlaying ? extraUIRes.pause : extraUIRes.play,
             CursorPos::toolbarPlayPause, slideshowPlaying);
-        drawToolbarButton(canvas, OverlayLayout::toolbarNextRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::toolbarNextRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.rightArrow, CursorPos::toolbarNext);
 
-        drawToolbarButton(canvas, OverlayLayout::zoomFitRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::zoomFitRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.fitWindow, CursorPos::toolbarZoomFit,
             curPar.zoomIndex == curPar.zoomIndexFix);
-        drawToolbarButton(canvas, OverlayLayout::zoomActualRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::zoomActualRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.actualSize, CursorPos::toolbarZoomActual,
             curPar.zoomIndex == curPar.zoomIndex100percent);
-        drawToolbarButton(canvas, OverlayLayout::fullscreenRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::fullscreenRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.fullscreen, CursorPos::toolbarFullscreen, presentationMode);
-        drawToolbarButton(canvas, OverlayLayout::zoomOutRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::zoomOutRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.zoomOut, CursorPos::toolbarZoomOut, false, false, true);
-        drawToolbarButton(canvas, OverlayLayout::zoomInRect(canvas.cols, canvas.rows),
+        drawToolbarButton(canvas, OverlayLayout::zoomInRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.zoomIn, CursorPos::toolbarZoomIn, false, false, true);
 
-        const auto zoomTextLayout = OverlayLayout::zoomTextRect(canvas.cols, canvas.rows);
+        const auto zoomTextLayout = OverlayLayout::zoomTextRect(canvas.cols, canvas.rows, overlayDpi());
         if (zoomTextEditing) {
             auto editSurface = roundedSurface(zoomTextLayout.width, zoomTextLayout.height,
                 std::max(4, zoomTextLayout.height / 4), 0x263B82F6u);
@@ -3412,7 +3449,8 @@ public:
                 jarkUtils::to_cv_scalar(0xFF60A5FAu), 1, cv::LINE_AA);
         }
 
-        textDrawer.setSize(OverlayLayout::TOOLBAR_TEXT_SIZE);
+        // 文字跟着工具栏一起按 DPI 缩放，否则放大后的工具栏里挤着一行小字。
+        textDrawer.setSize(OverlayLayout::scaled(OverlayLayout::TOOLBAR_TEXT_SIZE, scale));
         const std::string zoomText = zoomTextEditing ?
             std::format("{}%", zoomEditText) :
             std::format("{}%",
@@ -3430,20 +3468,20 @@ public:
         if (const char* tooltip = toolbarTooltip()) {
             OverlayLayout::Rect hovered{};
             switch (cursorPos) {
-            case CursorPos::toolbarPrevious: hovered = OverlayLayout::toolbarPreviousRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarPlayPause: hovered = OverlayLayout::toolbarPlayPauseRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarNext: hovered = OverlayLayout::toolbarNextRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarRotateLeft: hovered = OverlayLayout::rotateLeftRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarRotateRight: hovered = OverlayLayout::rotateRightRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarFlipHorizontal: hovered = OverlayLayout::flipHorizontalRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarFlipVertical: hovered = OverlayLayout::flipVerticalRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarZoomFit: hovered = OverlayLayout::zoomFitRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarZoomActual: hovered = OverlayLayout::zoomActualRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarFullscreen: hovered = OverlayLayout::fullscreenRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarSetting: hovered = OverlayLayout::settingsRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarZoomOut: hovered = OverlayLayout::zoomOutRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarZoomText: hovered = OverlayLayout::zoomTextRect(canvas.cols, canvas.rows); break;
-            case CursorPos::toolbarZoomIn: hovered = OverlayLayout::zoomInRect(canvas.cols, canvas.rows); break;
+            case CursorPos::toolbarPrevious: hovered = OverlayLayout::toolbarPreviousRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarPlayPause: hovered = OverlayLayout::toolbarPlayPauseRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarNext: hovered = OverlayLayout::toolbarNextRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarRotateLeft: hovered = OverlayLayout::rotateLeftRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarRotateRight: hovered = OverlayLayout::rotateRightRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarFlipHorizontal: hovered = OverlayLayout::flipHorizontalRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarFlipVertical: hovered = OverlayLayout::flipVerticalRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarZoomFit: hovered = OverlayLayout::zoomFitRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarZoomActual: hovered = OverlayLayout::zoomActualRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarFullscreen: hovered = OverlayLayout::fullscreenRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarSetting: hovered = OverlayLayout::settingsRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarZoomOut: hovered = OverlayLayout::zoomOutRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarZoomText: hovered = OverlayLayout::zoomTextRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarZoomIn: hovered = OverlayLayout::zoomInRect(canvas.cols, canvas.rows, overlayDpi()); break;
             default: break;
             }
             const auto tooltipWide = jarkUtils::utf8ToWstring(tooltip);
@@ -3489,15 +3527,19 @@ public:
             (GetWindowLongPtrW(m_hWnd, GWL_STYLE) & WS_CAPTION) != 0;
         if (OverlayLayout::shouldDrawPresentationClose(
             presentationMode, windowHasCaption, !extraUIRes.presentationClose.empty())) {
-            const auto close = OverlayLayout::presentationCloseRect(canvasWidth, canvasHeight);
+            const auto close = OverlayLayout::presentationCloseRect(canvasWidth, canvasHeight, overlayDpi());
             const cv::Point center{ close.x + close.width / 2, close.y + close.height / 2 };
             cv::circle(canvas, center, close.width / 2 - 1,
                 cv::Scalar(33, 32, 32, 235), -1, cv::LINE_AA);
-            constexpr int arm = 9;
+            // 叉号跟着按钮尺寸走，按钮已按 DPI 放大，固定臂长会显得越来越小。
+            const int arm = std::max(3,
+                close.width * 9 / OverlayLayout::PRESENTATION_CLOSE_SIZE);
+            const int strokeWidth = std::max(1,
+                close.width * 3 / OverlayLayout::PRESENTATION_CLOSE_SIZE);
             cv::line(canvas, { center.x - arm, center.y - arm },
-                { center.x + arm, center.y + arm }, cv::Scalar(255, 255, 255, 255), 3, cv::LINE_AA);
+                { center.x + arm, center.y + arm }, cv::Scalar(255, 255, 255, 255), strokeWidth, cv::LINE_AA);
             cv::line(canvas, { center.x + arm, center.y - arm },
-                { center.x - arm, center.y + arm }, cv::Scalar(255, 255, 255, 255), 3, cv::LINE_AA);
+                { center.x - arm, center.y + arm }, cv::Scalar(255, 255, 255, 255), strokeWidth, cv::LINE_AA);
         }
     }
 
@@ -3513,13 +3555,15 @@ public:
             return;
         }
 
-        const auto rect = OverlayLayout::zoomIndicatorRect(canvas.cols, canvas.rows);
+        const auto rect = OverlayLayout::zoomIndicatorRect(canvas.cols, canvas.rows, overlayDpi());
         const uint32_t surfaceColor = static_cast<uint32_t>(150 * alpha / 255) << 24;
         auto surface = roundedSurface(rect.width, rect.height,
             std::max(6, rect.height / 5), surfaceColor);
         jarkUtils::overlayImg(canvas, surface, rect.x, rect.y);
 
-        textDrawer.setSize(18);
+        // 指示器本体已按 DPI 放大，字号跟着走，否则大框里是一行小字。
+        textDrawer.setSize(OverlayLayout::scaled(18,
+            OverlayLayout::dpiScale(overlayDpi())));
         const auto text = std::format("{}%",
             ZoomPolicy::displayPercent(curPar.zoomCur, CurImageParameter::ZOOM_BASE));
         const uint32_t textColor = (static_cast<uint32_t>(alpha) << 24) | 0x00FFFFFFu;

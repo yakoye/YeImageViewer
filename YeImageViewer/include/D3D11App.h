@@ -38,7 +38,11 @@ protected:
     void DiscardDeviceResources();
     void ApplyWindowBackgroundMode();
     void SetPresentationBackdrop(bool enabled);
-    bool IsFrostedGlassActive() const { return m_compositionAlphaActive || m_isFrostedGlassActive; }
+    // 交换链是支持预乘 alpha 的 DirectComposition 表面：沉浸模式的半透明压暗层靠它。
+    bool IsCompositionAlphaActive() const { return m_compositionAlphaActive; }
+    // 毛玻璃真正可用：DWM 亚克力启用成功，且有 alpha 表面把画布的空洞交给 DWM 合成。
+    // 两个条件缺一不可——只有 alpha 表面而没有亚克力时，透明画布露出的是桌面而不是模糊层。
+    bool IsFrostedGlassActive() const { return m_compositionAlphaActive && m_isFrostedGlassActive; }
 
     // CPU 画布数据呈现到屏幕
     void PresentCanvas(const uint8_t* data, int width, int height, int stride);

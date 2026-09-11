@@ -304,19 +304,32 @@ void D3D11App::ApplyWindowBackgroundMode() {
         return;
     }
 
-    // The client uses a premultiplied-alpha DirectComposition surface in both
-    // framed and presentation modes. Keep DWM backdrop effects disabled: the
-    // canvas itself supplies the uniform translucent black layer.
-    const BOOL useAlpha = FALSE;
-    const DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_NONE;
+    // 沉浸模式的压暗层由画布自己绘制，不需要 DWM 背景特效；只有用户把背景设为毛玻璃
+    // 时才启用亚克力，让画布留空的地方透出 DWM 的模糊层。
+    const auto mode = BackgroundRenderer::normalizeMode(
+        GlobalVar::settingParameter.backgroundMode);
+    const bool requestFrostedGlass = BackgroundPolicy::requestsFrostedGlass(
+        m_presentationBackdropRequested, mode);
+    const BOOL useAlpha = requestFrostedGlass ? TRUE : FALSE;
+    const DWM_SYSTEMBACKDROP_TYPE backdrop = requestFrostedGlass ?
+        DWMSBT_TRANSIENTWINDOW : DWMSBT_NONE;
 
     const HRESULT alphaResult = DwmSetWindowAttribute(
         m_hWnd, DWMWA_REDIRECTIONBITMAP_ALPHA, &useAlpha, sizeof(useAlpha));
     const HRESULT backdropResult = DwmSetWindowAttribute(
         m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
-    m_isFrostedGlassActive = false;
-    (void)alphaResult;
-    (void)backdropResult;
+    m_isFrostedGlassActive = requestFrostedGlass &&
+        SUCCEEDED(alphaResult) && SUCCEEDED(backdropResult);
+
+    // 亚克力申请失败就彻底关掉背景特效，让画布回落到不透明底色，而不是留下一片空洞。
+    if (requestFrostedGlass && !m_isFrostedGlassActive) {
+        const BOOL disableAlpha = FALSE;
+        const DWM_SYSTEMBACKDROP_TYPE noBackdrop = DWMSBT_NONE;
+        DwmSetWindowAttribute(m_hWnd, DWMWA_REDIRECTIONBITMAP_ALPHA,
+            &disableAlpha, sizeof(disableAlpha));
+        DwmSetWindowAttribute(m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE,
+            &noBackdrop, sizeof(noBackdrop));
+    }
     DwmFlush();
 }
 

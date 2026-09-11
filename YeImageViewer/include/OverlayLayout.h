@@ -25,6 +25,11 @@ inline constexpr int ZOOM_INDICATOR_WIDTH = 72;
 inline constexpr int ZOOM_INDICATOR_HEIGHT = 38;
 inline constexpr int ZOOM_INDICATOR_MARGIN = 24;
 inline constexpr uint32_t TOOLBAR_BORDER = 0x00000000u;
+inline constexpr int BASE_DPI = 96;
+inline constexpr int MINIMUM_TOOLBAR_SCALE = 400;
+// SVG 图标按基准尺寸的若干倍渲染，绘制时只做 INTER_AREA 缩小。高 DPI 下工具栏会
+// 按比例放大，若仍按基准尺寸渲染位图再拉大，图标就是糊的。4 倍覆盖到 384 DPI。
+inline constexpr int ICON_SUPERSAMPLE = 4;
 
 struct Rect {
     int x = 0;
@@ -63,10 +68,20 @@ enum class Hit {
     PresentationClose,
 };
 
-constexpr int toolbarScale(int canvasWidth) {
+constexpr int dpiScale(int dpi) {
+    return (dpi > 0 ? dpi : BASE_DPI) * 1000 / BASE_DPI;
+}
+
+// 进程声明了 PerMonitorHighDPIAware，Windows 不会替我们拉伸，所以工具栏必须自己按
+// DPI 放大：此前 scale 只看窗口宽度且封顶 1000，200% 缩放下只有应有尺寸的一半。
+// 目标是保持固定的逻辑尺寸，窗口宽度不够时再等比收缩，两者取小。
+constexpr int toolbarScale(int canvasWidth, int dpi = BASE_DPI) {
+    const int target = dpiScale(dpi);
+    const int minimum = MINIMUM_TOOLBAR_SCALE * target / 1000;
     if (canvasWidth <= 16)
-        return 600;
-    return std::clamp((canvasWidth - 16) * 1000 / BASE_TOOLBAR_WIDTH, 400, 1000);
+        return 600 * target / 1000;
+    const int widthScale = (canvasWidth - 16) * 1000 / BASE_TOOLBAR_WIDTH;
+    return std::clamp(std::min(widthScale, target), minimum, target);
 }
 
 constexpr int scaled(int value, int scale) {
@@ -74,29 +89,26 @@ constexpr int scaled(int value, int scale) {
 }
 
 constexpr int toolbarIconSize(int canvasWidth, const Rect& target,
-    bool compactControl = false) {
-    const int inset = scaled(compactControl ? BASE_COMPACT_ICON_INSET : BASE_ICON_INSET,
-        toolbarScale(canvasWidth));
+    bool compactControl = false, int dpi = BASE_DPI) {
+    const int scale = toolbarScale(canvasWidth, dpi);
+    const int inset = scaled(compactControl ? BASE_COMPACT_ICON_INSET : BASE_ICON_INSET, scale);
     return std::max(10, std::min({ target.width - inset, target.height - inset,
-        scaled(BASE_ICON_SIZE, toolbarScale(canvasWidth)) }));
+        scaled(BASE_ICON_SIZE, scale) }));
 }
 
-constexpr Rect presentationCloseRect(int canvasWidth, int) {
-    return {
-        canvasWidth - PRESENTATION_CLOSE_MARGIN - PRESENTATION_CLOSE_SIZE,
-        PRESENTATION_CLOSE_MARGIN,
-        PRESENTATION_CLOSE_SIZE,
-        PRESENTATION_CLOSE_SIZE,
-    };
+constexpr Rect presentationCloseRect(int canvasWidth, int, int dpi = BASE_DPI) {
+    const int scale = dpiScale(dpi);
+    const int size = scaled(PRESENTATION_CLOSE_SIZE, scale);
+    const int margin = scaled(PRESENTATION_CLOSE_MARGIN, scale);
+    return { canvasWidth - margin - size, margin, size, size };
 }
 
-constexpr Rect zoomIndicatorRect(int, int canvasHeight) {
-    return {
-        ZOOM_INDICATOR_MARGIN,
-        std::max(0, canvasHeight - ZOOM_INDICATOR_MARGIN - ZOOM_INDICATOR_HEIGHT),
-        ZOOM_INDICATOR_WIDTH,
-        ZOOM_INDICATOR_HEIGHT,
-    };
+constexpr Rect zoomIndicatorRect(int, int canvasHeight, int dpi = BASE_DPI) {
+    const int scale = dpiScale(dpi);
+    const int width = scaled(ZOOM_INDICATOR_WIDTH, scale);
+    const int height = scaled(ZOOM_INDICATOR_HEIGHT, scale);
+    const int margin = scaled(ZOOM_INDICATOR_MARGIN, scale);
+    return { margin, std::max(0, canvasHeight - margin - height), width, height };
 }
 
 constexpr bool shouldDrawPresentationClose(
@@ -112,8 +124,8 @@ constexpr bool showsRedundantFileActions() {
     return false;
 }
 
-constexpr Rect toolbarRect(int canvasWidth, int canvasHeight) {
-    const int scale = toolbarScale(canvasWidth);
+constexpr Rect toolbarRect(int canvasWidth, int canvasHeight, int dpi = BASE_DPI) {
+    const int scale = toolbarScale(canvasWidth, dpi);
     const int width = scaled(BASE_TOOLBAR_WIDTH, scale);
     const int height = scaled(BASE_TOOLBAR_HEIGHT, scale);
     const int bottom = scaled(BASE_TOOLBAR_BOTTOM_MARGIN, scale);
@@ -121,9 +133,9 @@ constexpr Rect toolbarRect(int canvasWidth, int canvasHeight) {
 }
 
 constexpr Rect baseToolbarButtonRect(int canvasWidth, int canvasHeight,
-    int baseOffset, int baseSize = BASE_BUTTON_SIZE) {
-    const int scale = toolbarScale(canvasWidth);
-    const auto toolbar = toolbarRect(canvasWidth, canvasHeight);
+    int baseOffset, int baseSize = BASE_BUTTON_SIZE, int dpi = BASE_DPI) {
+    const int scale = toolbarScale(canvasWidth, dpi);
+    const auto toolbar = toolbarRect(canvasWidth, canvasHeight, dpi);
     const int size = scaled(baseSize, scale);
     return {
         toolbar.x + scaled(BASE_TOOLBAR_PADDING + baseOffset, scale),
@@ -133,21 +145,21 @@ constexpr Rect baseToolbarButtonRect(int canvasWidth, int canvasHeight,
     };
 }
 
-constexpr Rect settingsRect(int width, int height) { return baseToolbarButtonRect(width, height, 0); }
-constexpr Rect rotateLeftRect(int width, int height) { return baseToolbarButtonRect(width, height, 50); }
-constexpr Rect rotateRightRect(int width, int height) { return baseToolbarButtonRect(width, height, 85); }
-constexpr Rect flipHorizontalRect(int width, int height) { return baseToolbarButtonRect(width, height, 120); }
-constexpr Rect flipVerticalRect(int width, int height) { return baseToolbarButtonRect(width, height, 155); }
-constexpr Rect toolbarPreviousRect(int width, int height) { return baseToolbarButtonRect(width, height, 230); }
-constexpr Rect toolbarPlayPauseRect(int width, int height) { return baseToolbarButtonRect(width, height, 265); }
-constexpr Rect toolbarNextRect(int width, int height) { return baseToolbarButtonRect(width, height, 300); }
-constexpr Rect zoomFitRect(int width, int height) { return baseToolbarButtonRect(width, height, 350); }
-constexpr Rect zoomActualRect(int width, int height) { return baseToolbarButtonRect(width, height, 385); }
-constexpr Rect fullscreenRect(int width, int height) { return baseToolbarButtonRect(width, height, 420); }
-constexpr Rect zoomOutRect(int width, int height) { return baseToolbarButtonRect(width, height, 467, BASE_SMALL_BUTTON_SIZE); }
-constexpr Rect zoomTextRect(int width, int height) {
-    const int scale = toolbarScale(width);
-    const auto toolbar = toolbarRect(width, height);
+constexpr Rect settingsRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 0, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect rotateLeftRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 50, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect rotateRightRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 85, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect flipHorizontalRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 120, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect flipVerticalRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 155, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect toolbarPreviousRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 230, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect toolbarPlayPauseRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 265, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect toolbarNextRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 300, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect zoomFitRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 350, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect zoomActualRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 385, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect fullscreenRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 420, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect zoomOutRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 467, BASE_SMALL_BUTTON_SIZE, dpi); }
+constexpr Rect zoomTextRect(int width, int height, int dpi = BASE_DPI) {
+    const int scale = toolbarScale(width, dpi);
+    const auto toolbar = toolbarRect(width, height, dpi);
     const int rectHeight = scaled(BASE_SMALL_BUTTON_SIZE, scale);
     return {
         toolbar.x + scaled(BASE_TOOLBAR_PADDING + 491, scale),
@@ -156,11 +168,11 @@ constexpr Rect zoomTextRect(int width, int height) {
         rectHeight,
     };
 }
-constexpr Rect zoomInRect(int width, int height) { return baseToolbarButtonRect(width, height, 545, BASE_SMALL_BUTTON_SIZE); }
+constexpr Rect zoomInRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 545, BASE_SMALL_BUTTON_SIZE, dpi); }
 
-constexpr Rect toolbarRevealRect(int canvasWidth, int canvasHeight) {
-    const int scale = toolbarScale(canvasWidth);
-    const auto toolbar = toolbarRect(canvasWidth, canvasHeight);
+constexpr Rect toolbarRevealRect(int canvasWidth, int canvasHeight, int dpi = BASE_DPI) {
+    const int scale = toolbarScale(canvasWidth, dpi);
+    const auto toolbar = toolbarRect(canvasWidth, canvasHeight, dpi);
     const int sidePadding = scaled(BASE_TOOLBAR_REVEAL_SIDE_PADDING, scale);
     const int topPadding = scaled(BASE_TOOLBAR_REVEAL_TOP_PADDING, scale);
     const int left = std::max(0, toolbar.x - sidePadding);
@@ -175,26 +187,26 @@ constexpr bool isToolbarControl(Hit hit) {
     return hit >= Hit::ToolbarPreviousImage && hit <= Hit::Toolbar;
 }
 
-constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y) {
+constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y, int dpi = BASE_DPI) {
     if (canvasWidth < 100 || canvasHeight < 100)
         return Hit::None;
 
-    if (presentationCloseRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::PresentationClose;
-    if (toolbarPreviousRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ToolbarPreviousImage;
-    if (toolbarPlayPauseRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ToolbarPlayPause;
-    if (toolbarNextRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ToolbarNextImage;
-    if (rotateLeftRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::RotateLeft;
-    if (rotateRightRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::RotateRight;
-    if (flipHorizontalRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::FlipHorizontal;
-    if (flipVerticalRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::FlipVertical;
-    if (zoomFitRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ZoomFit;
-    if (zoomActualRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ZoomActual;
-    if (fullscreenRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::Fullscreen;
-    if (settingsRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::Settings;
-    if (zoomOutRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ZoomOut;
-    if (zoomTextRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ZoomText;
-    if (zoomInRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::ZoomIn;
-    if (toolbarRevealRect(canvasWidth, canvasHeight).contains(x, y)) return Hit::Toolbar;
+    if (presentationCloseRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::PresentationClose;
+    if (toolbarPreviousRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ToolbarPreviousImage;
+    if (toolbarPlayPauseRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ToolbarPlayPause;
+    if (toolbarNextRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ToolbarNextImage;
+    if (rotateLeftRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::RotateLeft;
+    if (rotateRightRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::RotateRight;
+    if (flipHorizontalRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::FlipHorizontal;
+    if (flipVerticalRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::FlipVertical;
+    if (zoomFitRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomFit;
+    if (zoomActualRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomActual;
+    if (fullscreenRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::Fullscreen;
+    if (settingsRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::Settings;
+    if (zoomOutRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomOut;
+    if (zoomTextRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomText;
+    if (zoomInRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomIn;
+    if (toolbarRevealRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::Toolbar;
     return Hit::None;
 }
 

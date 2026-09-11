@@ -20,6 +20,10 @@ struct Model {
 
 inline std::wstring build(const Model& model) {
     std::vector<std::wstring> parts;
+    // 文件名排在最前：标题过长时 Windows 从右侧截断，任务栏预览和 Alt+Tab 也只
+    // 给得出开头这一段，文件名放在末尾等于哪里都看不全。
+    if (!model.fileName.empty())
+        parts.push_back(model.fileName);
     if (!model.state.empty())
         parts.push_back(model.state);
     if (model.current > 0 && model.total > 0)
@@ -32,8 +36,6 @@ inline std::wstring build(const Model& model) {
     }
     if (!model.fileSize.empty())
         parts.push_back(model.fileSize);
-    if (!model.fileName.empty())
-        parts.push_back(model.fileName);
     if (!model.rotation.empty())
         parts.push_back(model.rotation);
 

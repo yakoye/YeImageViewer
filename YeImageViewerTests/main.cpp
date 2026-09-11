@@ -261,13 +261,39 @@ void expectBackgroundRendering() {
     passOrFail("configured background only changes the image area during presentation",
         BackgroundPolicy::imageAreaMode(BackgroundMode::White) == BackgroundMode::White &&
         BackgroundPolicy::imageAreaMode(BackgroundMode::Black) == BackgroundMode::Black);
-    passOrFail("immersive canvas is sixty percent black while framed canvas is opaque middle gray",
-        BackgroundPolicy::windowCanvasPixel(true, true, theme) == BackgroundPolicy::PRESENTATION_TINT &&
-        BackgroundPolicy::PRESENTATION_TINT == 0x99000000u &&
-        BackgroundPolicy::windowCanvasPixel(false, true, theme) == BackgroundPolicy::FRAMED_CANVAS &&
-        BackgroundPolicy::FRAMED_CANVAS == 0xFF7F7F7Fu);
+    passOrFail("immersive canvas stays sixty percent black regardless of the configured background",
+        BackgroundPolicy::windowCanvasPixel(BackgroundMode::White, true, true, false, 0, 0,
+            theme) == BackgroundPolicy::PRESENTATION_TINT &&
+        BackgroundPolicy::windowCanvasPixel(BackgroundMode::Transparent, true, true, false, 0, 0,
+            theme) == BackgroundPolicy::PRESENTATION_TINT &&
+        BackgroundPolicy::PRESENTATION_TINT == 0x99000000u);
     passOrFail("immersive canvas falls back to the opaque theme without alpha composition",
-        BackgroundPolicy::windowCanvasPixel(true, false, theme) == theme);
+        BackgroundPolicy::windowCanvasPixel(BackgroundMode::White, true, false, false, 0, 0,
+            theme) == theme);
+    passOrFail("framed canvas follows the configured background instead of a fixed gray",
+        BackgroundPolicy::windowCanvasPixel(BackgroundMode::White, false, true, false, 0, 0,
+            theme) == 0xFFFFFFFFu &&
+        BackgroundPolicy::windowCanvasPixel(BackgroundMode::Black, false, true, false, 0, 0,
+            theme) == 0xFF000000u);
+    passOrFail("frosted glass clears the canvas only once the DWM acrylic backdrop is live",
+        BackgroundPolicy::windowCanvasPixel(BackgroundMode::FrostedGlass, false, true, true, 0, 0,
+            theme) == 0x00000000u &&
+        BackgroundPolicy::windowCanvasPixel(BackgroundMode::FrostedGlass, false, true, false, 0, 0,
+            theme) == theme);
+    passOrFail("only an explicit frosted-glass choice outside presentation asks DWM for acrylic",
+        BackgroundPolicy::requestsFrostedGlass(false, BackgroundMode::FrostedGlass) &&
+        !BackgroundPolicy::requestsFrostedGlass(true, BackgroundMode::FrostedGlass) &&
+        !BackgroundPolicy::requestsFrostedGlass(false, BackgroundMode::White) &&
+        !BackgroundPolicy::requestsFrostedGlass(false, BackgroundMode::Transparent));
+    passOrFail("framed transparent background tiles the checkerboard across the whole window",
+        BackgroundPolicy::windowCanvasPixel(BackgroundMode::Transparent, false, true, false, 0, 0,
+            theme) == BackgroundRenderer::GRID_LIGHT &&
+        BackgroundPolicy::windowCanvasPixel(BackgroundMode::Transparent, false, true, false,
+            BackgroundRenderer::GRID_WIDTH, 0, theme) == BackgroundRenderer::GRID_DARK);
+    passOrFail("only the framed checkerboard needs per-pixel window canvas evaluation",
+        BackgroundPolicy::usesUniformWindowCanvas(BackgroundMode::White, false) &&
+        BackgroundPolicy::usesUniformWindowCanvas(BackgroundMode::Transparent, true) &&
+        !BackgroundPolicy::usesUniformWindowCanvas(BackgroundMode::Transparent, false));
 }
 
 void expectOverlayLayout() {
@@ -294,6 +320,34 @@ void expectOverlayLayout() {
     passOrFail("previous, slideshow, and next form the centered primary toolbar group",
         toolbarPlayPause.x + toolbarPlayPause.width / 2 == width / 2 &&
         toolbarPrevious.x < toolbarPlayPause.x && toolbarPlayPause.x < toolbarNext.x);
+
+    // 进程是 PerMonitorHighDPIAware，Windows 不做拉伸，所以浮动控件必须自己按 DPI
+    // 放大才能保持同样的观感尺寸。此前 scale 只看窗口宽度且封顶 100%。
+    constexpr int highDpi = 192;
+    constexpr auto toolbarHighDpi = OverlayLayout::toolbarRect(width * 2, height * 2, highDpi);
+    constexpr auto closeHighDpi = OverlayLayout::presentationCloseRect(width * 2, height * 2, highDpi);
+    constexpr auto zoomIndicatorHighDpi = OverlayLayout::zoomIndicatorRect(width * 2, height * 2, highDpi);
+    constexpr auto buttonHighDpi = OverlayLayout::toolbarPreviousRect(width * 2, height * 2, highDpi);
+    passOrFail("toolbar, close button, and zoom indicator double their geometry at 192 DPI",
+        toolbarHighDpi.width == OverlayLayout::BASE_TOOLBAR_WIDTH * 2 &&
+        toolbarHighDpi.height == OverlayLayout::BASE_TOOLBAR_HEIGHT * 2 &&
+        buttonHighDpi.width == OverlayLayout::BASE_BUTTON_SIZE * 2 &&
+        closeHighDpi.width == OverlayLayout::PRESENTATION_CLOSE_SIZE * 2 &&
+        zoomIndicatorHighDpi.height == OverlayLayout::ZOOM_INDICATOR_HEIGHT * 2);
+    passOrFail("a narrow high-DPI window still shrinks the toolbar to fit",
+        OverlayLayout::toolbarRect(600, 400, highDpi).width <= 600 &&
+        OverlayLayout::toolbarRect(600, 400, highDpi).width <
+            OverlayLayout::BASE_TOOLBAR_WIDTH * 2);
+    passOrFail("the default DPI keeps the existing ninety-six DPI layout untouched",
+        OverlayLayout::toolbarRect(width, height, OverlayLayout::BASE_DPI).width == toolbar.width &&
+        OverlayLayout::toolbarRect(width, height).width == OverlayLayout::BASE_TOOLBAR_WIDTH &&
+        OverlayLayout::presentationCloseRect(width, height).width ==
+            OverlayLayout::PRESENTATION_CLOSE_SIZE);
+    passOrFail("high-DPI hit testing follows the scaled toolbar geometry",
+        OverlayLayout::hitTest(width * 2, height * 2,
+            buttonHighDpi.x + buttonHighDpi.width / 2,
+            buttonHighDpi.y + buttonHighDpi.height / 2,
+            highDpi) == OverlayLayout::Hit::ToolbarPreviousImage);
     passOrFail("viewer toolbar uses a flat rounded surface without square-corner borders",
         OverlayLayout::TOOLBAR_BORDER == 0x00000000u);
     passOrFail("toolbar keeps one clean visual weight for icons and zoom percentage",
@@ -1138,12 +1192,10 @@ void expectImageInfoPresentation() {
     passOrFail("long UTF-8 image information wraps without ellipsis truncation or hidden bytes",
         wrapped.size() > 1 && restored == longValue &&
         ImageInfoPresentation::joinWrappedLines(wrapped).find("...") == std::string::npos);
-    passOrFail("image information uses twelve-pixel adaptive compact and full cards",
+    passOrFail("image information uses twelve-pixel compact and full cards",
         ImageInfoPresentation::LOGICAL_FONT_SIZE == 12 &&
         ImageInfoPresentation::LOGICAL_COMPACT_PANEL_WIDTH == 288 &&
-        ImageInfoPresentation::LOGICAL_FULL_PANEL_WIDTH == 340 &&
-        ImageInfoPresentation::useLightPalette(255, 255, 255) &&
-        !ImageInfoPresentation::useLightPalette(32, 24, 16));
+        ImageInfoPresentation::LOGICAL_FULL_PANEL_WIDTH == 340);
     passOrFail("image information scrolling clamps at both content boundaries",
         ImageInfoPresentation::clampScrollOffset(800, 300, -20) == 0 &&
         ImageInfoPresentation::clampScrollOffset(800, 300, 240) == 240 &&
@@ -1161,8 +1213,8 @@ void expectWindowTitlePresentation() {
         .fileName = L"gpu心智图.png",
         .rotation = L"右转 90°",
         });
-    passOrFail("window title separates position zoom dimensions size filename and rotation",
-        title == L"[3/16] | 125% | 1514 × 857 px | 1.6 MiB | gpu心智图.png | 右转 90°");
+    passOrFail("window title leads with the filename before position zoom dimensions size and rotation",
+        title == L"gpu心智图.png | [3/16] | 125% | 1514 × 857 px | 1.6 MiB | 右转 90°");
 }
 
 void expectWheelInput() {
@@ -1225,6 +1277,45 @@ void expectShortcutConfig() {
         ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::OpenFile) ==
             ShortcutConfig::DEFAULT_BINDINGS[ShortcutConfig::actionIndex(ShortcutConfig::Action::OpenFile)] &&
         ShortcutConfig::keyName(ShortcutConfig::binding(0x71), true) == "F2");
+
+    // 追加动作后升级旧配置：只补新动作，用户改过的绑定必须原样保留。整体 reset 会
+    // 清空全部自定义快捷键，所以这条回归盯的就是“别把用户配置洗掉”。
+    std::array<uint32_t, 777> upgraded{};
+    ShortcutConfig::reset(upgraded.data(), upgraded.size());
+    ShortcutConfig::setBinding(upgraded.data(), ShortcutConfig::Action::RotateLeft,
+        ShortcutConfig::binding('Z'));
+    upgraded[ShortcutConfig::VERSION_INDEX] = 1;
+    upgraded[ShortcutConfig::BINDING_BASE_INDEX +
+        ShortcutConfig::actionIndex(ShortcutConfig::Action::ZoomActual)] = 0;
+    ShortcutConfig::initialize(upgraded.data(), upgraded.size());
+    passOrFail("upgrading version one storage adds new actions and keeps custom bindings",
+        upgraded[ShortcutConfig::VERSION_INDEX] == ShortcutConfig::STORAGE_VERSION &&
+        ShortcutConfig::getBinding(upgraded.data(), ShortcutConfig::Action::ZoomActual) ==
+            ShortcutConfig::binding('1') &&
+        ShortcutConfig::getBinding(upgraded.data(), ShortcutConfig::Action::RotateLeft) ==
+            ShortcutConfig::binding('Z') &&
+        ShortcutConfig::getBinding(upgraded.data(), ShortcutConfig::Action::ZoomFit) ==
+            ShortcutConfig::binding('5'));
+
+    std::array<uint32_t, 777> contested{};
+    ShortcutConfig::reset(contested.data(), contested.size());
+    ShortcutConfig::setBinding(contested.data(), ShortcutConfig::Action::ToggleFullscreen,
+        ShortcutConfig::binding('1'));
+    contested[ShortcutConfig::VERSION_INDEX] = 1;
+    ShortcutConfig::initialize(contested.data(), contested.size());
+    passOrFail("upgrade leaves a new action unbound rather than stealing an assigned key",
+        ShortcutConfig::getBinding(contested.data(), ShortcutConfig::Action::ZoomActual) == 0 &&
+        ShortcutConfig::matches(ShortcutConfig::getBinding(contested.data(),
+            ShortcutConfig::Action::ToggleFullscreen), '1', 0));
+
+    std::array<uint32_t, 777> future{};
+    ShortcutConfig::reset(future.data(), future.size());
+    future[ShortcutConfig::VERSION_INDEX] = ShortcutConfig::STORAGE_VERSION + 1;
+    ShortcutConfig::initialize(future.data(), future.size());
+    passOrFail("storage written by a newer version falls back to defaults",
+        future[ShortcutConfig::VERSION_INDEX] == ShortcutConfig::STORAGE_VERSION &&
+        ShortcutConfig::getBinding(future.data(), ShortcutConfig::Action::ZoomActual) ==
+            ShortcutConfig::binding('1'));
 }
 
 void expectDrawioTextFallback(std::string_view path) {
