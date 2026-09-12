@@ -346,6 +346,25 @@ public:
         return ptr ? ptr : makeErrorAsset();
     }
 
+    // 发起解码但不等待：拿得到就用真图，拿不到先给一张占位，让窗口立刻能画出来。
+    std::shared_ptr<ImageAsset> getOrPlaceholderPtr(const wstring& key, const wstring& nextKey) {
+        requestPreload(key, true);
+        if (key != nextKey)
+            requestPreload(nextKey);
+        auto ptr = tryGetPtr(key);
+        return ptr ? ptr : makeLoadingAsset();
+    }
+
+    // 占位图本身只有 1 像素：它不参与显示，绘制层看到 isLoading 就改画加载提示。
+    // 给一个非空 Mat 是因为调用方普遍直接解引用 primaryFrame。
+    std::shared_ptr<ImageAsset> makeLoadingAsset() {
+        ImageAsset asset{ ImageFormat::Still,
+            cv::Mat(1, 1, CV_8UC4, jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_DEEP)),
+            {}, {}, "" };
+        asset.isLoading = true;
+        return std::make_shared<ImageAsset>(std::move(asset));
+    }
+
     std::shared_ptr<ImageAsset> makeErrorAsset() {
         return std::make_shared<ImageAsset>(ImageAsset{
             ImageFormat::Still, getErrorTipsMat(), {}, {}, getUIString(33) });
