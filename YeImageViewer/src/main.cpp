@@ -17,6 +17,9 @@
 #include "RenamePolicy.h"
 #include "SlideshowPolicy.h"
 #include "LoadingBadge.h"
+#include "JpegQuality.h"
+#include "ColorSpaceName.h"
+#include "ImageHistogram.h"
 #include "ZoomPolicy.h"
 #include "ZoomEditPolicy.h"
 #include "ToolbarCommand.h"
@@ -542,6 +545,9 @@ public:
     const ImageAsset* imageInfoAssetCache = nullptr;
     uint32_t imageInfoLanguageCache = UINT32_MAX;
     ImageInfoPresentation::Model imageInfoModelCache;
+    // 直方图跟着信息模型一起按图缓存，切图时一并失效
+    ImageHistogram::Bins imageInfoHistogramCache;
+    bool imageInfoHistogramReady = false;
     cv::Rect imageInfoPanelRect;
     cv::Rect imageInfoCloseRect;
     cv::Rect imageInfoCopyRect;
@@ -3261,10 +3267,17 @@ public:
         uint32_t accent;
     };
 
+    // 面板底色的 alpha 跟随设置里的「信息面板透明度」，其余颜色不动。
+    // 默认档就是加这个选项之前的 0xD1，升级后观感不变。
+    static uint32_t infoPanelBackground(uint32_t base) {
+        return ViewerOptions::withPanelAlpha(base,
+            ViewerOptions::infoPanelOpacity(GlobalVar::settingParameter.reserve));
+    }
+
     static ImageInfoPalette imageInfoPalette(bool light) {
         if (light) {
             return {
-                ImageInfoPresentation::LIGHT_PANEL_BACKGROUND,
+                infoPanelBackground(ImageInfoPresentation::LIGHT_PANEL_BACKGROUND),
                 ImageInfoPresentation::LIGHT_PANEL_BORDER,
                 ImageInfoPresentation::LIGHT_TEXT_PRIMARY,
                 ImageInfoPresentation::LIGHT_TEXT_SECONDARY,
@@ -3273,7 +3286,7 @@ public:
             };
         }
         return {
-            ImageInfoPresentation::DARK_PANEL_BACKGROUND,
+            infoPanelBackground(ImageInfoPresentation::DARK_PANEL_BACKGROUND),
             ImageInfoPresentation::DARK_PANEL_BORDER,
             ImageInfoPresentation::DARK_TEXT_PRIMARY,
             ImageInfoPresentation::DARK_TEXT_SECONDARY,
@@ -3350,6 +3363,56 @@ public:
         }
     }
 
+    // 当前图的解码结果，信息面板与直方图都要用
+    static const cv::Mat* primaryFrameOf(const ImageAsset* asset) {
+        if (!asset)
+            return nullptr;
+        if (!asset->primaryFrame.empty())
+            return &asset->primaryFrame;
+        if (!asset->frames.empty() && !asset->frames.front().empty())
+            return &asset->frames.front();
+        return nullptr;
+    }
+
+    // JPEG 的质量因子要从量化表反推，而量化表在文件头部，解码结果里没有。
+    // 只读前 64 KB：DQT 一定在 SOS 之前，正常 JPEG 的头部远小于这个数。
+    // 整文件读进来没必要——相机 JPEG 动辄几十兆。
+    int currentJpegQualityFactor() const {
+        if (!hasCurrentImagePath())
+            return 0;
+        const auto& path = imgFileList[curFileIdx];
+        const auto dot = path.rfind(L'.');
+        if (dot == wstring::npos)
+            return 0;
+        wstring ext = path.substr(dot + 1);
+        for (auto& c : ext)
+            c = static_cast<wchar_t>(std::towlower(c));
+        if (ext != L"jpg" && ext != L"jpeg" && ext != L"jfif" && ext != L"jpe")
+            return 0;
+
+        std::ifstream file(std::filesystem::path(path), std::ios::binary);
+        if (!file)
+            return 0;
+        std::vector<uint8_t> head(64 * 1024);
+        file.read(reinterpret_cast<char*>(head.data()), static_cast<std::streamsize>(head.size()));
+        head.resize(static_cast<std::size_t>(file.gcount()));
+        const auto quality = JpegQuality::estimate(head);
+        return quality ? *quality : 0;
+    }
+
+    std::string currentColorSpaceName() const {
+        const ImageAsset* asset = curPar.imageAssetPtr.get();
+        if (!asset)
+            return {};
+        // EXIF 的原始取值当兜底线索，ICC 优先
+        const auto rows = ImageInfoPresentation::parseRows(asset->exifInfo);
+        const auto colorSpace = ImageInfoPresentation::findValue(rows,
+            { "色彩空间", "Exif.Photo.ColorSpace" });
+        const auto interop = ImageInfoPresentation::findValue(rows,
+            { "Exif.Iop.InteroperabilityIndex", "InteroperabilityIndex" });
+        return ColorSpaceName::resolve(asset->iccProfile, colorSpace, interop);
+    }
+
     const ImageInfoPresentation::Model& currentImageInfoModel() {
         const ImageAsset* asset = curPar.imageAssetPtr.get();
         const uint32_t language = GlobalVar::settingParameter.UI_LANG;
@@ -3357,11 +3420,101 @@ public:
             imageInfoAssetCache = asset;
             imageInfoLanguageCache = language;
             imageInfoScrollOffset = 0;
+            imageInfoHistogramCache = {};
+            imageInfoHistogramReady = false;
             imageInfoModelCache = ImageInfoPresentation::build(
                 asset ? asset->exifInfo : std::string_view{}, language == 0,
-                imageColorMode(asset));
+                imageColorMode(asset), currentColorSpaceName(), currentJpegQualityFactor());
         }
         return imageInfoModelCache;
+    }
+
+    // 直方图按图缓存：抽样也要扫十几万像素，不能每帧重算。
+    const ImageHistogram::Bins& currentImageHistogram() {
+        if (imageInfoHistogramReady)
+            return imageInfoHistogramCache;
+        imageInfoHistogramReady = true;
+        imageInfoHistogramCache = {};
+
+        const cv::Mat* image = primaryFrameOf(curPar.imageAssetPtr.get());
+        if (!image || image->empty() || image->cols <= 0 || image->rows <= 0)
+            return imageInfoHistogramCache;
+
+        // 统一换成 8 位 BGR/BGRA 再统计：16 位和浮点图直接按 uchar 读会全错。
+        cv::Mat sample;
+        if (image->depth() == CV_8U)
+            sample = *image;
+        else if (image->depth() == CV_16U)
+            image->convertTo(sample, CV_8U, 1.0 / 257.0);
+        else if (image->depth() == CV_32F || image->depth() == CV_64F)
+            image->convertTo(sample, CV_8U, 255.0);
+        else
+            image->convertTo(sample, CV_8U);
+
+        imageInfoHistogramCache = ImageHistogram::accumulateFrom(
+            sample.cols, sample.rows, sample.channels(),
+            [&sample](int y) { return sample.ptr<uint8_t>(y); });
+        return imageInfoHistogramCache;
+    }
+
+    // 面板里的直方图。三条通道曲线叠加 + 一条亮度轮廓。
+    //
+    // 用叠加的半透明填充而不是三张并排的小图：并排每张只剩几十像素宽，
+    // 形状根本看不出来。叠加还能直接看出偏色——某个通道单独贴右边就是过曝。
+    void drawHistogramBlock(cv::Mat& canvas, const cv::Rect& area,
+        const ImageInfoPalette& palette) {
+        if (area.width <= 8 || area.height <= 8)
+            return;
+        // 区块可能被滚动到可视区之外，裁掉越界部分再画
+        const cv::Rect clipped = area & cv::Rect(0, 0, canvas.cols, canvas.rows);
+        if (clipped.width <= 8 || clipped.height <= 8)
+            return;
+
+        const auto& bins = currentImageHistogram();
+        if (bins.empty())
+            return;
+
+        // 底板：比面板底色再深/浅一档，让曲线有个可辨的画布
+        cv::Mat plot(clipped.height, clipped.width, CV_8UC4,
+            jarkUtils::to_cv_scalar(imageInfoUsesLightPalette() ? 0x30000000u : 0x40FFFFFFu));
+
+        struct Curve {
+            const std::array<uint32_t, ImageHistogram::HISTOGRAM_BINS>* channel;
+            uint32_t color;
+        };
+        // 亮度放最底层当背景轮廓，RGB 叠在上面
+        const std::array<Curve, 4> curves{
+            Curve{ &bins.luma,  imageInfoUsesLightPalette() ? 0x59303030u : 0x59D0D0D0u },
+            Curve{ &bins.blue,  0x8C5A8CFFu },
+            Curve{ &bins.green, 0x8C5ACD5Au },
+            Curve{ &bins.red,   0x8C5A5AFFu },
+        };
+
+        for (const auto& curve : curves) {
+            const auto heights = ImageHistogram::normalize(*curve.channel, clipped.height);
+            const auto columns = ImageHistogram::resampleToWidth(heights, clipped.width);
+            const auto color = jarkUtils::to_cv_scalar(curve.color);
+            for (int x = 0; x < clipped.width; ++x) {
+                const int barHeight = std::clamp(columns[x], 0, clipped.height);
+                if (barHeight <= 0)
+                    continue;
+                // 半透明叠加：直接 rectangle 会互相覆盖，看不出通道重合处
+                for (int y = clipped.height - barHeight; y < clipped.height; ++y) {
+                    auto& pixel = plot.at<cv::Vec4b>(y, x);
+                    const int alpha = static_cast<int>(color[3]);
+                    for (int c = 0; c < 3; ++c) {
+                        pixel[c] = static_cast<uint8_t>(
+                            (static_cast<int>(color[c]) * alpha +
+                             static_cast<int>(pixel[c]) * (255 - alpha) + 127) / 255);
+                    }
+                    pixel[3] = 255;
+                }
+            }
+        }
+
+        cv::rectangle(plot, { 0, 0, plot.cols - 1, plot.rows - 1 },
+            jarkUtils::to_cv_scalar(palette.border), 1);
+        jarkUtils::overlayImg(canvas, plot, clipped.x, clipped.y);
     }
 
     void drawImageInfoCard(cv::Mat& canvas, ImageInfoPresentation::Mode mode) {
@@ -3407,9 +3560,19 @@ public:
                 lineHeight + rowPadding * 2;
             };
 
+        // 直方图只在完整面板里出现：紧凑面板本来就窄，再塞一块图会把字挤没。
+        // 也可以在设置里关掉——纯色截图之类的场景它没有信息量。
+        const bool showHistogram = !compact &&
+            ViewerOptions::infoHistogramEnabled(GlobalVar::settingParameter.reserve) &&
+            !currentImageHistogram().empty();
+        const int histogramHeight = scaled(ImageHistogram::LOGICAL_HEIGHT);
+        const int histogramBlockHeight = showHistogram ?
+            sectionHeight + histogramHeight + scaled(8) : 0;
+
         int contentHeight = compact ? 0 : sectionHeight;
         for (const auto& row : rows)
             contentHeight += rowHeight(row);
+        contentHeight += histogramBlockHeight;
         if (!compact && !model.details.empty()) {
             contentHeight += 1 + sectionHeight;
             for (const auto& row : model.details)
@@ -3507,6 +3670,13 @@ public:
         else {
             drawSectionLabel(chinese ? "基本信息" : "BASIC INFORMATION");
             drawRows(rows);
+            if (showHistogram) {
+                drawSectionLabel(chinese ? "直方图" : "HISTOGRAM");
+                drawHistogramBlock(contentCanvas,
+                    { padding, y, contentRect.width - padding * 2, histogramHeight },
+                    palette);
+                y += histogramHeight + scaled(8);
+            }
             if (!model.details.empty()) {
                 cv::line(contentCanvas, { padding, y },
                     { contentRect.width - padding, y },

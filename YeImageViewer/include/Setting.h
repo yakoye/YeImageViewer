@@ -158,6 +158,11 @@ private:
                     &GlobalVar::settingParameter.reserve[ViewerOptions::EDGE_ARROWS_INDEX] },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[7]), {68, 69, 70},
                     &GlobalVar::settingParameter.reserve[ViewerOptions::DRAG_MOVES_WINDOW_INDEX] },
+                // 借鉴 QuickView 的信息面板：直方图开关 + 背景透明度四档
+                { toCvRect(SettingLayout::GENERAL_RADIOS[8]), {73, 66, 67},
+                    &GlobalVar::settingParameter.reserve[ViewerOptions::INFO_HISTOGRAM_INDEX] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[9]), {74, 75, 76, 77, 78},
+                    &GlobalVar::settingParameter.reserve[ViewerOptions::INFO_PANEL_OPACITY_INDEX] },
             };
         }
 

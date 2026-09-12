@@ -12,7 +12,7 @@ namespace ViewerOptions {
 inline constexpr std::size_t STORAGE_BASE = 256;
 inline constexpr std::size_t SLOT_COUNT = 16;
 inline constexpr uint32_t STORAGE_MAGIC = 0x564F5054u; // "VOPT"
-inline constexpr uint32_t STORAGE_VERSION = 1;
+inline constexpr uint32_t STORAGE_VERSION = 2;
 
 inline constexpr std::size_t MAGIC_INDEX = STORAGE_BASE + 0;
 inline constexpr std::size_t VERSION_INDEX = STORAGE_BASE + 1;
@@ -20,6 +20,9 @@ inline constexpr std::size_t EDGE_ARROWS_INDEX = STORAGE_BASE + 2;
 inline constexpr std::size_t DOUBLE_CLICK_INDEX = STORAGE_BASE + 3;
 inline constexpr std::size_t OPEN_MODE_INDEX = STORAGE_BASE + 4;
 inline constexpr std::size_t DRAG_MOVES_WINDOW_INDEX = STORAGE_BASE + 5;
+// 版本 2 新增
+inline constexpr std::size_t INFO_PANEL_OPACITY_INDEX = STORAGE_BASE + 6;
+inline constexpr std::size_t INFO_HISTOGRAM_INDEX = STORAGE_BASE + 7;
 
 enum class DoubleClickAction : uint32_t {
     ToggleFullscreen = 0,
@@ -35,11 +38,40 @@ enum class OpenMode : uint32_t {
     Count,
 };
 
+// 图片信息面板的背景不透明度。存的是档位而不是 alpha 数值，
+// 这样将来调整具体数值不会让旧设置文件失效。
+enum class InfoPanelOpacity : uint32_t {
+    Light = 0,   // 最透，看得清底下的图
+    Medium = 1,
+    Strong = 2,  // 原有观感
+    Opaque = 3,  // 全不透明，纯白/纯黑底图上文字最稳
+    Count,
+};
+
+// 各档位对应的 alpha。Strong 保持 0xD1，跟没有这个选项之前一致，
+// 老用户升级后观感不变。
+constexpr uint32_t infoPanelAlpha(InfoPanelOpacity level) {
+    switch (level) {
+    case InfoPanelOpacity::Light:  return 0x8Cu;   // 55%
+    case InfoPanelOpacity::Medium: return 0xB3u;   // 70%
+    case InfoPanelOpacity::Opaque: return 0xFFu;
+    default:                       return 0xD1u;   // 82%，原值
+    }
+}
+
+// 把某个档位的 alpha 套到面板底色上。颜色低 24 位不动，只换 alpha。
+constexpr uint32_t withPanelAlpha(uint32_t bgra, InfoPanelOpacity level) {
+    return (infoPanelAlpha(level) << 24) | (bgra & 0x00FFFFFFu);
+}
+
 // 默认值集中在这里，reset 与迁移都从它取，避免两处各写一份。
 inline constexpr bool DEFAULT_EDGE_ARROWS = false;
 inline constexpr auto DEFAULT_DOUBLE_CLICK = DoubleClickAction::ToggleFullscreen;
 inline constexpr auto DEFAULT_OPEN_MODE = OpenMode::ImmersivePreview;
 inline constexpr bool DEFAULT_DRAG_MOVES_WINDOW = true;
+// 默认沿用加这个选项之前的观感，升级后不变
+inline constexpr auto DEFAULT_INFO_PANEL_OPACITY = InfoPanelOpacity::Strong;
+inline constexpr bool DEFAULT_INFO_HISTOGRAM = true;
 
 constexpr bool fits(std::size_t count) {
     return count >= STORAGE_BASE + SLOT_COUNT;
@@ -54,6 +86,8 @@ inline void reset(uint32_t* storage, std::size_t count) {
     storage[DOUBLE_CLICK_INDEX] = static_cast<uint32_t>(DEFAULT_DOUBLE_CLICK);
     storage[OPEN_MODE_INDEX] = static_cast<uint32_t>(DEFAULT_OPEN_MODE);
     storage[DRAG_MOVES_WINDOW_INDEX] = DEFAULT_DRAG_MOVES_WINDOW ? 1u : 0u;
+    storage[INFO_PANEL_OPACITY_INDEX] = static_cast<uint32_t>(DEFAULT_INFO_PANEL_OPACITY);
+    storage[INFO_HISTOGRAM_INDEX] = DEFAULT_INFO_HISTOGRAM ? 1u : 0u;
 }
 
 inline void initialize(uint32_t* storage, std::size_t count) {
@@ -66,6 +100,14 @@ inline void initialize(uint32_t* storage, std::size_t count) {
         reset(storage, count);
         return;
     }
+
+    // 版本升级必须是增量的：只给新字段补默认值，用户改过的既有配置一律保留。
+    // 整块 reset 会把用户设过的打开方式、双击动作全冲掉。
+    if (version < 2) {
+        storage[INFO_PANEL_OPACITY_INDEX] = static_cast<uint32_t>(DEFAULT_INFO_PANEL_OPACITY);
+        storage[INFO_HISTOGRAM_INDEX] = DEFAULT_INFO_HISTOGRAM ? 1u : 0u;
+    }
+    storage[VERSION_INDEX] = STORAGE_VERSION;
     if (storage[EDGE_ARROWS_INDEX] > 1u)
         storage[EDGE_ARROWS_INDEX] = DEFAULT_EDGE_ARROWS ? 1u : 0u;
     if (storage[DRAG_MOVES_WINDOW_INDEX] > 1u)
@@ -74,6 +116,10 @@ inline void initialize(uint32_t* storage, std::size_t count) {
         storage[DOUBLE_CLICK_INDEX] = static_cast<uint32_t>(DEFAULT_DOUBLE_CLICK);
     if (storage[OPEN_MODE_INDEX] >= static_cast<uint32_t>(OpenMode::Count))
         storage[OPEN_MODE_INDEX] = static_cast<uint32_t>(DEFAULT_OPEN_MODE);
+    if (storage[INFO_PANEL_OPACITY_INDEX] >= static_cast<uint32_t>(InfoPanelOpacity::Count))
+        storage[INFO_PANEL_OPACITY_INDEX] = static_cast<uint32_t>(DEFAULT_INFO_PANEL_OPACITY);
+    if (storage[INFO_HISTOGRAM_INDEX] > 1u)
+        storage[INFO_HISTOGRAM_INDEX] = DEFAULT_INFO_HISTOGRAM ? 1u : 0u;
 }
 
 inline bool edgeArrowsEnabled(const uint32_t* storage) {
@@ -118,6 +164,28 @@ inline OpenMode openMode(const uint32_t* storage) {
 inline void setOpenMode(uint32_t* storage, OpenMode mode) {
     if (storage && mode < OpenMode::Count)
         storage[OPEN_MODE_INDEX] = static_cast<uint32_t>(mode);
+}
+
+inline InfoPanelOpacity infoPanelOpacity(const uint32_t* storage) {
+    if (!storage)
+        return DEFAULT_INFO_PANEL_OPACITY;
+    const uint32_t value = storage[INFO_PANEL_OPACITY_INDEX];
+    return value < static_cast<uint32_t>(InfoPanelOpacity::Count) ?
+        static_cast<InfoPanelOpacity>(value) : DEFAULT_INFO_PANEL_OPACITY;
+}
+
+inline void setInfoPanelOpacity(uint32_t* storage, InfoPanelOpacity level) {
+    if (storage && level < InfoPanelOpacity::Count)
+        storage[INFO_PANEL_OPACITY_INDEX] = static_cast<uint32_t>(level);
+}
+
+inline bool infoHistogramEnabled(const uint32_t* storage) {
+    return storage && storage[INFO_HISTOGRAM_INDEX] != 0u;
+}
+
+inline void setInfoHistogramEnabled(uint32_t* storage, bool enabled) {
+    if (storage)
+        storage[INFO_HISTOGRAM_INDEX] = enabled ? 1u : 0u;
 }
 
 // 打开图片时是否走无边框沉浸预览。另外两种模式都直接给带边框的普通窗口。

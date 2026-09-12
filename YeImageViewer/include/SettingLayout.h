@@ -30,9 +30,23 @@ inline constexpr int SCROLLBAR_WIDTH = 4;
 inline constexpr int SCROLLBAR_RIGHT_MARGIN = 5;
 
 inline constexpr Rect GENERAL_BEHAVIOR_CARD{ 20, 20, 580, 178 };
-// 显示卡片容纳 8 组单选：首行 252，行距 48，末行底边 252+7*48+38 = 626，留 18 下边距。
-inline constexpr Rect GENERAL_DISPLAY_CARD{ 20, 214, 580, 430 };
-inline constexpr int GENERAL_EDITOR_CARD_Y = 660;
+
+// 单选组的几何。定义在卡片之前，好让卡片高度和编辑器起点从行数推导出来——
+// 写死数字的话，每次增减单选组都得手算一遍，漏改就会和下面的编辑器卡片重叠。
+inline constexpr int GENERAL_RADIO_COUNT = 10;
+inline constexpr int GENERAL_RADIO_FIRST_Y = 252;
+inline constexpr int GENERAL_RADIO_PITCH = 48;
+inline constexpr int GENERAL_RADIO_HEIGHT = 38;
+inline constexpr int GENERAL_RADIO_BOTTOM =
+    GENERAL_RADIO_FIRST_Y + (GENERAL_RADIO_COUNT - 1) * GENERAL_RADIO_PITCH +
+    GENERAL_RADIO_HEIGHT;
+
+// 显示卡片包住全部单选组，末行下面留 18 的边距
+inline constexpr int GENERAL_DISPLAY_CARD_Y = 214;
+inline constexpr Rect GENERAL_DISPLAY_CARD{ 20, GENERAL_DISPLAY_CARD_Y, 580,
+    GENERAL_RADIO_BOTTOM + 18 - GENERAL_DISPLAY_CARD_Y };
+inline constexpr int GENERAL_EDITOR_CARD_Y =
+    GENERAL_DISPLAY_CARD_Y + GENERAL_DISPLAY_CARD.height + 16;
 // 行起点与卡片顶边保持 40 的间距，留出卡片标题。
 inline constexpr int GENERAL_EDITOR_ROW_Y = GENERAL_EDITOR_CARD_Y + 40;
 inline constexpr int GENERAL_EDITOR_ROW_HEIGHT = 44;
@@ -91,19 +105,19 @@ inline constexpr std::array<Rect, 7> GENERAL_CHECK_BOXES{
     Rect{ 38, 162, 262, 32 },
 };
 
-// 八组单选按 62 的行距排下来会占掉近 500 像素，整页显得松垮，这里收紧到 48。
-inline constexpr int GENERAL_RADIO_FIRST_Y = 252;
-inline constexpr int GENERAL_RADIO_PITCH = 48;
-inline constexpr int GENERAL_RADIO_HEIGHT = 38;
-
+// 行距从 62 收到 48：十组单选按 62 排会占掉 620 像素，整页显得松垮。
+// reserve 里的布尔值（翻页箭头、拖动行为、直方图开关）统一做成两选项单选组，
+// 而不是复选框：复选框绑的是 SettingParameter 的 bool 成员，reserve 是 uint32_t。
+// 几何常量定义在上面的卡片区，卡片高度要靠它们推导。
 constexpr Rect generalRadioRow(int index) {
     return { 38, GENERAL_RADIO_FIRST_Y + index * GENERAL_RADIO_PITCH, 544,
         GENERAL_RADIO_HEIGHT };
 }
 
-inline constexpr std::array<Rect, 8> GENERAL_RADIOS{
+inline constexpr std::array<Rect, 10> GENERAL_RADIOS{
     generalRadioRow(0), generalRadioRow(1), generalRadioRow(2), generalRadioRow(3),
     generalRadioRow(4), generalRadioRow(5), generalRadioRow(6), generalRadioRow(7),
+    generalRadioRow(8), generalRadioRow(9),
 };
 
 inline constexpr Rect ASSOCIATION_SEARCH{ 20, 20, 580, 46 };
