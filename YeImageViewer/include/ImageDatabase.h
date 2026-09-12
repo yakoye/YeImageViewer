@@ -4,6 +4,7 @@
 #include "ColorManager.h"
 #include "HomeScreenLayout.h"
 #include "TextDrawer.h"
+#include "ShellThumbnail.h"
 
 #include "videoDecoder.h"
 #include "SVGPreprocessor.h"
@@ -306,7 +307,16 @@ public:
         L"srw", // Samsung
     };
 
-    ImageDatabase() = default;
+    ImageDatabase() {
+        previewThread = std::thread(&ImageDatabase::previewWorker, this);
+    }
+
+    ~ImageDatabase() override {
+        previewStop = true;
+        previewCv.notify_all();
+        if (previewThread.joinable())
+            previewThread.join();
+    }
 
     void setColorManagementWindow(HWND hwnd) {
         colorManager.setWindow(hwnd);
@@ -346,16 +356,22 @@ public:
         return ptr ? ptr : makeErrorAsset();
     }
 
-    // 发起解码但不等待：拿得到就用真图，拿不到先给一张占位，让窗口立刻能画出来。
-    std::shared_ptr<ImageAsset> getOrPlaceholderPtr(const wstring& key, const wstring& nextKey) {
+    // 发起解码但不等待：拿得到就用真图，拿不到返回空，由调用方决定先显示什么。
+    // 同时把模糊预览也排上队——解码要几秒的图，这几秒里靠预览顶着。
+    std::shared_ptr<ImageAsset> tryGetOrRequest(const wstring& key, const wstring& nextKey) {
         requestPreload(key, true);
         if (key != nextKey)
             requestPreload(nextKey);
+
         auto ptr = tryGetPtr(key);
-        return ptr ? ptr : makeLoadingAsset();
+        if (!ptr)
+            requestPreview(key);   // 真图已在缓存里就不必再要缩略图
+        // 下一张多半马上就翻过去，预览提前备好，到时候不用现取
+        requestPreview(nextKey);
+        return ptr;
     }
 
-    // 占位图本身只有 1 像素：它不参与显示，绘制层看到 isLoading 就改画加载提示。
+    // 占位图本身只有 1 像素，不参与显示：绘制层看到这个尺寸就知道没有内容可画。
     // 给一个非空 Mat 是因为调用方普遍直接解引用 primaryFrame。
     std::shared_ptr<ImageAsset> makeLoadingAsset() {
         ImageAsset asset{ ImageFormat::Still,
@@ -363,6 +379,37 @@ public:
             {}, {}, "" };
         asset.isLoading = true;
         return std::make_shared<ImageAsset>(std::move(asset));
+    }
+
+    // 把已取到的系统缩略图包成一张可显示的图。还没取到或该文件没有缩略图时返回空。
+    std::shared_ptr<ImageAsset> tryMakePreviewAsset(const wstring& key) {
+        cv::Mat thumb;
+        {
+            std::lock_guard<std::mutex> lock(previewMutex);
+            auto it = previewReady.find(key);
+            if (it == previewReady.end() || it->second.empty())
+                return nullptr;
+            thumb = it->second;
+        }
+
+        ImageAsset asset{ ImageFormat::Still, std::move(thumb), {}, {}, "" };
+        asset.isLoading = true;
+        return std::make_shared<ImageAsset>(std::move(asset));
+    }
+
+    // 请求为该文件取一张模糊预览。已取过（无论成败）或已在队列中则直接返回。
+    void requestPreview(const wstring& key) {
+        // 主页占位用的是窗口标题而非路径，不是真文件，没必要去问系统要缩略图
+        if (key.empty() || key.find(L'\\') == wstring::npos)
+            return;
+
+        std::lock_guard<std::mutex> lock(previewMutex);
+        if (previewReady.contains(key) || previewQueued.contains(key))
+            return;
+
+        previewQueued.insert(key);
+        previewQueue.push_back(key);
+        previewCv.notify_one();
     }
 
     std::shared_ptr<ImageAsset> makeErrorAsset() {
@@ -644,4 +691,74 @@ public:
     void handleExifOrientation(int orientation, cv::Mat& img);
     ImageAsset myLoader(const wstring& path);
     ImageAsset loader(const wstring& path);
+
+public:
+    // 文件被删除或重命名后，系统缩略图也可能过期，跟缓存一起丢掉
+    void erasePreview(const wstring& key) {
+        std::lock_guard<std::mutex> lock(previewMutex);
+        previewReady.erase(key);
+        previewQueued.erase(key);
+        std::erase(previewOrder, key);
+    }
+
+    void clearPreviews() {
+        std::lock_guard<std::mutex> lock(previewMutex);
+        previewReady.clear();
+        previewQueued.clear();
+        previewQueue.clear();
+        previewOrder.clear();
+    }
+
+private:
+    // ── 模糊预览 ──────────────────────────────────────────────────────────
+    // 预览图取自 Windows 缩略图服务，毫秒级返回，解码慢的大图靠它先顶上。
+    // 取不到的文件也会在 previewReady 里留一条空记录，避免每次翻到都重试一遍。
+
+    static constexpr int PREVIEW_MAX_EDGE = 1024;
+    static constexpr std::size_t PREVIEW_CACHE_MAX = 16;
+
+    std::unordered_map<wstring, cv::Mat> previewReady;
+    std::unordered_set<wstring> previewQueued;
+    std::deque<wstring> previewQueue;   // 待取队列
+    std::deque<wstring> previewOrder;   // 已取到的先后顺序，用于淘汰
+    std::mutex previewMutex;
+    std::condition_variable previewCv;
+    std::thread previewThread;
+    std::atomic<bool> previewStop{ false };
+
+    void previewWorker() {
+        // Shell 缩略图提供器是进程内 COM 组件，按 STA 初始化
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+        while (true) {
+            wstring key;
+            {
+                std::unique_lock<std::mutex> lock(previewMutex);
+                previewCv.wait(lock, [this] {
+                    return !previewQueue.empty() || previewStop.load(); });
+
+                if (previewStop)
+                    break;
+
+                key = std::move(previewQueue.front());
+                previewQueue.pop_front();
+            }
+
+            cv::Mat thumb = ShellThumbnail::fetch(key, PREVIEW_MAX_EDGE);
+
+            {
+                std::lock_guard<std::mutex> lock(previewMutex);
+                previewQueued.erase(key);
+                previewReady[key] = std::move(thumb);
+                previewOrder.push_back(key);
+
+                while (previewOrder.size() > PREVIEW_CACHE_MAX) {
+                    previewReady.erase(previewOrder.front());
+                    previewOrder.pop_front();
+                }
+            }
+        }
+
+        CoUninitialize();
+    }
 };
