@@ -515,6 +515,9 @@ public:
     bool presentationMode = false;
     bool framedWindowAnchored = false;
     bool presentationClickCandidate = false;
+    // 真图仍在后台解码时，这里记着它的路径，主循环据此轮询接手。
+    wstring pendingImagePath;
+    std::chrono::steady_clock::time_point loadingStartedAt{};
     bool windowDragActive = false;
     POINT windowDragCursorStart{};
     RECT windowDragWindowStart{};
@@ -1121,8 +1124,35 @@ public:
             }
         }
 
-        curPar.imageAssetPtr = imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + 1) % imgFileList.size()]);
+        // 首次打开不死等解码：先拿占位图把窗口显示出来，真图由主循环轮询接手。
+        // 大图解码要好几秒，死等的话这几秒里连窗口都没有。
+        const auto& currentPath = imgFileList[curFileIdx];
+        const auto& nextPath = imgFileList[(curFileIdx + 1) % imgFileList.size()];
+        curPar.imageAssetPtr = imgDB.getOrPlaceholderPtr(currentPath, nextPath);
+        pendingImagePath = curPar.imageAssetPtr->isLoading ? currentPath : wstring{};
+        loadingStartedAt = std::chrono::steady_clock::now();
         initCurrentImageParameters();
+    }
+
+    // 占位期间轮询真图；换好后重新按真实尺寸初始化视图参数。
+    bool adoptPendingImageIfReady() {
+        if (pendingImagePath.empty())
+            return false;
+        auto ready = imgDB.tryGetPtr(pendingImagePath);
+        if (!ready)
+            return false;
+
+        pendingImagePath.clear();
+        curPar.imageAssetPtr = ready;
+        initCurrentImageParameters();
+        // 占位期间窗口是按默认尺寸摆的，真图到手才知道该多大。
+        if (!presentationMode &&
+            ViewerOptions::openMode(GlobalVar::settingParameter.reserve) ==
+                ViewerOptions::OpenMode::FitImage) {
+            applyImageFittedWindowSize();
+        }
+        operateQueue.push({ ActionENUM::refresh });
+        return true;
     }
 
     inline void handleAnimationControl(int x, int y) {
@@ -3664,11 +3694,54 @@ public:
         }
     }
 
+    // 真图还在后台解码时的提示。解码没有进度回调，给不出真实百分比，于是用一条往复
+    // 滑动的不确定进度条表示「在动」，再把已用秒数写出来——真卡住时用户能看出区别。
+    void drawLoadingIndicator(cv::Mat& canvas) {
+        if (!curPar.imageAssetPtr || !curPar.imageAssetPtr->isLoading)
+            return;
+        if (canvas.cols < 80 || canvas.rows < 40)
+            return;
+
+        const int dpi = overlayDpi();
+        const auto scale = [dpi](int value) { return MulDiv(value, dpi, USER_DEFAULT_SCREEN_DPI); };
+
+        const int barHeight = scale(4);
+        cv::rectangle(canvas, { 0, 0, canvas.cols, barHeight },
+            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), -1);
+
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - loadingStartedAt).count();
+        constexpr int64_t cycleMs = 1100;
+        const int chunk = std::max(scale(60), canvas.cols / 4);
+        const double phase = static_cast<double>(elapsedMs % cycleMs) / cycleMs;
+        const int left = static_cast<int>((canvas.cols + chunk) * phase) - chunk;
+        const int clampedLeft = std::max(0, left);
+        const int width = std::min(chunk, canvas.cols - clampedLeft);
+        if (width > 0) {
+            cv::rectangle(canvas, { clampedLeft, 0, width, barHeight },
+                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.CHECK), -1);
+        }
+
+        const auto text = std::format("{}  {:.1f}s", getUIString(71), elapsedMs / 1000.0);
+        const int textHeight = scale(28);
+        textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
+            TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
+        textDrawer.putAlignCenter(canvas,
+            { 0, (canvas.rows - textHeight) / 2, canvas.cols, textHeight },
+            text.c_str(), GlobalVar::currentTheme.FG);
+    }
+
     void drawExtraUI(cv::Mat& canvas) {
         const int canvasHeight = canvas.rows;
         const int canvasWidth = canvas.cols;
         if (canvasWidth < 100 || canvasHeight < 100)
             return;
+
+        if (curPar.imageAssetPtr && curPar.imageAssetPtr->isLoading) {
+            // 加载中只画提示：占位图是 1×1，工具栏、翻页箭头这些都无从谈起。
+            drawLoadingIndicator(canvas);
+            return;
+        }
 
         switch (extraUIFlag) {
         case ShowExtraUI::bottomToolbar: {
@@ -3760,6 +3833,9 @@ public:
         // 后续逻辑大量直接解引用 imageAssetPtr，这里兜底避免任何路径下的空指针访问
         if (!curPar.imageAssetPtr)
             curPar.imageAssetPtr = imgDB.makeErrorAsset();
+
+        // 占位期间轮询后台解码结果，一就绪立刻换成真图。
+        adoptPendingImageIfReady();
 
         if (GlobalVar::isNeedUpdateTheme) {
             GlobalVar::isNeedUpdateTheme = false;

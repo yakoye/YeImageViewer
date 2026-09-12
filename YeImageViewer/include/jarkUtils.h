@@ -373,6 +373,7 @@ struct ImageAsset {
     string exifInfo;                         // 图像EXIF等信息
     std::vector<uint8_t> iccProfile;         // 图像内嵌ICC配置文件
     std::shared_ptr<SvgRenderer> svgRenderer; // SVG文档，用于按当前视口重新渲染
+    bool isLoading = false;                  // 占位图：真图仍在后台解码
 };
 
 enum class ActionENUM:int64_t {

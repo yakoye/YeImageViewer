@@ -155,6 +155,17 @@ public:
         return getDataPtr(key);
     }
 
+    // 只查缓存，绝不等待解码。首次打开大图时主线程靠它先拿到「还没好」这个事实，
+    // 从而先把窗口显示出来，而不是干等到解码结束——290 MB 的 PNG 要解 4 秒，
+    // 那 4 秒里用户面对的是一片空白。
+    std::shared_ptr<valueType> tryGetPtr(const keyType& key) {
+        std::shared_lock<std::shared_mutex> lock(cache_mutex);
+        auto it = cache_map.find(key);
+        if (it == cache_map.end())
+            return nullptr;
+        return it->second->second;
+    }
+
     std::shared_ptr<valueType> getSafePtr(const keyType& key, const keyType& nextKey) {
         // 当前要显示的图插到队首：快速翻页时队列里可能还堆着此前的预读任务，
         // 按先进先出会让正在等的这张排到最后，等成超时。
