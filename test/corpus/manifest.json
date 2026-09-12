@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-09-12T19:43:51+08:00",
+  "generatedAt": "2026-09-12T21:25:27+08:00",
   "note": "由 scripts/build-corpus-manifest.ps1 生成；人工条目写在 manifest.overrides.json。",
   "suites": {
     "core": [
@@ -15,6 +15,9 @@
     ],
     "pro": [
       "professional"
+    ],
+    "raw": [
+      "raw"
     ],
     "corrupt": [
       "corrupt"
@@ -1932,6 +1935,477 @@
         "height": 160
       },
       "severity": "release-blocker"
+    },
+    {
+      "id": "_local-03-raw-nikon - coolpix p1000 - 12bit 12bit uncompressed (4_3)-nrw",
+      "path": "_local/03-raw/Nikon - COOLPIX P1000 - 12bit 12bit uncompressed (4_3).NRW",
+      "category": "raw",
+      "extension": "nrw",
+      "bytes": 26472704,
+      "sha256": "1D9470EE083F914E51AA0BE782161B432F27F87DBEF551A59EC435F5DBC289DD",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 4624,
+        "height": 3470
+      },
+      "severity": "release-blocker",
+      "comment": "Nikon COOLPIX P1000；来源 raw.pixls.us（CC0），上游文件名 Nikon - COOLPIX P1000 - 12bit 12bit uncompressed (4:3).NRW"
+    },
+    {
+      "id": "_local-03-raw-sigma - dp1 - 3_2-x3f",
+      "path": "_local/03-raw/Sigma - DP1 - 3_2.X3F",
+      "category": "raw",
+      "extension": "x3f",
+      "bytes": 10317264,
+      "sha256": "44508F7DF4191AACAECB6461E1841DAE002E5B71A4F95A00AA3F52D1C6D6BC5F",
+      "expected": {
+        "open": false,
+        "crash": false,
+        "hang": false,
+        "knownUnsupported": true
+      },
+      "severity": "normal",
+      "comment": "Sigma Foveon X3F。LibRaw 需带 X3F 支持才能解；ImageMagick 报 \"Unsupported file format or not RAW file\"。文件头 \"FOVb\" 正常。"
+    },
+    {
+      "id": "_local-03-raw-sony - ilce-7s - 14bit 14bit compressed (3_2)-arw",
+      "path": "_local/03-raw/Sony - ILCE-7S - 14bit 14bit compressed (3_2).ARW",
+      "category": "raw",
+      "extension": "arw",
+      "bytes": 6160384,
+      "sha256": "A35EBB2FBEC929DAA5BEB20D1CE5C15A8AAC7B1A7A231455387F3DF8A7442E07",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 2784,
+        "height": 1872
+      },
+      "severity": "release-blocker",
+      "comment": "Sony ILCE-7S；来源 raw.pixls.us（CC0），上游文件名 Sony - ILCE-7S - 14bit 14bit compressed (3:2).ARW"
+    },
+    {
+      "id": "_local-03-raw-leica - d-lux 5 - 1_1-rwl",
+      "path": "_local/03-raw/Leica - D-LUX 5 - 1_1.RWL",
+      "category": "raw",
+      "extension": "rwl",
+      "bytes": 10355200,
+      "sha256": "CEEB5E5BF2358C04706E807BC023971E085D969B6F36491A57ECFF051A05E8D3",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 2752,
+        "height": 2754
+      },
+      "severity": "release-blocker",
+      "comment": "Leica D-LUX 5；来源 raw.pixls.us（CC0），上游文件名 Leica - D-LUX 5 - 1:1.RWL"
+    },
+    {
+      "id": "_local-03-raw-olympus - e-10 - 16bit (4_3)-orf",
+      "path": "_local/03-raw/Olympus - E-10 - 16bit (4_3).ORF",
+      "category": "raw",
+      "extension": "orf",
+      "bytes": 7614592,
+      "sha256": "2BFDADE72439017A60A47AAD1E5BBCB1ACA36F2BE7A21E94A4257A678FB6F4DA",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 2256,
+        "height": 1684
+      },
+      "severity": "release-blocker",
+      "comment": "Olympus E-10；来源 raw.pixls.us（CC0），上游文件名 Olympus - E-10 - 16bit (4:3).ORF"
+    },
+    {
+      "id": "_local-03-raw-nikon - nikon coolscan iv ed - uncompressed (4_3)-nef",
+      "path": "_local/03-raw/Nikon - Nikon COOLSCAN IV ED - uncompressed (4_3).nef",
+      "category": "raw",
+      "extension": "nef",
+      "bytes": 2201849,
+      "sha256": "268D9A98920A9F3EA3EBF6A2B9FF68B956DF74AC0E46B980BEE69E7EF3EBC172",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 869,
+        "height": 593
+      },
+      "severity": "release-blocker",
+      "comment": "Nikon Nikon COOLSCAN IV ED；来源 raw.pixls.us（CC0），上游文件名 Nikon - Nikon COOLSCAN IV ED - uncompressed (4:3).nef"
+    },
+    {
+      "id": "_local-03-raw-minolta - rd 175-mdc",
+      "path": "_local/03-raw/Minolta - RD 175.MDC",
+      "category": "raw",
+      "extension": "mdc",
+      "bytes": 1138688,
+      "sha256": "B7DFC1E9C895610C7170D00A03D3EFF6E689F87BB750574C94C056EE4905CED4",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 1534,
+        "height": 986
+      },
+      "severity": "release-blocker",
+      "comment": "Minolta RD 175；来源 raw.pixls.us（CC0），上游文件名 Minolta - RD 175.MDC"
+    },
+    {
+      "id": "_local-03-raw-sony - dsc-f828 - 4_3-srf",
+      "path": "_local/03-raw/Sony - DSC-F828 - 4_3.SRF",
+      "category": "raw",
+      "extension": "srf",
+      "bytes": 17393344,
+      "sha256": "07739F94BCAB0C7E198D418AC65172D0DCE04BB84A7683ECFFD0BFE4B32F6D79",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 3287,
+        "height": 2460
+      },
+      "severity": "release-blocker",
+      "comment": "Sony DSC-F828；来源 raw.pixls.us（CC0），上游文件名 Sony - DSC-F828 - 4:3.SRF"
+    },
+    {
+      "id": "_local-03-raw-blackmagic - micro cinema camera - 12bit (16_9)-dng",
+      "path": "_local/03-raw/Blackmagic - Micro Cinema Camera - 12bit (16_9).dng",
+      "category": "raw",
+      "extension": "dng",
+      "bytes": 1228096,
+      "sha256": "4C65B8CDA205087CFB94D8931811E53E15EB4DF538AD67C1B4A3E76C1185B277",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 1952,
+        "height": 1104
+      },
+      "severity": "release-blocker",
+      "comment": "Blackmagic Micro Cinema Camera；来源 raw.pixls.us（CC0），上游文件名 Blackmagic - Micro Cinema Camera - 12bit (16:9).dng"
+    },
+    {
+      "id": "_local-03-raw-canon - eos r6 - 3_2-cr3",
+      "path": "_local/03-raw/Canon - EOS R6 - 3_2.CR3",
+      "category": "raw",
+      "extension": "cr3",
+      "bytes": 5273174,
+      "sha256": "74ABB0A113D075AD9887A058082F40DD2A938C4813A08474D82356F11A027778",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 3407,
+        "height": 2271
+      },
+      "severity": "release-blocker",
+      "comment": "Canon EOS R6；来源 raw.pixls.us（CC0），上游文件名 Canon - EOS R6 - 3:2.CR3"
+    },
+    {
+      "id": "_local-03-raw-fujifilm - finepix s5000 - 4_3-raf",
+      "path": "_local/03-raw/Fujifilm - FinePix S5000 - 4_3.RAF",
+      "category": "raw",
+      "extension": "raf",
+      "bytes": 6851240,
+      "sha256": "DABD5E74521A6980156BE9FD4B88D0C37B0FE4D0E0E6F5C12DB8CFFFF1B76297",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 2012,
+        "height": 1521
+      },
+      "severity": "release-blocker",
+      "comment": "Fujifilm FinePix S5000；来源 raw.pixls.us（CC0），上游文件名 Fujifilm - FinePix S5000 - 4:3.RAF"
+    },
+    {
+      "id": "_local-03-raw-hasselblad - h5d-40 - 16bit (4_3)-fff",
+      "path": "_local/03-raw/Hasselblad - H5D-40 - 16bit (4_3).fff",
+      "category": "raw",
+      "extension": "fff",
+      "bytes": 69826305,
+      "sha256": "209D464E13702DE5F4FDB830AC26AC140C98A8D0DC3E81C5BA61D93677330832",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 7327,
+        "height": 5502
+      },
+      "severity": "release-blocker",
+      "comment": "Hasselblad H5D-40；来源 raw.pixls.us（CC0），上游文件名 Hasselblad - H5D-40 - 16bit (4:3).fff"
+    },
+    {
+      "id": "_local-03-raw-phase one - p40+ - iiq s (4_3)-iiq",
+      "path": "_local/03-raw/Phase One - P40+ - IIQ S (4_3).IIQ",
+      "category": "raw",
+      "extension": "iiq",
+      "bytes": 11172571,
+      "sha256": "61AA32C5947D386F0D5EE465C5183185DF6C9CD7FF7EB66FFEC12E84B487878C",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 3658,
+        "height": 2740
+      },
+      "severity": "release-blocker",
+      "comment": "Phase One P40+；来源 raw.pixls.us（CC0），上游文件名 Phase One - P40+ - IIQ S (4:3).IIQ"
+    },
+    {
+      "id": "_local-03-raw-sony - dsc-r1 - 14bit 14bit uncompressed (3_2)-sr2",
+      "path": "_local/03-raw/Sony - DSC-R1 - 14bit 14bit uncompressed (3_2).SR2",
+      "category": "raw",
+      "extension": "sr2",
+      "bytes": 21035488,
+      "sha256": "921C5F2513DD1671A9089E73FC778FC3573BC4CB70A3A555D0414661D0E62274",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 3925,
+        "height": 2608
+      },
+      "severity": "release-blocker",
+      "comment": "Sony DSC-R1；来源 raw.pixls.us（CC0），上游文件名 Sony - DSC-R1 - 14bit 14bit uncompressed (3:2).SR2"
+    },
+    {
+      "id": "_local-03-raw-canon - powershot g1 - raw (4_3)-crw",
+      "path": "_local/03-raw/Canon - PowerShot G1 - RAW (4_3).crw",
+      "category": "raw",
+      "extension": "crw",
+      "bytes": 2300702,
+      "sha256": "F39BE5ACF14057CE04527FD8D0574E57EC8ED5FED082D7BFAFF763075A44EE8A",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 2088,
+        "height": 1550
+      },
+      "severity": "release-blocker",
+      "comment": "Canon PowerShot G1；来源 raw.pixls.us（CC0），上游文件名 Canon - PowerShot G1 - RAW (4:3).crw"
+    },
+    {
+      "id": "_local-03-raw-gopro - hero7 black - 16bit (4_3)-gpr",
+      "path": "_local/03-raw/GoPro - HERO7 Black - 16bit (4_3).GPR",
+      "category": "raw",
+      "extension": "gpr",
+      "bytes": 3045278,
+      "sha256": "F7D8A5B693BC173A777164DBAD48921C8D145D602D5422925A13090404514B66",
+      "expected": {
+        "open": false,
+        "crash": false,
+        "hang": false,
+        "knownUnsupported": true
+      },
+      "severity": "normal",
+      "comment": "GoPro GPR。用 VC-5 压缩，需要 GoPro 的 GPR SDK，LibRaw 默认构建不含；ImageMagick 报 \"Nonstandard tile length\"。文件头 \"II*.\" 正常。"
+    },
+    {
+      "id": "_local-03-raw-hasselblad - h3d - 16bit (4_3)-3fr",
+      "path": "_local/03-raw/Hasselblad - H3D - 16bit (4_3).3FR",
+      "category": "raw",
+      "extension": "3fr",
+      "bytes": 53594112,
+      "sha256": "34FDB93CB215E4F419AE0F7252C57B881FA381003124B4F9C143D27741F211B3",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 7247,
+        "height": 5444
+      },
+      "severity": "release-blocker",
+      "comment": "Hasselblad H3D；来源 raw.pixls.us（CC0），上游文件名 Hasselblad - H3D - 16bit (4:3).3FR"
+    },
+    {
+      "id": "_local-03-raw-kodak - dcs760c - 12bit (3_2)-dcr",
+      "path": "_local/03-raw/Kodak - DCS760C - 12bit (3_2).DCR",
+      "category": "raw",
+      "extension": "dcr",
+      "bytes": 7547392,
+      "sha256": "D0E6BD0A3339DAFF884E73A08FED8E75B20FE05BBA438FC185E3F0BD019D0DA8",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 3040,
+        "height": 2016
+      },
+      "severity": "release-blocker",
+      "comment": "Kodak DCS760C；来源 raw.pixls.us（CC0），上游文件名 Kodak - DCS760C - 12bit (3:2).DCR"
+    },
+    {
+      "id": "_local-03-raw-canon - eos 40d - sraw2 (sraw) (3_2)-cr2",
+      "path": "_local/03-raw/Canon - EOS 40D - sRAW2 (sRAW) (3_2).CR2",
+      "category": "raw",
+      "extension": "cr2",
+      "bytes": 5805950,
+      "sha256": "BA644E7DD2ABE74ECA260E67F0206FF113BF0F62E710F8130611E964D6BE5BF1",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 1944,
+        "height": 1296
+      },
+      "severity": "release-blocker",
+      "comment": "Canon EOS 40D；来源 raw.pixls.us（CC0），上游文件名 Canon - EOS 40D - sRAW2 (sRAW) (3:2).CR2"
+    },
+    {
+      "id": "_local-03-raw-raspberrypi - rp_ov5647 - 3_2-raw",
+      "path": "_local/03-raw/RaspberryPi - RP_ov5647 - 3_2.raw",
+      "category": "raw",
+      "extension": "raw",
+      "bytes": 6575416,
+      "sha256": "12B4FF3A7F61ABC5DD023235F9EA434270A8B111BC16B786696E063E64DD376D",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false
+      },
+      "severity": "release-blocker",
+      "comment": "RaspberryPi RP_ov5647；来源 raw.pixls.us（CC0），上游文件名 RaspberryPi - RP_ov5647 - 3:2.raw"
+    },
+    {
+      "id": "_local-03-raw-arri - alexa mini-ari",
+      "path": "_local/03-raw/Arri - Alexa Mini.ari",
+      "category": "raw",
+      "extension": "ari",
+      "bytes": 11529396,
+      "sha256": "4D487A43D1259049D6F7145049EC33DA378681DAB1278A8EB3941AC231CC844A",
+      "expected": {
+        "open": false,
+        "crash": false,
+        "hang": false,
+        "knownUnsupported": true
+      },
+      "severity": "normal",
+      "comment": "ARRIRAW。LibRaw 不支持；ImageMagick 连 ARI 解码模块都没有（缺 IM_MOD_RL_ARI_.dll）。文件头 \"ARRI\" 正常，不是坏素材。"
+    },
+    {
+      "id": "_local-03-raw-kodak - kodak p712 zoom digital camera - nan-kdc",
+      "path": "_local/03-raw/Kodak - KODAK P712 ZOOM DIGITAL CAMERA - NAN.KDC",
+      "category": "raw",
+      "extension": "kdc",
+      "bytes": 12245402,
+      "sha256": "B1C3870C8C794F0271053A80A15296E3A9B575AB736796CDB53929D50C86A084",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 3088,
+        "height": 2310
+      },
+      "severity": "release-blocker",
+      "comment": "Kodak KODAK P712 ZOOM DIGITAL CAMERA；来源 raw.pixls.us（CC0），上游文件名 Kodak - KODAK P712 ZOOM DIGITAL CAMERA - NAN.KDC"
+    },
+    {
+      "id": "_local-03-raw-pentax - k10d - 12bit 12bit compressed (3_2)-pef",
+      "path": "_local/03-raw/Pentax - K10D - 12bit 12bit compressed (3_2).PEF",
+      "category": "raw",
+      "extension": "pef",
+      "bytes": 9561139,
+      "sha256": "E35AE4154A468BE3154F5F462E884BA5941F010D3E8F23D347FBEC14809F44D3",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 3896,
+        "height": 2616
+      },
+      "severity": "release-blocker",
+      "comment": "Pentax K10D；来源 raw.pixls.us（CC0），上游文件名 Pentax - K10D - 12bit 12bit compressed (3:2).PEF"
+    },
+    {
+      "id": "_local-03-raw-epson - r-d1 - 12bit (3_2)-erf",
+      "path": "_local/03-raw/Epson - R-D1 - 12bit (3_2).ERF",
+      "category": "raw",
+      "extension": "erf",
+      "bytes": 9958994,
+      "sha256": "09D8E533D93116294A9F3E161ED868E929454C7B946E083B644BD6BB75BCB5E4",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 3040,
+        "height": 2024
+      },
+      "severity": "release-blocker",
+      "comment": "Epson R-D1；来源 raw.pixls.us（CC0），上游文件名 Epson - R-D1 - 12bit (3:2).ERF"
+    },
+    {
+      "id": "_local-03-raw-minolta - dimage 5 - 4_3-mrw",
+      "path": "_local/03-raw/Minolta - DiMAGE 5 - 4_3.MRW",
+      "category": "raw",
+      "extension": "mrw",
+      "bytes": 6422144,
+      "sha256": "D60BFD80BCB1F7B9C88B14A5E46EA27885BBF92D990AB30B3939288678FEA0D9",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 2056,
+        "height": 1544
+      },
+      "severity": "release-blocker",
+      "comment": "Minolta DiMAGE 5；来源 raw.pixls.us（CC0），上游文件名 Minolta - DiMAGE 5 - 4:3.MRW"
+    },
+    {
+      "id": "_local-03-raw-panasonic - dmc-lx7 - 1_1-rw2",
+      "path": "_local/03-raw/Panasonic - DMC-LX7 - 1_1.RW2",
+      "category": "raw",
+      "extension": "rw2",
+      "bytes": 3249664,
+      "sha256": "D142A23ACA836053ED53E9CE3CB3ED2D434541D734D71A94A6EEFADCD08BD31B",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 1384,
+        "height": 1384
+      },
+      "severity": "release-blocker",
+      "comment": "Panasonic DMC-LX7；来源 raw.pixls.us（CC0），上游文件名 Panasonic - DMC-LX7 - 1:1.RW2"
+    },
+    {
+      "id": "_local-03-raw-leaf - aptus 22 - 16bit (4_3)-mos",
+      "path": "_local/03-raw/Leaf - Aptus 22 - 16bit (4_3).mos",
+      "category": "raw",
+      "extension": "mos",
+      "bytes": 23423633,
+      "sha256": "8A1A101CB3940B0648AF54A721D92E6FB8612DD29A0909036EA2753196A00EC2",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 5344,
+        "height": 4008
+      },
+      "severity": "release-blocker",
+      "comment": "Leaf Aptus 22；来源 raw.pixls.us（CC0），上游文件名 Leaf - Aptus 22 - 16bit (4:3).mos"
+    },
+    {
+      "id": "_local-03-raw-samsung - nx500 - 12bit 12bit normal compression (3_2)-srw",
+      "path": "_local/03-raw/Samsung - NX500 - 12bit 12bit normal compression (3_2).SRW",
+      "category": "raw",
+      "extension": "srw",
+      "bytes": 20750652,
+      "sha256": "156E43118811BCECB6FCC600B5F41EE1773C4F00B6A5B2DD72E177E35F6596AB",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 6496,
+        "height": 4336
+      },
+      "severity": "release-blocker",
+      "comment": "Samsung NX500；来源 raw.pixls.us（CC0），上游文件名 Samsung - NX500 - 12bit 12bit normal compression (3:2).SRW"
     }
   ]
 }
