@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-09-12T19:23:21+08:00",
+  "generatedAt": "2026-09-12T19:43:51+08:00",
   "note": "由 scripts/build-corpus-manifest.ps1 生成；人工条目写在 manifest.overrides.json。",
   "suites": {
     "core": [
@@ -12,6 +12,9 @@
     ],
     "modern": [
       "modern-formats"
+    ],
+    "pro": [
+      "professional"
     ],
     "corrupt": [
       "corrupt"
@@ -161,7 +164,9 @@
         "crash": false,
         "hang": false,
         "width": 160,
-        "height": 80
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 254
       },
       "severity": "release-blocker"
     },
@@ -196,7 +201,9 @@
         "crash": false,
         "hang": false,
         "width": 160,
-        "height": 80
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 253
       },
       "severity": "release-blocker"
     },
@@ -212,7 +219,9 @@
         "crash": false,
         "hang": false,
         "width": 199,
-        "height": 101
+        "height": 101,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 253
       },
       "severity": "release-blocker"
     },
@@ -228,7 +237,9 @@
         "crash": false,
         "hang": false,
         "width": 160,
-        "height": 80
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 253
       },
       "severity": "release-blocker"
     },
@@ -263,7 +274,9 @@
         "crash": false,
         "hang": false,
         "width": 199,
-        "height": 101
+        "height": 101,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
       },
       "severity": "release-blocker"
     },
@@ -279,7 +292,9 @@
         "crash": false,
         "hang": false,
         "width": 160,
-        "height": 80
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
       },
       "severity": "release-blocker"
     },
@@ -295,7 +310,8 @@
         "crash": false,
         "hang": false,
         "width": 160,
-        "height": 80
+        "height": 80,
+        "minMinAlpha": 250
       },
       "severity": "release-blocker"
     },
@@ -330,7 +346,9 @@
         "crash": false,
         "hang": false,
         "width": 160,
-        "height": 80
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
       },
       "severity": "release-blocker"
     },
@@ -346,7 +364,9 @@
         "crash": false,
         "hang": false,
         "width": 199,
-        "height": 101
+        "height": 101,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
       },
       "severity": "release-blocker"
     },
@@ -362,7 +382,9 @@
         "crash": false,
         "hang": false,
         "width": 160,
-        "height": 80
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
       },
       "severity": "release-blocker"
     },
@@ -397,7 +419,9 @@
         "crash": false,
         "hang": false,
         "width": 199,
-        "height": 101
+        "height": 101,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
       },
       "severity": "release-blocker"
     },
@@ -413,7 +437,9 @@
         "crash": false,
         "hang": false,
         "width": 160,
-        "height": 80
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
       },
       "severity": "release-blocker"
     },
@@ -448,7 +474,8 @@
         "crash": false,
         "hang": false,
         "width": 160,
-        "height": 80
+        "height": 80,
+        "minMinAlpha": 250
       },
       "severity": "release-blocker"
     },
@@ -464,7 +491,8 @@
         "crash": false,
         "hang": false,
         "width": 160,
-        "height": 80
+        "height": 80,
+        "minMinAlpha": 250
       },
       "severity": "release-blocker"
     },
@@ -480,7 +508,8 @@
         "crash": false,
         "hang": false,
         "width": 199,
-        "height": 101
+        "height": 101,
+        "minMinAlpha": 250
       },
       "severity": "release-blocker"
     },
@@ -496,7 +525,317 @@
         "crash": false,
         "hang": false,
         "width": 160,
-        "height": 80
+        "height": 80,
+        "minMinAlpha": 250
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-exr_alpha-exr",
+      "path": "02-professional/exr_alpha.exr",
+      "category": "professional",
+      "extension": "exr",
+      "bytes": 104011,
+      "sha256": "AD9EABA054FD8B0EC70F681FCBA5DBEACA221AEDDB924340F2DB3D682AF1C545",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "channels": 4,
+        "maxMinAlpha": 16,
+        "sourceMinAlpha": 0
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-exr_color-exr",
+      "path": "02-professional/exr_color.exr",
+      "category": "professional",
+      "extension": "exr",
+      "bytes": 78393,
+      "sha256": "E162F2C270F84643F3E020F81D71110ED008AA40493AA147FF1872D024F0A27A",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "minMinAlpha": 250
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-hdr_radiance-hdr",
+      "path": "02-professional/hdr_radiance.hdr",
+      "category": "professional",
+      "extension": "hdr",
+      "bytes": 1682,
+      "sha256": "B149295F2A1672315BF76F13B03B4D399D84E150F7A6DDCA11A98B90E727E023",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "minMinAlpha": 250
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-ico_alpha-ico",
+      "path": "02-professional/ico_alpha.ico",
+      "category": "professional",
+      "extension": "ico",
+      "bytes": 4286,
+      "sha256": "EFD939DDFBF383F601985CDAA60D6E4E49C347C65225D8A15FADED8248049874",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 32,
+        "height": 32,
+        "channels": 4,
+        "maxMinAlpha": 16,
+        "sourceMinAlpha": 7
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-ico_multisize-ico",
+      "path": "02-professional/ico_multisize.ico",
+      "category": "professional",
+      "extension": "ico",
+      "bytes": 32038,
+      "sha256": "D1469AF55063A4E2533DB9D1BCA7C54C4484718DDC32C674C31CA49F2C1BB3D9",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 64,
+        "channels": 4,
+        "maxMinAlpha": 16,
+        "sourceMinAlpha": 0
+      },
+      "severity": "release-blocker",
+      "comment": "多尺寸 ICO：本程序把各尺寸横向拼成一条显示，宽 = 各尺寸之和、高 = 最大尺寸。素材含 16/32/48/64，因此是 160x64。identify 读的是首帧（16x16），自动推导会得到错的期望。拼条规律已用 16、16+32、32+64、16+32+48+64 四组独立验证。拼条里小图标上下有留白，留白是透明的，所以最小 alpha 必须贴近 0——若变成不透明，说明留白被填成了实色。"
+    },
+    {
+      "id": "02-professional-ico_single-ico",
+      "path": "02-professional/ico_single.ico",
+      "category": "professional",
+      "extension": "ico",
+      "bytes": 4286,
+      "sha256": "0FBCE286E878B45D189303C243A6309AF49C9CFA5CAB9145CA75CC513A38E24C",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 32,
+        "height": 32,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-pfm_color-pfm",
+      "path": "02-professional/pfm_color.pfm",
+      "category": "professional",
+      "extension": "pfm",
+      "bytes": 153614,
+      "sha256": "433ACED6AB35D7571184E3711E4267A22D695E012AA9DB36F7D68F7E1915F9F7",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "minMinAlpha": 250
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-pfm_gray-pfm",
+      "path": "02-professional/pfm_gray.pfm",
+      "category": "professional",
+      "extension": "pfm",
+      "bytes": 51214,
+      "sha256": "B1A70F9F928B0F7591B45CFD117AE6C02D6EF4F371EE9202609F6456CC08FD45",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "minMinAlpha": 250
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-psd_16bit-psd",
+      "path": "02-professional/psd_16bit.psd",
+      "category": "professional",
+      "extension": "psd",
+      "bytes": 55807,
+      "sha256": "256F40CD33CC4D9B287FC115D2763A3372E343ABDD6A0B332273F820BEE88FDB",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-psd_8bit-psd",
+      "path": "02-professional/psd_8bit.psd",
+      "category": "professional",
+      "extension": "psd",
+      "bytes": 4958,
+      "sha256": "49B1D2E62EE3107138866D3FA9166BE5CF566438798B935F06F18E3BF4F32F4E",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-psd_alpha-psd",
+      "path": "02-professional/psd_alpha.psd",
+      "category": "professional",
+      "extension": "psd",
+      "bytes": 5144,
+      "sha256": "E4A96D4D2139869570BA3C2AF6033EB8A012C1B6964866337AC249B3F2546855",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "channels": 4,
+        "maxMinAlpha": 16,
+        "sourceMinAlpha": 0
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-tiff_16bit-tif",
+      "path": "02-professional/tiff_16bit.tif",
+      "category": "professional",
+      "extension": "tif",
+      "bytes": 102678,
+      "sha256": "96058137B1312C666AB95FFFB3F352C58424ABE1610E2F0C9888AD1A1699C919",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-tiff_alpha-tif",
+      "path": "02-professional/tiff_alpha.tif",
+      "category": "professional",
+      "extension": "tif",
+      "bytes": 51478,
+      "sha256": "2BB08C677321F7258C829D08E82A72E6D3F3C509D61215E53472A7BA06A70C3F",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "channels": 4,
+        "maxMinAlpha": 16,
+        "sourceMinAlpha": 0
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-tiff_deflate-tif",
+      "path": "02-professional/tiff_deflate.tif",
+      "category": "professional",
+      "extension": "tif",
+      "bytes": 1962,
+      "sha256": "C703B747E71B96255E5C93CC382DAC853CC3A07B2978EF1CD530FA6A346B461F",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-tiff_lzw-tif",
+      "path": "02-professional/tiff_lzw.tif",
+      "category": "professional",
+      "extension": "tif",
+      "bytes": 2498,
+      "sha256": "39C6F7D1353D3344ED8DCA63DD5C1DD1955C8332A1F73814CA19CEA43B7A0D05",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-tiff_multipage-tif",
+      "path": "02-professional/tiff_multipage.tif",
+      "category": "professional",
+      "extension": "tif",
+      "bytes": 154454,
+      "sha256": "4EC712BC6F44A298C52BE0C262D4BC6ECA5A301018DB0C52B9896CDB6CAD2760",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "minimumFrames": 3,
+        "minMinAlpha": 250
+      },
+      "severity": "release-blocker",
+      "comment": "多页 TIFF：程序按动图处理，3 页即 3 帧。identify 对 [0] 只报 1 帧，所以帧数期望必须写在这里。"
+    },
+    {
+      "id": "02-professional-tiff_uncompressed-tif",
+      "path": "02-professional/tiff_uncompressed.tif",
+      "category": "professional",
+      "extension": "tif",
+      "bytes": 51478,
+      "sha256": "258905E79D1C708701093BF7032C4A0FE459327863767FBD2F8C056F77CF9074",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "minMinAlpha": 250,
+        "sourceMinAlpha": 255
       },
       "severity": "release-blocker"
     },

@@ -33,6 +33,9 @@ $categoryRules = @{
     # 只验尺寸的话，解码器把 alpha 丢掉或整层填成不透明都能「通过」。
     '01-modern-formats'    = @{ Category = 'modern-formats';     Severity = 'release-blocker'; Decodable = $true
                                 CheckAlpha = $true }
+    # HDR / 专业格式：EXR、Radiance HDR、PFM、TIFF、PSD、ICO 的编码与位深变体
+    '02-professional'      = @{ Category = 'professional';       Severity = 'release-blocker'; Decodable = $true
+                                CheckAlpha = $true }
     # EXIF 方向组的期望尺寸不能取自 identify：它读的是存储尺寸、不应用方向，
     # orientation 5～8 会读成 400x600。正确应用方向后，八张都应显示为基准的 600x400。
     '12-exif'              = @{ Category = 'exif';               Severity = 'release-blocker'; Decodable = $true
@@ -87,6 +90,9 @@ $transparencyThreshold = 128
 # 解码后允许的最小 alpha 上限。有损编码会让 0 变成 1~2，留到 16 足够宽松；
 # 而解码器丢掉 alpha 会得到 255，离这个上限很远，两种情况不会混淆。
 $decodedMinAlphaBound = 16
+# 判定「不透明」的下限。有损编码会把恒 255 的 alpha 面压出 254（实测 AVIF），
+# 留 250 的余量；而 alpha 被归零会得到 0，离得很远。
+$opaqueThreshold = 250
 
 $cases = @()
 foreach ($folder in ($categoryRules.Keys | Sort-Object)) {
@@ -126,6 +132,13 @@ foreach ($folder in ($categoryRules.Keys | Sort-Object)) {
                     $expected['channels'] = 4
                     $expected['maxMinAlpha'] = $decodedMinAlphaBound
                     $expected['sourceMinAlpha'] = $sourceMinAlpha
+                }
+                elseif ($null -eq $sourceMinAlpha -or $sourceMinAlpha -ge $opaqueThreshold) {
+                    # 反过来也要管：不透明的素材必须解出不透明。
+                    # 少了这一条就抓不到「整层 alpha 被归零、图变成全透明」这类缺陷——
+                    # 那正是 16 位 PSD 目前的表现，图在界面上完全看不见。
+                    $expected['minMinAlpha'] = $opaqueThreshold
+                    if ($null -ne $sourceMinAlpha) { $expected['sourceMinAlpha'] = $sourceMinAlpha }
                 }
             }
         }
@@ -173,6 +186,7 @@ $manifest = [ordered]@{
     suites      = [ordered]@{
         core    = @('reference', 'dimensions', 'extension-mismatch', 'path-filename', 'exif')
         modern  = @('modern-formats')
+        pro     = @('professional')
         corrupt = @('corrupt')
         large   = @('large-image')
     }

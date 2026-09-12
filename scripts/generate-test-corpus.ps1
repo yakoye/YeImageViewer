@@ -15,7 +15,7 @@
 #>
 param(
     [ValidateSet('reference', 'dimensions', 'corrupt', 'extension-mismatch', 'path-filename', 'exif',
-        'modern-formats')]
+        'modern-formats', 'professional')]
     [string[]]$Category,
     [switch]$All,
     [switch]$Force
@@ -34,7 +34,7 @@ if (-not $magick) {
 
 if ($All) {
     $Category = @('reference', 'dimensions', 'corrupt', 'extension-mismatch', 'path-filename', 'exif',
-        'modern-formats')
+        'modern-formats', 'professional')
 }
 if (-not $Category) {
     throw "请指定 -Category 或 -All。"
@@ -570,6 +570,113 @@ function Build-ModernFormats {
     }
 }
 
+# HDR 与专业格式专项（测试规格 Phase 4）。
+#
+# 只收本机能真正编码、且彼此确实不同的变体。这一类踩过三个坑，都由脚本挡住：
+#   1. 源图是黑白渐变时，ImageMagick 把 EXR / PFM 直接按灰度存，「彩色」变体是假的。
+#      现在 HDR 源图用彩色渐变，PFM 还要核对魔数 PF（彩色）与 Pf（灰度）确实不同。
+#   2. Q16 构建下不写 -depth，TIFF / PSD 一律存成 16 位，「8 位」「16 位」两个变体
+#      字节完全相同。现在每个变体都显式指定位深，并由 Assert-DistinctVariants 兜底。
+#   3. 编码器不支持时静默降级：请 ImageMagick 写 32 位 PSD，它写出的是 16 位，
+#      文件与 16 位变体逐字节相同。因此这里没有 32 位 PSD 变体。
+function Build-Professional {
+    Write-Host "生成 02-professional..."
+    $dir = New-CorpusDirectory "02-professional"
+
+    # 彩色 HDR 源：整体乘 4 让亮度超过 1.0，才测得出高动态范围是否被截断
+    $hdr = Join-Path $dir "_hdr.exr"
+    Invoke-Magick @('-size', '160x80', 'gradient:red-blue', '-colorspace', 'RGB',
+        '-define', 'quantum:format=floating-point', '-depth', '32',
+        '-evaluate', 'Multiply', '4', $hdr)
+    $rgb = Join-Path $dir "_rgb.png"
+    Invoke-Magick @('-size', '160x80', 'gradient:red-blue',
+        '-fill', 'white', '-pointsize', '20', '-draw', "text 6,30 'abc'", $rgb)
+    $alpha = Join-Path $dir "_alpha.png"
+    Invoke-Magick @($rgb, '-alpha', 'set',
+        '(', '-size', '160x80', 'gradient:white-black', ')',
+        '-compose', 'CopyOpacity', '-composite', $alpha)
+    $square = Join-Path $dir "_square.png"
+    Invoke-Magick @('-size', '128x128', 'gradient:red-blue', $square)
+
+    $variants = @(
+        # EXR：本机 ImageMagick 写不出 HALF/FLOAT 的区别（加 -depth 16/32 产出逐字节
+        # 相同），所以只留一个彩色变体。浮点 EXR 的覆盖在 test/format corpus 里，
+        # 素材是 opencv_extra 的 opencv-float.exr。
+        @{ Name = 'exr_color.exr';         Source = $hdr;    Args = @() }
+        @{ Name = 'exr_alpha.exr';         Source = $alpha;  Args = @() }
+
+        @{ Name = 'hdr_radiance.hdr';      Source = $hdr;    Args = @() }
+
+        # PFM 的彩色与灰度是两种不同的魔数（PF / Pf），解析分支不同
+        @{ Name = 'pfm_color.pfm';         Source = $hdr;    Args = @('-colorspace', 'RGB') }
+        @{ Name = 'pfm_gray.pfm';          Source = $hdr;    Args = @('-colorspace', 'Gray') }
+
+        # TIFF：三种压缩 + 位深 + 透明 + 多页，各走不同的 libtiff 路径
+        @{ Name = 'tiff_lzw.tif';          Source = $rgb;    Args = @('-depth', '8', '-compress', 'LZW') }
+        @{ Name = 'tiff_deflate.tif';      Source = $rgb;    Args = @('-depth', '8', '-compress', 'Zip') }
+        @{ Name = 'tiff_uncompressed.tif'; Source = $rgb;    Args = @('-depth', '8', '-compress', 'None') }
+        @{ Name = 'tiff_16bit.tif';        Source = $rgb;    Args = @('-depth', '16', '-compress', 'None') }
+        @{ Name = 'tiff_alpha.tif';        Source = $alpha;  Args = @('-depth', '8') }
+        @{ Name = 'tiff_multipage.tif';    Source = $rgb;    Args = @('-depth', '8', '-duplicate', '2') }
+
+        @{ Name = 'psd_8bit.psd';          Source = $rgb;    Args = @('-depth', '8') }
+        @{ Name = 'psd_16bit.psd';         Source = $rgb;    Args = @('-depth', '16') }
+        @{ Name = 'psd_alpha.psd';         Source = $alpha;  Args = @('-depth', '8') }
+
+        # ICO：多尺寸的 ICO 本程序会把各尺寸横向拼成一条显示（宽 = 各尺寸之和，
+        # 高 = 最大尺寸），identify 读的是首帧，两者对不上，预期写在
+        # manifest.overrides.json 里。注意 icon:auto-resize 不接受小于 16 的尺寸，
+        # 给 8 它会静默写出 0 字节文件。
+        @{ Name = 'ico_multisize.ico';     Source = $square; Args = @('-define', 'icon:auto-resize=16,32,48,64') }
+        @{ Name = 'ico_single.ico';        Source = $square; Args = @('-define', 'icon:auto-resize=32') }
+        @{ Name = 'ico_alpha.ico';         Source = $alpha;  Args = @('-resize', '32x32', '-define', 'icon:auto-resize=32') }
+    )
+
+    foreach ($variant in $variants) {
+        $target = Join-Path $dir $variant.Name
+        if (-not (Test-ShouldBuild $target)) { continue }
+        Invoke-Magick (@($variant.Source) + $variant.Args + @($target))
+        Assert-NotFallbackEncoding -Path $target
+        Write-Step $variant.Name
+    }
+
+    # 名字声称有差异的变体必须真的不同，否则这一类测试就是自欺
+    Assert-DistinctVariants -Directory $dir
+
+    # PFM 的彩色/灰度差异不体现在字节数上而在魔数上，单独核一次
+    Assert-FileMagic -Path (Join-Path $dir 'pfm_color.pfm') -Expected 'PF' -Label 'PFM 彩色'
+    Assert-FileMagic -Path (Join-Path $dir 'pfm_gray.pfm')  -Expected 'Pf' -Label 'PFM 灰度'
+
+    foreach ($seed in @($hdr, $rgb, $alpha, $square)) {
+        Remove-Item -LiteralPath $seed -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# 同一目录下不允许出现内容完全相同的两个素材。
+# 这类重复意味着某个「变体」根本没生效——编码器忽略了参数，而文件名还在声称差异，
+# 测试就会拿同一份数据跑两遍，看着覆盖变多了，实际什么也没多测。
+function Assert-DistinctVariants {
+    param([string]$Directory)
+    $groups = Get-ChildItem -LiteralPath $Directory -File |
+        Where-Object { $_.Name -notlike '_*' } |
+        Group-Object { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash } |
+        Where-Object { $_.Count -gt 1 }
+    if ($groups) {
+        $lines = foreach ($g in $groups) { "  " + [string]::Join('、', ($g.Group | ForEach-Object { $_.Name })) }
+        throw ("以下素材内容完全相同，说明声称的差异没有生效：`n" + [string]::Join("`n", $lines))
+    }
+}
+
+function Assert-FileMagic {
+    param([string]$Path, [string]$Expected, [string]$Label)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $bytes = [byte[]](Get-Content -LiteralPath $Path -AsByteStream -TotalCount $Expected.Length)
+    $actual = -join ($bytes | ForEach-Object { [char]$_ })
+    if ($actual -cne $Expected) {
+        throw "$Label（$Path）魔数应为 '$Expected'，实际是 '$actual'：编码器没按预期写出该子格式。"
+    }
+}
+
 # 确认写出来的真是目标格式，而不是编码器不支持时静默退化成的 PNG/JPEG。
 # 这个检查必须有：退化文件的扩展名是对的、程序也能「解码成功」，
 # 不验魔数就会把「用 PNG 冒充 HEIC」当成格式覆盖。
@@ -597,6 +704,7 @@ foreach ($item in $Category) {
         'extension-mismatch' { Build-ExtensionMismatch }
         'path-filename'      { Build-PathFilename }
         'modern-formats'     { Build-ModernFormats }
+        'professional'       { Build-Professional }
     }
 }
 
