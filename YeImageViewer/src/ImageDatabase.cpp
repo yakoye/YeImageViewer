@@ -3486,7 +3486,17 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
 }
 
 ImageAsset ImageDatabase::loader(const wstring& path) {
+    const auto decodeStart = std::chrono::steady_clock::now();
     auto imageAsset = myLoader(path);
+    const auto decodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - decodeStart).count();
+
+    // 回采真实解码吞吐，让加载提示里的倒计时收敛到本机实际水平。
+    // 取 myLoader 这一段：色彩管理和格式转换不随分辨率线性变化，算进去会污染速率。
+    recordDecodeSample(path,
+        imageAsset.frames.empty() ? imageAsset.primaryFrame : imageAsset.frames.front(),
+        decodeMs);
+
     JARK_LOG("{}", parseImageAssetInfo(path, imageAsset));
     convertImageAssetToCV_8U(imageAsset);
 

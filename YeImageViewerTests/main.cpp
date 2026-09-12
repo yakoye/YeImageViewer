@@ -12,6 +12,8 @@
 #include "WindowTitlePresentation.h"
 #include "PresentationLayout.h"
 #include "OverlayLayout.h"
+#include "LoadingBadge.h"
+#include "DecodeEstimate.h"
 #include "ImageViewTransform.h"
 #include "RotationStore.h"
 #include "RenamePolicy.h"
@@ -550,6 +552,71 @@ void expectSlideshowPolicy() {
         !SlideshowPolicy::shouldAdvance(true, 1, true) &&
         !SlideshowPolicy::shouldAdvance(true, 3, false) &&
         SlideshowPolicy::shouldAdvance(true, 3, true));
+}
+
+void expectLoadingBadge() {
+    // 估不出耗时（尺寸没查到）：只出文字，不能凭空编个数字
+    passOrFail("loading badge omits the countdown when no estimate is available",
+        LoadingBadge::compose("原图加载中", 0, 500) == "原图加载中" &&
+        LoadingBadge::compose("原图加载中", -1, 500) == "原图加载中");
+
+    // 倒计时按毫秒三位显示，数字才明显在动
+    passOrFail("loading badge counts down with millisecond precision",
+        LoadingBadge::compose("原图加载中", 2800, 0) == "原图加载中  2.800s" &&
+        LoadingBadge::compose("原图加载中", 2800, 947) == "原图加载中  1.853s" &&
+        LoadingBadge::compose("原图加载中", 2800, 2799) == "原图加载中  0.001s");
+
+    // 估短了就收起数字：继续显示 0.000 是在撒谎，解码根本没有进度回调
+    passOrFail("loading badge drops the countdown once the estimate is exhausted",
+        LoadingBadge::compose("原图加载中", 2800, 2800) == "原图加载中" &&
+        LoadingBadge::compose("原图加载中", 2800, 9000) == "原图加载中");
+}
+
+void expectDecodeEstimate() {
+    DecodeEstimate::Model model;
+
+    // 输出字节数 = 宽 × 高 × 位深 ÷ 8。位深缺失或离谱时按 32 位兜底，宁可高估。
+    passOrFail("decode estimate derives output bytes from dimensions and bit depth",
+        DecodeEstimate::outputBytes(9000, 9000, 48) == 486'000'000LL &&
+        DecodeEstimate::outputBytes(100, 100, 0) == 40'000LL &&
+        DecodeEstimate::outputBytes(100, 100, 999) == 40'000LL &&
+        DecodeEstimate::outputBytes(0, 100, 24) == 0LL);
+
+    // 静态速率表按实测最慢值取。moon_81M.png 实测 2793 ms，估值应落在同一量级且不低估。
+    const int64_t moonBytes = DecodeEstimate::outputBytes(9000, 9000, 48);
+    const int64_t moonEstimate = model.estimateMs(L"D:\\x\\moon.png", moonBytes);
+    passOrFail("decode estimate for a 486 MB PNG lands near the measured 2793 ms",
+        moonEstimate >= 2400 && moonEstimate <= 3400);
+
+    // JPEG 快两个数量级，不能套用 PNG 的速率
+    const int64_t jpegBytes = DecodeEstimate::outputBytes(8191, 8193, 24);
+    const int64_t jpegEstimate = model.estimateMs(L"D:\\x\\big.jpg", jpegBytes);
+    passOrFail("decode estimate separates JPEG throughput from PNG",
+        jpegEstimate >= 60 && jpegEstimate <= 220 && jpegEstimate * 8 < moonEstimate);
+
+    // 扩展名大小写不敏感
+    passOrFail("decode estimate matches extensions case-insensitively",
+        model.estimateMs(L"D:\\x\\big.JPG", jpegBytes) == jpegEstimate);
+
+    // 没有尺寸就没有估值，不能编
+    passOrFail("decode estimate yields nothing without dimensions",
+        model.estimateMs(L"D:\\x\\big.jpg", 0) == 0);
+
+    // 回采真实耗时后，后续估值应向实测收敛
+    const int64_t before = model.estimateMs(L"D:\\x\\a.png", moonBytes);
+    for (int i = 0; i < 12; ++i)
+        model.record(L"D:\\x\\a.png", moonBytes, 1200);   // 实测比静态表快得多
+    const int64_t after = model.estimateMs(L"D:\\x\\a.png", moonBytes);
+    passOrFail("decode estimate converges toward observed throughput",
+        before > 2000 && after >= 1100 && after <= 1400 && after < before);
+
+    // 计时噪声样本要丢掉，否则速率会被拉飞
+    DecodeEstimate::Model noisy;
+    const int64_t baseline = noisy.estimateMs(L"D:\\x\\b.png", moonBytes);
+    for (int i = 0; i < 12; ++i)
+        noisy.record(L"D:\\x\\b.png", moonBytes, 1);      // 1 ms 显然是噪声
+    passOrFail("decode estimate ignores implausibly short samples",
+        noisy.estimateMs(L"D:\\x\\b.png", moonBytes) == baseline);
 }
 
 void expectImageViewTransform() {
@@ -1508,6 +1575,8 @@ int main(int argc, char* argv[]) {
     expectZoomPolicy();
     expectZoomEditPolicy();
     expectSlideshowPolicy();
+    expectLoadingBadge();
+    expectDecodeEstimate();
     expectImageViewTransform();
     expectViewerOptions();
     expectInitialWindowLayout();

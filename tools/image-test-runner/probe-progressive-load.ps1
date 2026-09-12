@@ -54,6 +54,13 @@ foreach ($p in @($Exe, $Image)) {
     }
 }
 
+# 本测试靠读屏幕像素判定。锁屏时 CopyFromScreen 抓到的是锁屏界面，
+# 指标全是噪声——那时报 FAIL 与被测行为无关，只会掩盖真实回归。
+if (Get-Process LogonUI -ErrorAction SilentlyContinue) {
+    Write-Output "SKIPPED 屏幕已锁定，无法读取窗口像素"
+    exit 0
+}
+
 function Measure-Frame($bmp) {
     $w = $bmp.Width; $h = $bmp.Height
     $data = $bmp.LockBits(

@@ -5,6 +5,7 @@
 #include "HomeScreenLayout.h"
 #include "TextDrawer.h"
 #include "ShellThumbnail.h"
+#include "DecodeEstimate.h"
 
 #include "videoDecoder.h"
 #include "SVGPreprocessor.h"
@@ -387,14 +388,32 @@ public:
         {
             std::lock_guard<std::mutex> lock(previewMutex);
             auto it = previewReady.find(key);
-            if (it == previewReady.end() || it->second.empty())
+            if (it == previewReady.end() || it->second.thumb.empty())
                 return nullptr;
-            thumb = it->second;
+            thumb = it->second.thumb;
         }
 
         ImageAsset asset{ ImageFormat::Still, std::move(thumb), {}, {}, "" };
         asset.isLoading = true;
         return std::make_shared<ImageAsset>(std::move(asset));
+    }
+
+    // 预估这张图还要解多久（毫秒）。尺寸还没查到、或估值太小不值得显示时返回 0。
+    int64_t estimatedDecodeMs(const wstring& key) {
+        std::lock_guard<std::mutex> lock(previewMutex);
+        auto it = previewReady.find(key);
+        if (it == previewReady.end())
+            return 0;
+        return it->second.estimatedMs;
+    }
+
+    // 解码完成后回采真实吞吐，让同类文件的后续估值收敛到本机实际水平
+    void recordDecodeSample(const wstring& path, const cv::Mat& decoded, int64_t elapsedMs) {
+        if (decoded.empty())
+            return;
+        const int64_t bytes = static_cast<int64_t>(decoded.total()) *
+            static_cast<int64_t>(decoded.elemSize());
+        decodeEstimate.record(path, bytes, elapsedMs);
     }
 
     // 请求为该文件取一张模糊预览。已取过（无论成败）或已在队列中则直接返回。
@@ -717,7 +736,13 @@ private:
     static constexpr int PREVIEW_MAX_EDGE = 1024;
     static constexpr std::size_t PREVIEW_CACHE_MAX = 16;
 
-    std::unordered_map<wstring, cv::Mat> previewReady;
+    struct PreviewEntry {
+        cv::Mat thumb;            // 取不到缩略图时为空
+        int64_t estimatedMs = 0;  // 0 表示估不出来或短到不值得显示
+    };
+
+    DecodeEstimate::Model decodeEstimate;
+    std::unordered_map<wstring, PreviewEntry> previewReady;
     std::unordered_set<wstring> previewQueued;
     std::deque<wstring> previewQueue;   // 待取队列
     std::deque<wstring> previewOrder;   // 已取到的先后顺序，用于淘汰
@@ -744,12 +769,20 @@ private:
                 previewQueue.pop_front();
             }
 
+            // 尺寸先查：它比缩略图快一个数量级，而倒计时要靠它起步
+            const auto dims = ShellThumbnail::fetchDimensions(key);
+            const int64_t bytes = DecodeEstimate::outputBytes(
+                dims.width, dims.height, dims.bitsPerPixel);
+            int64_t estimated = decodeEstimate.estimateMs(key, bytes);
+            if (estimated < DecodeEstimate::MIN_SHOWN_MS)
+                estimated = 0;
+
             cv::Mat thumb = ShellThumbnail::fetch(key, PREVIEW_MAX_EDGE);
 
             {
                 std::lock_guard<std::mutex> lock(previewMutex);
                 previewQueued.erase(key);
-                previewReady[key] = std::move(thumb);
+                previewReady[key] = PreviewEntry{ std::move(thumb), estimated };
                 previewOrder.push_back(key);
 
                 while (previewOrder.size() > PREVIEW_CACHE_MAX) {
