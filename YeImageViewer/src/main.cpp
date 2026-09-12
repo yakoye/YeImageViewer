@@ -16,6 +16,7 @@
 #include "WheelInput.h"
 #include "RenamePolicy.h"
 #include "SlideshowPolicy.h"
+#include "LoadingBadge.h"
 #include "ZoomPolicy.h"
 #include "ZoomEditPolicy.h"
 #include "ToolbarCommand.h"
@@ -3776,11 +3777,52 @@ public:
         }
     }
 
+    // 顶部中央的静态标记：真图还在后台解码。
+    // 显示模糊预览时尤其需要它——没有标记的话，那张图看上去就只是画质差，
+    // 用户无从判断还要不要等。刻意不做动画：解码没有进度回调，动起来只是装样子。
+    void drawLoadingBadge(cv::Mat& canvas) {
+        if (pendingImagePath.empty())
+            return;
+
+        const int dpi = overlayDpi();
+        const auto scale = [dpi](int value) { return MulDiv(value, dpi, USER_DEFAULT_SCREEN_DPI); };
+
+        // 有预览图时说明「原图」还在路上；没有预览时只能说「正在加载」。
+        // 倒计时数字按图片尺寸估出来（见 DecodeEstimate.h），解码没有进度回调。
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - loadingStartedAt).count();
+        const std::string label = LoadingBadge::compose(
+            getUIString(showingPreview() ? 72 : 71),
+            imgDB.estimatedDecodeMs(pendingImagePath), elapsedMs);
+
+        const char* text = label.c_str();
+        const auto wide = jarkUtils::utf8ToWstring(text);
+        int textWidth = 0;
+        for (const wchar_t character : wide)
+            textWidth += character > 0xFF ? 14 : 7;
+
+        const int width = scale(std::max(96, textWidth + 26));
+        const int height = scale(28);
+        if (canvas.cols < width + scale(16) || canvas.rows < height * 3)
+            return;
+
+        const int x = (canvas.cols - width) / 2;
+        const int y = scale(14);
+        auto surface = roundedSurface(width, height, scale(7), 0xE6000000u, 0x1AFFFFFFu);
+        jarkUtils::overlayImg(canvas, surface, x, y);
+
+        textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
+            TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
+        textDrawer.putAlignCenter(canvas, { x, y, width, height }, text, 0xFFE8EAF0u);
+    }
+
     void drawExtraUI(cv::Mat& canvas) {
         const int canvasHeight = canvas.rows;
         const int canvasWidth = canvas.cols;
         if (canvasWidth < 100 || canvasHeight < 100)
             return;
+
+        drawLoadingBadge(canvas);
 
         // 空占位图只有 1×1，工具栏、翻页箭头这些都无从谈起。
         // 模糊预览是张真图，照常画 UI。

@@ -29,12 +29,34 @@ Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public class PagingProbe {
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] public static extern IntPtr SendMessageTimeout(
         IntPtr h, uint m, IntPtr w, IntPtr l, uint flags, uint timeout, out UIntPtr res);
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+
+    public delegate bool EnumProc(IntPtr h, IntPtr p);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
+
+    // 按进程枚举顶层窗口，而不是看前台窗口：锁屏时前台属于 LogonUI，
+    // 按前台判定会取不到主窗口，给出与被测行为无关的假 FAIL。
+    // 本测试只发消息、不读屏幕，锁屏下本该照常可跑。
+    public static IntPtr FindMainWindow(uint targetPid) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr h, IntPtr p) {
+            uint pid = 0;
+            GetWindowThreadProcessId(h, out pid);
+            if (pid != targetPid || !IsWindowVisible(h)) return true;
+            RECT r;
+            if (!GetWindowRect(h, out r)) return true;
+            if (r.R - r.L < 300 || r.B - r.T < 200) return true;
+            found = h;
+            return false;
+        }, IntPtr.Zero);
+        return found;
+    }
 }
 "@
 
@@ -76,10 +98,8 @@ try {
     $hwnd = [IntPtr]::Zero
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt 20 -and $hwnd -eq [IntPtr]::Zero) {
-        $fg = [PagingProbe]::GetForegroundWindow()
-        [uint32]$owner = 0
-        [void][PagingProbe]::GetWindowThreadProcessId($fg, [ref]$owner)
-        if ($owner -eq $proc.Id -and [PagingProbe]::IsWindowVisible($fg)) { $hwnd = $fg }
+        $found = [PagingProbe]::FindMainWindow([uint32]$proc.Id)
+        if ($found -ne [IntPtr]::Zero) { $hwnd = $found }
         else { Start-Sleep -Milliseconds 50 }
     }
     if ($hwnd -eq [IntPtr]::Zero) {

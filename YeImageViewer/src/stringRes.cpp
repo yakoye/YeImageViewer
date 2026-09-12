@@ -79,6 +79,7 @@ std::string_view UIStringTable[STRING_MAX_NUM][2] = {
     {"仅平移图片", "Always Pan"},
     {"未放大时移动窗口", "Move Window"},   // 70
     {"正在加载", "Loading"},
+    {"原图加载中", "Loading full image"},
 };
 
 
