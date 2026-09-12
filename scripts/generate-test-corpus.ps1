@@ -14,7 +14,8 @@
     .gitignore 挡在仓库外，测试时本地缺失就记为 SKIPPED。
 #>
 param(
-    [ValidateSet('reference', 'dimensions', 'corrupt', 'extension-mismatch', 'path-filename', 'exif')]
+    [ValidateSet('reference', 'dimensions', 'corrupt', 'extension-mismatch', 'path-filename', 'exif',
+        'modern-formats')]
     [string[]]$Category,
     [switch]$All,
     [switch]$Force
@@ -32,7 +33,8 @@ if (-not $magick) {
 }
 
 if ($All) {
-    $Category = @('reference', 'dimensions', 'corrupt', 'extension-mismatch', 'path-filename', 'exif')
+    $Category = @('reference', 'dimensions', 'corrupt', 'extension-mismatch', 'path-filename', 'exif',
+        'modern-formats')
 }
 if (-not $Category) {
     throw "请指定 -Category 或 -All。"
@@ -330,6 +332,43 @@ function Build-Corrupt {
         Write-Step "tiff_bad_ifd.tif"
     }
 
+    # 现代格式的截断损坏（测试规格 Phase 3 的 Corrupt 一项）。
+    # 这些格式各有独立的解码器，PNG/JPEG 的容错不能代表它们：AVIF 走 dav1d，
+    # JXL 走 libjxl，JP2 走 openjpeg，QOI 是手写解码，容器解析也各不相同。
+    # 截在 40%：头部完整、像素数据中途断掉，解码器必须安全收尾而不是越界读。
+    $modernSeeds = @(
+        @{ Ext = 'avif'; Args = @() }
+        @{ Ext = 'jxl';  Args = @() }
+        @{ Ext = 'webp'; Args = @('-define', 'webp:lossless=true') }
+        @{ Ext = 'qoi';  Args = @() }
+        @{ Ext = 'jp2';  Args = @() }
+    )
+    foreach ($entry in $modernSeeds) {
+        $seed = Join-Path $dir ("_seed_modern.{0}" -f $entry.Ext)
+        $target = Join-Path $dir ("{0}_truncated.{0}" -f $entry.Ext)
+        try {
+            Invoke-Magick (@('-size', '256x192', 'gradient:yellow-navy') + $entry.Args + @($seed))
+        }
+        catch {
+            # 本机编码器不支持就跳过，绝不用改扩展名的 PNG 冒充
+            Write-Step ("跳过 {0}_truncated.{0}：本机无法生成 .{0} 源文件" -f $entry.Ext)
+            continue
+        }
+        if (Test-ShouldBuild $target) {
+            try { Assert-NotFallbackEncoding -Path $seed }
+            catch {
+                Write-Step ("跳过 {0}_truncated.{0}：{1}" -f $entry.Ext, $_.Exception.Message)
+                continue
+            }
+            $bytes = [IO.File]::ReadAllBytes($seed)
+            $keep = [int]($bytes.Length * 0.4)
+            if ($keep -lt 16) { $keep = [Math]::Min(16, $bytes.Length) }
+            [IO.File]::WriteAllBytes($target, $bytes[0..($keep - 1)])
+            Write-Step ("{0}_truncated.{0}" -f $entry.Ext)
+        }
+        Remove-Item -LiteralPath $seed -Force -ErrorAction SilentlyContinue
+    }
+
     foreach ($seed in @($seedJpg, $seedPng, $seedGif, $seedWebp, $seedTif)) {
         Remove-Item -LiteralPath $seed -Force -ErrorAction SilentlyContinue
     }
@@ -455,6 +494,100 @@ function Build-Exif {
     }
 }
 
+# 现代格式专项变体（测试规格 Phase 3）。
+#
+# 每个格式建立 Smoke / Alpha / 奇数尺寸 / 位深或编码变体四类，适用才建。
+# 损坏变体统一放进 14-corrupt：预期是「允许解码失败但不许崩溃」，与本目录
+# 「必须解码成功并尺寸相符」是两套判定标准，manifest 按目录取规则，不能混放。
+#
+# 只生成能验证为真编码的文件。ImageMagick 7.1.2 的 HEIC 是只读的（r--），
+# 请它写 .heic 会静默退化成 PNG 只换扩展名——实测头部是 89 50 4E 47，
+# 程序按内容嗅探照样「解码成功」。那种文件冒充不了 HEIC 覆盖，这里不生成，
+# HEIC/HEIF 的覆盖继续依赖 test/format corpus 里 libheif 的真实样本。
+function Build-ModernFormats {
+    Write-Host "生成 01-modern-formats..."
+    $dir = New-CorpusDirectory "01-modern-formats"
+
+    # 源图带渐变和文字：纯色会掩盖色度子采样、位深截断这类问题
+    $srcRgb = Join-Path $dir "_src_rgb.png"
+    $srcAlpha = Join-Path $dir "_src_alpha.png"
+    $srcOdd = Join-Path $dir "_src_odd.png"
+    $src16 = Join-Path $dir "_src_16bit.png"
+    Invoke-Magick @('-size', '160x80', 'gradient:red-blue',
+        '-fill', 'white', '-pointsize', '20', '-draw', "text 6,30 'abc'", $srcRgb)
+    Invoke-Magick @($srcRgb, '-alpha', 'set',
+        '(', '-size', '160x80', 'gradient:white-black', ')',
+        '-compose', 'CopyOpacity', '-composite', $srcAlpha)
+    Invoke-Magick @('-size', '199x101', 'gradient:lime-purple',
+        '-fill', 'white', '-pointsize', '20', '-draw', "text 6,30 'abc'", $srcOdd)
+    Invoke-Magick @('-size', '160x80', 'gradient:red-blue', '-depth', '16', $src16)
+
+    $variants = @(
+        # AVIF：10 位与单色（yuv400）是 AV1 特有的编码路径
+        @{ Name = 'avif_smoke.avif';       Source = $srcRgb;   Args = @() }
+        @{ Name = 'avif_alpha.avif';       Source = $srcAlpha; Args = @() }
+        @{ Name = 'avif_odd.avif';         Source = $srcOdd;   Args = @() }
+        @{ Name = 'avif_10bit.avif';       Source = $srcRgb;   Args = @('-depth', '10') }
+        @{ Name = 'avif_grayscale.avif';   Source = $srcRgb;   Args = @('-colorspace', 'Gray') }
+
+        # JXL：-quality 100 走无损，写出的是 ISOBMFF 容器（JXL box）；
+        # 有损则是裸码流（ff 0a）。两种封装都要覆盖，解码入口不同。
+        @{ Name = 'jxl_smoke.jxl';         Source = $srcRgb;   Args = @() }
+        @{ Name = 'jxl_alpha.jxl';         Source = $srcAlpha; Args = @() }
+        @{ Name = 'jxl_odd.jxl';           Source = $srcOdd;   Args = @() }
+        @{ Name = 'jxl_16bit.jxl';         Source = $src16;    Args = @('-depth', '16') }
+        @{ Name = 'jxl_lossless.jxl';      Source = $srcRgb;   Args = @('-quality', '100') }
+
+        # WebP：有损与无损是两条完全独立的解码路径
+        @{ Name = 'webp_smoke.webp';       Source = $srcRgb;   Args = @() }
+        @{ Name = 'webp_alpha.webp';       Source = $srcAlpha; Args = @() }
+        @{ Name = 'webp_odd.webp';         Source = $srcOdd;   Args = @() }
+        @{ Name = 'webp_lossless.webp';    Source = $srcRgb;   Args = @('-define', 'webp:lossless=true') }
+        @{ Name = 'webp_lowquality.webp';  Source = $srcRgb;   Args = @('-quality', '10') }
+
+        # QOI 只有 8 位 RGB / RGBA 两种，没有位深变体可言
+        @{ Name = 'qoi_smoke.qoi';         Source = $srcRgb;   Args = @() }
+        @{ Name = 'qoi_alpha.qoi';         Source = $srcAlpha; Args = @() }
+        @{ Name = 'qoi_odd.qoi';           Source = $srcOdd;   Args = @() }
+
+        # JPEG 2000
+        @{ Name = 'jp2_smoke.jp2';         Source = $srcRgb;   Args = @() }
+        @{ Name = 'jp2_alpha.jp2';         Source = $srcAlpha; Args = @() }
+        @{ Name = 'jp2_odd.jp2';           Source = $srcOdd;   Args = @() }
+    )
+
+    foreach ($variant in $variants) {
+        $target = Join-Path $dir $variant.Name
+        if (-not (Test-ShouldBuild $target)) { continue }
+        Invoke-Magick (@($variant.Source) + $variant.Args + @($target))
+        Assert-NotFallbackEncoding -Path $target
+        Write-Step $variant.Name
+    }
+
+    # 源图只是中间产物，留在语料目录里会让人误以为也是被测素材
+    foreach ($seed in @($srcRgb, $srcAlpha, $srcOdd, $src16)) {
+        Remove-Item -LiteralPath $seed -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# 确认写出来的真是目标格式，而不是编码器不支持时静默退化成的 PNG/JPEG。
+# 这个检查必须有：退化文件的扩展名是对的、程序也能「解码成功」，
+# 不验魔数就会把「用 PNG 冒充 HEIC」当成格式覆盖。
+function Assert-NotFallbackEncoding {
+    param([string]$Path)
+    $head = [byte[]](Get-Content -LiteralPath $Path -AsByteStream -TotalCount 8)
+    if ($head.Length -lt 8) {
+        throw "$Path 太短，不像有效图片。"
+    }
+    $isPng = $head[0] -eq 0x89 -and $head[1] -eq 0x50 -and $head[2] -eq 0x4E -and $head[3] -eq 0x47
+    $isJpeg = $head[0] -eq 0xFF -and $head[1] -eq 0xD8 -and $head[2] -eq 0xFF
+    $ext = [IO.Path]::GetExtension($Path).TrimStart('.').ToLowerInvariant()
+    if (($isPng -and $ext -ne 'png') -or ($isJpeg -and $ext -notin @('jpg', 'jpeg', 'jfif', 'jpe'))) {
+        Remove-Item -LiteralPath $Path -Force
+        throw "$Path 实际写出的是 $(if ($isPng) { 'PNG' } else { 'JPEG' })：本机编码器不支持 .$ext，已删除该文件，不要用它冒充格式覆盖。"
+    }
+}
+
 foreach ($item in $Category) {
     switch ($item) {
         'exif'               { Build-Exif }
@@ -463,6 +596,7 @@ foreach ($item in $Category) {
         'corrupt'            { Build-Corrupt }
         'extension-mismatch' { Build-ExtensionMismatch }
         'path-filename'      { Build-PathFilename }
+        'modern-formats'     { Build-ModernFormats }
     }
 }
 

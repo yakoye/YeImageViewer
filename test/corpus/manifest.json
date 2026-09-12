@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-09-12T07:31:10+08:00",
+  "generatedAt": "2026-09-12T19:23:21+08:00",
   "note": "由 scripts/build-corpus-manifest.ps1 生成；人工条目写在 manifest.overrides.json。",
   "suites": {
     "core": [
@@ -9,6 +9,9 @@
       "extension-mismatch",
       "path-filename",
       "exif"
+    ],
+    "modern": [
+      "modern-formats"
     ],
     "corrupt": [
       "corrupt"
@@ -147,12 +150,363 @@
       "severity": "release-blocker"
     },
     {
+      "id": "01-modern-formats-avif_10bit-avif",
+      "path": "01-modern-formats/avif_10bit.avif",
+      "category": "modern-formats",
+      "extension": "avif",
+      "bytes": 750,
+      "sha256": "09C00FFED3BC9E0A3ABB5E394B1F4131D09BFBA207F1C4883FFC8D2972036704",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-avif_alpha-avif",
+      "path": "01-modern-formats/avif_alpha.avif",
+      "category": "modern-formats",
+      "extension": "avif",
+      "bytes": 759,
+      "sha256": "CAA8E1A410C2F185940279EC57A4B13AB9EA6A5DE9FC7E8A46EF9C185D4B80B7",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "channels": 4,
+        "maxMinAlpha": 16,
+        "sourceMinAlpha": 1
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-avif_grayscale-avif",
+      "path": "01-modern-formats/avif_grayscale.avif",
+      "category": "modern-formats",
+      "extension": "avif",
+      "bytes": 690,
+      "sha256": "3DA3EFEE6071C73A996699C83FBB488C5857D51C86AEB3270D7192BD149F0787",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-avif_odd-avif",
+      "path": "01-modern-formats/avif_odd.avif",
+      "category": "modern-formats",
+      "extension": "avif",
+      "bytes": 716,
+      "sha256": "4665B58E9E454D6897D90CD8D0D01A8488A2FC3FCBBD6C2781D595D22F55E98C",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 199,
+        "height": 101
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-avif_smoke-avif",
+      "path": "01-modern-formats/avif_smoke.avif",
+      "category": "modern-formats",
+      "extension": "avif",
+      "bytes": 730,
+      "sha256": "3E5DDA81BECED267DE793F8AB112CEAF56E864E5CF58CD2D7D961BB0852F02DE",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-jp2_alpha-jp2",
+      "path": "01-modern-formats/jp2_alpha.jp2",
+      "category": "modern-formats",
+      "extension": "jp2",
+      "bytes": 5241,
+      "sha256": "A25E5B88497B4EED54EBCEB35408E7498C4259761498C2C6A53E456F29FE5BE9",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "channels": 4,
+        "maxMinAlpha": 16,
+        "sourceMinAlpha": 0
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-jp2_odd-jp2",
+      "path": "01-modern-formats/jp2_odd.jp2",
+      "category": "modern-formats",
+      "extension": "jp2",
+      "bytes": 4946,
+      "sha256": "BF3EA3454ECA769C566BA20176A1AB1B620F4FC3B9FE11857AA4C8C3137CA574",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 199,
+        "height": 101
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-jp2_smoke-jp2",
+      "path": "01-modern-formats/jp2_smoke.jp2",
+      "category": "modern-formats",
+      "extension": "jp2",
+      "bytes": 5022,
+      "sha256": "65FAAA61AC5E015543EB59529F9A6CD76C369A765874DA7EA663D5C8D88DE1DC",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-jxl_16bit-jxl",
+      "path": "01-modern-formats/jxl_16bit.jxl",
+      "category": "modern-formats",
+      "extension": "jxl",
+      "bytes": 332,
+      "sha256": "F536730BF80C696BCC65B0108ABF9C9C73A20D3CC740AF70F0DEC04339A2AB68",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-jxl_alpha-jxl",
+      "path": "01-modern-formats/jxl_alpha.jxl",
+      "category": "modern-formats",
+      "extension": "jxl",
+      "bytes": 1255,
+      "sha256": "79F64466A9F357722E047EE6D4439165B55B68A2B137B1FDD71D555344809F77",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "channels": 4,
+        "maxMinAlpha": 16,
+        "sourceMinAlpha": 0
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-jxl_lossless-jxl",
+      "path": "01-modern-formats/jxl_lossless.jxl",
+      "category": "modern-formats",
+      "extension": "jxl",
+      "bytes": 2040,
+      "sha256": "519EA69E518505D989F32DD3EA4862737E13712420EEDC4DD2FB86306907E369",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-jxl_odd-jxl",
+      "path": "01-modern-formats/jxl_odd.jxl",
+      "category": "modern-formats",
+      "extension": "jxl",
+      "bytes": 1272,
+      "sha256": "80B3A09B0CF8D8B2BEAB0E72AB8AE46120E5E59733EBB1C6233FCAA00E1A402E",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 199,
+        "height": 101
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-jxl_smoke-jxl",
+      "path": "01-modern-formats/jxl_smoke.jxl",
+      "category": "modern-formats",
+      "extension": "jxl",
+      "bytes": 1138,
+      "sha256": "735EC53E02E0EAE30C73A1900B208A082F47713B1484249DEFC547C04ADC0B88",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-qoi_alpha-qoi",
+      "path": "01-modern-formats/qoi_alpha.qoi",
+      "category": "modern-formats",
+      "extension": "qoi",
+      "bytes": 1629,
+      "sha256": "C9FBC9D79021E3621342053BEC4FF8E67783E74BA5EC13E6F184A141AA3C4DCA",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "channels": 4,
+        "maxMinAlpha": 16,
+        "sourceMinAlpha": 0
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-qoi_odd-qoi",
+      "path": "01-modern-formats/qoi_odd.qoi",
+      "category": "modern-formats",
+      "extension": "qoi",
+      "bytes": 1448,
+      "sha256": "AC56745619A8EFCEE506FC64600A3A1A4AFF09FFBC920C57D34D3D0D04EE6977",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 199,
+        "height": 101
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-qoi_smoke-qoi",
+      "path": "01-modern-formats/qoi_smoke.qoi",
+      "category": "modern-formats",
+      "extension": "qoi",
+      "bytes": 1371,
+      "sha256": "4477186C6239592073D73BC81868154E4248D41326D21020048158D705260239",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-webp_alpha-webp",
+      "path": "01-modern-formats/webp_alpha.webp",
+      "category": "modern-formats",
+      "extension": "webp",
+      "bytes": 660,
+      "sha256": "65A73250AEE009C069FD6B770F6ED56C2E27D75224FA6AED4C400099C9182B89",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "channels": 4,
+        "maxMinAlpha": 16,
+        "sourceMinAlpha": 0
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-webp_lossless-webp",
+      "path": "01-modern-formats/webp_lossless.webp",
+      "category": "modern-formats",
+      "extension": "webp",
+      "bytes": 1120,
+      "sha256": "35CCC67E28EB760FF20370D5A18F053CB6D0BCFE9EBE4640A99F186838E93FD3",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-webp_lowquality-webp",
+      "path": "01-modern-formats/webp_lowquality.webp",
+      "category": "modern-formats",
+      "extension": "webp",
+      "bytes": 320,
+      "sha256": "3D5C88575464A6B624D4B10BE09428AE12A54CCAD5C1D0BE2358DE30A85EEB4E",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-webp_odd-webp",
+      "path": "01-modern-formats/webp_odd.webp",
+      "category": "modern-formats",
+      "extension": "webp",
+      "bytes": 618,
+      "sha256": "D792F79668C4401E08E54DF9971F9D226342D63026F72B8B143E157E82B25404",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 199,
+        "height": 101
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "01-modern-formats-webp_smoke-webp",
+      "path": "01-modern-formats/webp_smoke.webp",
+      "category": "modern-formats",
+      "extension": "webp",
+      "bytes": 588,
+      "sha256": "644DB98BDCD40C4C5523B5A4B74387AE35FEE04F6E99370284EDFD2E698FDD2F",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80
+      },
+      "severity": "release-blocker"
+    },
+    {
       "id": "12-exif-exif_orientation_1-jpg",
       "path": "12-exif/exif_orientation_1.jpg",
       "category": "exif",
       "extension": "jpg",
-      "bytes": 13444,
-      "sha256": "FA78C029C300E5BA836D505EB6B5FC899EA05043BF5E039005B735B8E6CC6AF2",
+      "bytes": 13480,
+      "sha256": "7EFAAF7341692B317F35D8922C7AA9B2B9D0B35932089219BB60D0FE8F5909D9",
       "expected": {
         "open": true,
         "crash": false,
@@ -167,8 +521,8 @@
       "path": "12-exif/exif_orientation_2.jpg",
       "category": "exif",
       "extension": "jpg",
-      "bytes": 13442,
-      "sha256": "7FF450C6B0B39B95C2FCCBDE0F04EC145B3C705F207ACFA3517D1A834F7C7FA9",
+      "bytes": 13478,
+      "sha256": "E81FEF1574A261842E032496CF3975C7C06814DCEDCA5940AFF7958459FE1C0F",
       "expected": {
         "open": true,
         "crash": false,
@@ -183,8 +537,8 @@
       "path": "12-exif/exif_orientation_3.jpg",
       "category": "exif",
       "extension": "jpg",
-      "bytes": 13437,
-      "sha256": "57C519F5B12BD840D7EB0ADF5854CBBAF43DF606CBA311B357BAE89DC7E6B289",
+      "bytes": 13473,
+      "sha256": "FF29FFE16646A10E0CABF5F33578E03FB41724138B63F3873A6F8D3D791DECE1",
       "expected": {
         "open": true,
         "crash": false,
@@ -199,8 +553,8 @@
       "path": "12-exif/exif_orientation_4.jpg",
       "category": "exif",
       "extension": "jpg",
-      "bytes": 13440,
-      "sha256": "DB28BA4F2F7D3BA5C97156658A8A964A30F9415594DECB32A764F5ED9A469BC3",
+      "bytes": 13476,
+      "sha256": "16950466017664DC4D99814BA976019AE4022C58CB121DDAA1D92615A2CFB352",
       "expected": {
         "open": true,
         "crash": false,
@@ -215,8 +569,8 @@
       "path": "12-exif/exif_orientation_5.jpg",
       "category": "exif",
       "extension": "jpg",
-      "bytes": 13478,
-      "sha256": "6C7975BA42A043465BAA3ECB04A720D434A69A5D19D1734406FB332A1F8EDEFE",
+      "bytes": 13514,
+      "sha256": "A714EC699D1D525DFF6F36A5183F4498B09C9CCDEEF2768697AEBEE7CC2C202E",
       "expected": {
         "open": true,
         "crash": false,
@@ -231,8 +585,8 @@
       "path": "12-exif/exif_orientation_6.jpg",
       "category": "exif",
       "extension": "jpg",
-      "bytes": 13471,
-      "sha256": "7301324B7FDAA2D3CF1C33F6E8A979F48B7F9D9F60A45313E1547E1AC87E5774",
+      "bytes": 13507,
+      "sha256": "DBBF059A63119E2D7B1D0B629453F81324EF7734410225C441857856FA528BC6",
       "expected": {
         "open": true,
         "crash": false,
@@ -247,8 +601,8 @@
       "path": "12-exif/exif_orientation_7.jpg",
       "category": "exif",
       "extension": "jpg",
-      "bytes": 13490,
-      "sha256": "E243B6D4306A5C86DDAD5D16655C673EB4DADEB4FE373755BEDE3D379FD066E3",
+      "bytes": 13526,
+      "sha256": "6AF7140411183698794EE4F293EBA7A781AF8348581488926BA525B321545A39",
       "expected": {
         "open": true,
         "crash": false,
@@ -263,8 +617,8 @@
       "path": "12-exif/exif_orientation_8.jpg",
       "category": "exif",
       "extension": "jpg",
-      "bytes": 13489,
-      "sha256": "F98FAE05D305C7CA48A652EB2BDD9CC644680F632467DC5249319BBE9792CE99",
+      "bytes": 13525,
+      "sha256": "661227AEA6CF015C65A4C2816CE157E42E480BC3163C346F78AF21EC605B4927",
       "expected": {
         "open": true,
         "crash": false,
@@ -627,6 +981,20 @@
       "severity": "release-blocker"
     },
     {
+      "id": "14-corrupt-avif_truncated-avif",
+      "path": "14-corrupt/avif_truncated.avif",
+      "category": "corrupt",
+      "extension": "avif",
+      "bytes": 139,
+      "sha256": "B2D0B18481F6619F5B338B8D9D7DBD12A45CF708E49317956A1A2B11E586288E",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
       "id": "14-corrupt-empty-gif",
       "path": "14-corrupt/empty.gif",
       "category": "corrupt",
@@ -711,6 +1079,20 @@
       "severity": "release-blocker"
     },
     {
+      "id": "14-corrupt-jp2_truncated-jp2",
+      "path": "14-corrupt/jp2_truncated.jp2",
+      "category": "corrupt",
+      "extension": "jp2",
+      "bytes": 399,
+      "sha256": "BBF156ADF8852DBE4721832107AA4835FDF613D17FB176865ED78A9D70705B36",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
       "id": "14-corrupt-jpeg_cut_10percent-jpg",
       "path": "14-corrupt/jpeg_cut_10percent.jpg",
       "category": "corrupt",
@@ -767,6 +1149,20 @@
       "severity": "release-blocker"
     },
     {
+      "id": "14-corrupt-jxl_truncated-jxl",
+      "path": "14-corrupt/jxl_truncated.jxl",
+      "category": "corrupt",
+      "extension": "jxl",
+      "bytes": 184,
+      "sha256": "66446A2E9D1DF1A41ADBC45420A9545672F6E2D752866A48B6AC581E72D97D19",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
       "id": "14-corrupt-png_bad_crc-png",
       "path": "14-corrupt/png_bad_crc.png",
       "category": "corrupt",
@@ -809,6 +1205,20 @@
       "severity": "release-blocker"
     },
     {
+      "id": "14-corrupt-qoi_truncated-qoi",
+      "path": "14-corrupt/qoi_truncated.qoi",
+      "category": "corrupt",
+      "extension": "qoi",
+      "bytes": 470,
+      "sha256": "508849F89FFB8426476F21C979ED4D9212534A8FCF98EE73C085222A8A290396",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
       "id": "14-corrupt-random_bytes-jpg",
       "path": "14-corrupt/random_bytes.jpg",
       "category": "corrupt",
@@ -843,6 +1253,20 @@
       "extension": "webp",
       "bytes": 654,
       "sha256": "09D4D439D6C65A0A42D0A57C3E33872BC15A8F9BBA02B97802F94107256B999C",
+      "expected": {
+        "crash": false,
+        "hang": false,
+        "allowDecodeFailure": true
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "14-corrupt-webp_truncated-webp",
+      "path": "14-corrupt/webp_truncated.webp",
+      "category": "corrupt",
+      "extension": "webp",
+      "bytes": 50,
+      "sha256": "B9674139E847F91A864A821A9673AF82719E331F99CBF6D7BA38CBB398535623",
       "expected": {
         "crash": false,
         "hang": false,

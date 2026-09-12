@@ -4575,11 +4575,29 @@ static int runDecodeProbe(const std::wstring& imagePath, const std::wstring& res
     const char* format = asset.format == ImageFormat::Animated ? "animated"
         : asset.format == ImageFormat::Still ? "still"
         : "none";
+
+    // 通道数与最小 alpha：只报尺寸的话，「带透明的图能打开」证明不了透明通道
+    // 还在——解码器把 alpha 丢掉、或整层填成不透明，尺寸一样对得上。
+    // minAlpha 取解码结果里最小的 alpha 值；无 alpha 通道时记 255。
+    const int channels = decodedFrame ? decodedFrame->channels() : 0;
+    int minAlpha = 255;
+    if (decodedFrame && channels == 4) {
+        cv::Mat planes[4];
+        cv::split(*decodedFrame, planes);
+        double lowest = 255.0;
+        cv::minMaxLoc(planes[3], &lowest, nullptr);
+        // 16 位素材的 alpha 满量程是 65535，换算到 0~255 再比较
+        const double fullScale = decodedFrame->elemSize1() == 1 ? 255.0 : 65535.0;
+        minAlpha = static_cast<int>(std::lround(lowest / fullScale * 255.0));
+    }
+
     result << (success ? "OK" : "ERROR") << '\t'
         << (decodedFrame ? decodedFrame->cols : 0) << '\t'
         << (decodedFrame ? decodedFrame->rows : 0) << '\t'
         << asset.frames.size() << '\t'
-        << format << '\n';
+        << format << '\t'
+        << channels << '\t'
+        << minAlpha << '\n';
     return success ? 0 : 2;
 }
 
