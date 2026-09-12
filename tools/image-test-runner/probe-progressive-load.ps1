@@ -47,10 +47,15 @@ public class LoadProbe {
 }
 "@
 
+# 退出码约定：0 通过，1 失败，3 未执行。
+# 「未执行」必须和「通过」分开——锁屏时本测试读不到像素，若退 0，
+# 发布闸门就会把一条阻断项当成通过放行。
+$EXIT_SKIPPED = 3
+
 foreach ($p in @($Exe, $Image)) {
     if (-not (Test-Path -LiteralPath $p)) {
         Write-Output "SKIPPED 缺少 $p"
-        exit 0
+        exit $EXIT_SKIPPED
     }
 }
 
@@ -58,7 +63,7 @@ foreach ($p in @($Exe, $Image)) {
 # 指标全是噪声——那时报 FAIL 与被测行为无关，只会掩盖真实回归。
 if (Get-Process LogonUI -ErrorAction SilentlyContinue) {
     Write-Output "SKIPPED 屏幕已锁定，无法读取窗口像素"
-    exit 0
+    exit $EXIT_SKIPPED
 }
 
 function Measure-Frame($bmp) {

@@ -25,6 +25,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# 退出码约定：0 通过，1 失败，3 未执行（缺少可执行文件或素材）。
+# 「未执行」不能退 0：发布闸门会把它当成通过。
+$EXIT_SKIPPED = 3
+
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -64,8 +68,8 @@ $WM_KEYDOWN = 0x0100; $WM_KEYUP = 0x0101; $WM_NULL = 0x0000
 $VK_RIGHT = 0x27; $SMTO_ABORTIFHUNG = 0x0002
 
 if (-not (Test-Path -LiteralPath $Exe)) {
-    Write-Error "找不到可执行文件: $Exe"
-    exit 2
+    Write-Output "SKIPPED 找不到可执行文件: $Exe"
+    exit $EXIT_SKIPPED
 }
 
 # ── 准备素材 ──────────────────────────────────────────────────────────────
@@ -73,8 +77,8 @@ if (-not $Folder) {
     $Folder = Join-Path $env:TEMP "YeImageViewer-paging-fixture"
     New-Item -ItemType Directory -Force -Path $Folder | Out-Null
     if (-not (Get-Command magick -ErrorAction SilentlyContinue)) {
-        Write-Error "未提供 -Folder，且未安装 ImageMagick，无法生成测试素材"
-        exit 2
+        Write-Output "SKIPPED 未提供 -Folder，且未安装 ImageMagick，无法生成测试素材"
+        exit $EXIT_SKIPPED
     }
     # 4000x4000 16 位 PNG：文件很小但要 inflate 约 96 MB，单张解码约 250 ms
     1..6 | ForEach-Object {
@@ -88,8 +92,8 @@ if (-not $Folder) {
 
 $images = @(Get-ChildItem -LiteralPath $Folder -File | Where-Object { $_.Extension -match '\.(png|jpg|jpeg|tif|tiff|bmp|webp)$' })
 if ($images.Count -lt 2) {
-    Write-Error "$Folder 至少需要 2 张图片"
-    exit 2
+    Write-Output "SKIPPED $Folder 至少需要 2 张图片"
+    exit $EXIT_SKIPPED
 }
 
 # ── 启动并等待窗口 ────────────────────────────────────────────────────────

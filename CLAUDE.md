@@ -19,7 +19,34 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 ./x64/Release/YeImageViewer.exe "D:/path/to/image.png"
 ```
 
-每次修改后至少保证 `buildRelease.ps1` 能干净编译通过；行为变更需手动冒烟验证静态图加载、动图播放、EXIF 显示、打印预览和导出流程。
+每次修改后至少保证 `buildRelease.ps1` 能干净编译通过。
+
+测试用发布闸门，一条命令跑完全部环节（构建、单元测试、窗口行为、格式语料、图片语料、
+渐进加载、翻页响应、性能压测），存在阻断失败时退出码非 0：
+
+```powershell
+# 全量（含 10000 张性能压测，约 30 分钟）
+./run-release-tests.ps1
+
+# 提交前自检：跳过性能压测
+./run-release-tests.ps1 -SkipPerformance
+
+# 单独跑某一环
+./runTests.ps1                                    # 单元测试 + 窗口行为 + 格式语料
+./tools/image-test-runner/run-tests.ps1 -All      # 图片语料 145 例
+```
+
+报告在 `artifacts/release-gate/`：`summary.md` 给人看，`results.json` 给机器读，
+`performance.csv` 是性能数据，`stages/*.log` 是各环节完整输出。
+
+测试体系的结构、素材约定和踩过的坑都在 `test/corpus/README.md`——**改解码路径前先读它**，
+尤其是「先证明素材是对的」那几节：`identify` 不应用 EXIF/RAW 方向、ImageMagick 写不了某些
+格式时会静默降级成 PNG、Q16 构建下 `-depth` 会被忽略，这些都曾让人误判成产品缺陷。
+
+行为变更仍需手动冒烟验证静态图加载、动图播放、EXIF 显示、打印预览和导出流程。
+
+`test/corpus/_local/` 和 `test/bigimage/` 是不进仓库的大体积素材，本地缺失时测试记 SKIPPED。
+RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 356 MB）。
 
 ## 构建前提
 

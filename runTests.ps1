@@ -302,8 +302,11 @@ try {
             throw "Real decoder rejected $($case.File) with exit code $($probeProcess.ExitCode)."
         }
 
+        # 前五列（状态 宽 高 帧 类型）是稳定契约，后面追加的诊断列（通道数、最小/平均
+        # alpha、Mat 深度、各通道均值）按需增补，这里只要求"至少五列"。
+        # 原先写死 -ne 5，新增一列就会把这整套回归判成失败，而失败原因跟被测行为无关。
         $probeFields = @((Get-Content -LiteralPath $probeResult -Raw).Trim() -split "`t")
-        if ($probeFields.Count -ne 5 -or $probeFields[0] -ne "OK") {
+        if ($probeFields.Count -lt 5 -or $probeFields[0] -ne "OK") {
             throw "Invalid decoder-probe result for $($case.File): $($probeFields -join '|')"
         }
         $actualWidth = [int]$probeFields[1]
