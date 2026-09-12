@@ -11,6 +11,7 @@
 | `00-reference/` | 人工视觉参考图 | 能解码，尺寸与生成时一致 |
 | `01-modern-formats/` | AVIF / JXL / WebP / QOI / JP2 的 Smoke、Alpha、奇数尺寸、位深与编码变体 | 能解码，尺寸精确匹配；带透明的素材还要求 alpha 通道没被丢掉 |
 | `02-professional/` | EXR / Radiance HDR / PFM / TIFF / PSD / ICO 的压缩、位深、透明、多页变体 | 同上；另外不透明的素材必须解出不透明 |
+| `_local/03-raw/` | 28 个厂商的相机 RAW（不进仓库，按需下载） | 能解码，转正后尺寸精确匹配；确实不支持的格式记 KNOWN_UNSUPPORTED |
 | `12-exif/` | EXIF Orientation 1～8、无 EXIF、超大 EXIF | 八个方向解出的尺寸都应是基准的 600×400 |
 | `13-dimensions/` | 尺寸边界：1×1、1×10000、19200×200、8191×8193 等 | 能解码，尺寸精确匹配 |
 | `14-corrupt/` | 空文件、随机字节、截断、坏 CRC、伪造巨大尺寸头 | 允许解码失败，但绝不允许崩溃、卡死、界面冻结 |
@@ -203,6 +204,70 @@ ImageMagick 7.1.2 的 HEIC 是只读的（`r--`），请它写 `.heic` **不报�
 
 同理多页 TIFF：程序按动图处理，3 页即 3 帧，而 `identify` 对 `[0]` 只报 1 帧，帧数期望也在
 overrides 里。
+
+## 相机 RAW（测试规格 Phase 5）
+
+素材不在仓库里，运行下面的脚本下到本地（约 356 MB）：
+
+```powershell
+.\scripts\fetch-raw-corpus.ps1                # 下载全部
+.\scripts\fetch-raw-corpus.ps1 -MaxFileMB 12  # 只要小文件
+.\scripts\fetch-raw-corpus.ps1 -Verify        # 只校验已有文件的 sha256
+.\scripts\fetch-raw-corpus.ps1 -Relabel       # 不联网，只用本地文件重算尺寸/方向/标记
+```
+
+来源是 [raw.pixls.us](https://raw.pixls.us/) 的 **CC0**（公有领域）样本库，每个扩展名取体积
+最小的那一个：覆盖面最大、下载量最小。落到 `test/corpus/_local/03-raw/`（`.gitignore` 已挡）。
+
+**文件不进仓库，但预期进仓库。** 预期（sha256、体积、转正后尺寸）写在
+`test/corpus/raw-expectations.json` 并提交。不这样做的话，没下过素材的人重建 manifest 时
+RAW 用例会凭空消失，而报告上看不出少测了东西。本地缺文件时 runner 记 SKIPPED，
+如实显示「素材不存在于本地」。
+
+`supportRaw` 声明 38 个扩展名，其中 **28 个**有 CC0 样本。以下 10 个样本库里没有，
+如实记为缺口，没有用改后缀的文件冒充：`bay cap dcs drf eip k25 mef ptx r3d rwz`。
+
+当前结果：**25 PASS，3 KNOWN_UNSUPPORTED，0 FAIL**。
+
+### 三个确实解不开的格式
+
+| 扩展 | 文件头 | 独立工具的判定 |
+|---|---|---|
+| `.ari` | `ARRI` 正常 | ImageMagick 连 ARI 解码模块都没有（缺 `IM_MOD_RL_ARI_.dll`）；LibRaw 不支持 ARRIRAW |
+| `.gpr` | `II*.` 正常 | ImageMagick 报 `Nonstandard tile length`；GPR 用 VC-5 压缩，需 GoPro 的 GPR SDK |
+| `.x3f` | `FOVb` 正常 | ImageMagick 报 `Unsupported file format or not RAW file`；Foveon 需 LibRaw 带 X3F 支持 |
+
+这三个记 `KNOWN_UNSUPPORTED`——按规格既不算通过也不算失败，更不能因为打不开就把素材删掉。
+标记和理由都写进 manifest，不靠人工记忆。
+
+**反向断言**：这三个哪天能解开了，runner 会报 FAIL 并提示「标记过期，请去掉」。
+过期的「不支持」标记会长期掩盖真实回归，所以必须让它显性失败。已做红灯验证：
+把能正常解码的 `.cr2` 硬标成不支持，立刻 FAIL 并给出该提示。
+
+### RAW 的 severity 分两档
+
+能解的 RAW 是 **release-blocker**：38 个扩展名是主打功能，Canon CR2 之类突然解不开必须挡住发布。
+已知不支持的那三个是 `normal`——它们的 FAIL 只意味着「标记该更新了」，不该因此拦住版本。
+
+### 又踩了一次方向的坑
+
+`.mos`（Leaf Aptus 22）一度被判成宽高颠倒：`identify` 报 `4008x5344`，程序报 `5344x4008`。
+
+**程序是对的。** `identify` 给的是**存储**尺寸，方向单独放在 `Orientation` 字段里（这张是
+`RightTop`，即需旋转 90°）；LibRaw 默认 `user_flip=-1`，会按元数据把图转正，所以程序输出的是
+**已转正**的尺寸。这和 `12-exif` 那一类是同一个坑，README 早就记过，RAW 这条路上又踩了一次——
+从 `identify` 推导预期时忘了补方向。
+
+现在 `fetch-raw-corpus.ps1` 自己应用方向：读到 `RightTop / RightBottom / LeftTop / LeftBottom`
+就把宽高互换再登记。
+
+### 素材哈希会在每次运行前校验
+
+runner 开测前先比对文件的 SHA-256 与 manifest 登记值，不符则记 **ERROR**（不是 FAIL）——
+那是夹具问题，不是被测程序的问题。下载截断的 RAW 文件如果被当成真样本测，失败会被
+归咎到解码器头上。ERROR 同样让退出码非 0：它的含义是「这条用例没测出结果」，
+不是「测过了没问题」，放它过去 CI 就会带着一批根本没测到的用例放行。
+急着调试时可以 `-SkipHashCheck` 跳过，常规运行不要加。
 
 ## 一条教训：先证明素材是对的
 

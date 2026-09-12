@@ -27,7 +27,10 @@ param(
     [string]$OutputDir,
     [ValidateSet('auto', 'decode', 'gui', 'both')]
     [string]$Mode = 'auto',
-    [int]$TimeoutSeconds = 0
+    [int]$TimeoutSeconds = 0,
+    # 跳过素材哈希校验。只在反复调试、确信素材没动过时用；常规运行不要加，
+    # 否则损坏的素材会被当成真样本，把夹具问题记成解码缺陷。
+    [switch]$SkipHashCheck
 )
 
 $ErrorActionPreference = "Stop"
@@ -207,10 +210,31 @@ foreach ($case in $cases) {
         continue
     }
 
+    # 素材必须和登记的哈希一致才开测。
+    # 不校验的话，损坏或被替换的素材会被当成真样本，失败还会被归咎到解码器上——
+    # git 外的 RAW 素材尤其如此，下载截断了看不出来。
+    # 这类问题记 ERROR 而不是 FAIL：它是夹具问题，不是被测程序的问题。
+    if (-not $SkipHashCheck -and $case.PSObject.Properties['sha256'] -and $case.sha256) {
+        $actualHash = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash
+        if ($actualHash -ne ([string]$case.sha256).ToUpperInvariant()) {
+            $record.status = 'ERROR'
+            $record.detail = "素材与登记的哈希不符（期望 $($case.sha256)，实际 $actualHash）：素材被改动或下载不完整，先修素材再谈解码结果"
+            $results += $record
+            Write-Host ("  {0,-12} {1}" -f 'ERROR', $case.id)
+            continue
+        }
+    }
+
     $timeout = Get-CaseTimeout $case
     $caseMode = Get-CaseMode $case
     $failures = @()
     $details = @()
+    # 已登记的「本机解码器不支持」标记。解不出来记 KNOWN_UNSUPPORTED；
+    # 反过来若竟然解出来了，说明标记过期，必须让它显性失败——
+    # 过期的「不支持」标记会长期掩盖真实回归。
+    $knownUnsupported = $case.expected.PSObject.Properties['knownUnsupported'] -and
+        $case.expected.knownUnsupported
+    $unsupportedHit = $false
 
     try {
         if ($caseMode -in @('decode', 'both')) {
@@ -224,10 +248,17 @@ foreach ($case in $cases) {
                 'DECODE_FAILED' {
                     $allowFailure = $case.expected.PSObject.Properties['allowDecodeFailure'] -and
                         $case.expected.allowDecodeFailure
-                    if (-not $allowFailure) { $failures += '解码失败，但该素材应当能够解码' }
+                    # 已登记为「本机解码器不支持」的格式：解不出来是已知缺口，如实记
+                    # KNOWN_UNSUPPORTED，既不算通过也不算失败。规格明令不许把它当 PASS。
+                    if ($knownUnsupported) { $unsupportedHit = $true }
+                    elseif (-not $allowFailure) { $failures += '解码失败，但该素材应当能够解码' }
                 }
                 'DECODED' {
                     $details += "$($probe.Width)x$($probe.Height)"
+                    if ($knownUnsupported) {
+                        $failures += ('该格式在 manifest 里标记为不支持，但现在解码成功了：' +
+                            '请去掉该标记（这是登记过期，不是程序问题）')
+                    }
                     foreach ($dimension in @('width', 'height')) {
                         if (-not $case.expected.PSObject.Properties[$dimension]) { continue }
                         $expectedValue = [int]$case.expected.$dimension
@@ -297,7 +328,12 @@ foreach ($case in $cases) {
             }
         }
 
-        $record.status = if ($failures.Count -eq 0) { 'PASS' } else { 'FAIL' }
+        $record.status = if ($failures.Count -gt 0) { 'FAIL' }
+            elseif ($unsupportedHit) { 'KNOWN_UNSUPPORTED' }
+            else { 'PASS' }
+        if ($unsupportedHit -and $case.PSObject.Properties['comment']) {
+            $details += $case.comment
+        }
         $record.detail = (($details + $failures) -join '; ')
     }
     catch {
@@ -371,8 +407,16 @@ Write-Host ""
 Write-Host "PASS $($counts['PASS'])  FAIL $($counts['FAIL'])  SKIPPED $($counts['SKIPPED'])  ERROR $($counts['ERROR'])"
 Write-Host "报告：$summaryPath"
 
+$exitCode = 0
 if ($blockerFailures.Count -gt 0) {
     Write-Host "存在 $($blockerFailures.Count) 个发布阻断失败。" -ForegroundColor Red
-    exit 1
+    $exitCode = 1
 }
-exit 0
+# ERROR 也必须让退出码非 0。ERROR 的含义是「这条用例没测出结果」，
+# 不是「测过了没问题」——素材损坏、探测写不出文件、框架自身异常都归在这里。
+# 放它过去，CI 就会带着一批根本没测到的用例放行。
+if ($counts['ERROR'] -gt 0) {
+    Write-Host "存在 $($counts['ERROR']) 个 ERROR：这些用例没有得出结果，不能视为通过。" -ForegroundColor Red
+    $exitCode = 1
+}
+exit $exitCode

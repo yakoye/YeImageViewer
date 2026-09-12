@@ -162,6 +162,54 @@ foreach ($folder in ($categoryRules.Keys | Sort-Object)) {
     }
 }
 
+# 相机 RAW：素材体积大，只放在本地 test/corpus/_local/03-raw/（已被 .gitignore 挡住）。
+# 预期从 raw-expectations.json 读，而不是扫目录——那个文件是提交进仓库的。
+# 否则没下过素材的人重建 manifest 时，RAW 用例会凭空消失，报告上还看不出少测了东西。
+# 本地缺文件时 runner 会记 SKIPPED，如实显示"素材不存在于本地"。
+$rawExpectPath = Join-Path $corpusRoot "raw-expectations.json"
+if (Test-Path -LiteralPath $rawExpectPath) {
+    $rawDoc = Get-Content -LiteralPath $rawExpectPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($sample in $rawDoc.samples) {
+        $relative = "_local/03-raw/" + $sample.fileName
+        $id = ($relative -replace '[/\\]', '-' -replace '\.', '-').ToLowerInvariant()
+
+        $isUnsupported = ($sample.PSObject.Properties['knownUnsupported'] -and $sample.knownUnsupported)
+        $expected = [ordered]@{ open = (-not $isUnsupported); crash = $false; hang = $false }
+        if ($isUnsupported) {
+            # 本机解码器确实打不开的格式：如实记 KNOWN_UNSUPPORTED，不算通过也不算失败。
+            # 理由随预期一起进 manifest，不靠人工记忆。
+            $expected['knownUnsupported'] = $true
+        }
+        # 尺寸由 ImageMagick 的 raw 委托独立读出、并已按方向转正（见 fetch-raw-corpus.ps1）。
+        # 读不出来的样本不登记尺寸，只要求能解码且不崩，不能凭空编一个数。
+        elseif ($sample.width -gt 0 -and $sample.height -gt 0) {
+            $expected['width'] = [int]$sample.width
+            $expected['height'] = [int]$sample.height
+        }
+
+        $comment = ("{0} {1}；来源 raw.pixls.us（CC0），上游文件名 {2}" -f `
+                        $sample.make, $sample.model, $sample.upstreamName)
+        if ($isUnsupported -and $sample.unsupportedReason) {
+            $comment = [string]$sample.unsupportedReason
+        }
+
+        $cases += [ordered]@{
+            id        = $id
+            path      = $relative
+            category  = 'raw'
+            extension = $sample.extension
+            bytes     = [int64]$sample.bytes
+            sha256    = ([string]$sample.sha256).ToUpperInvariant()
+            expected  = $expected
+            # 能解的 RAW 设为阻断级：38 个扩展名是主打功能，Canon CR2 之类突然解不开
+            # 必须挡住发布。已知不支持的那几个保持 normal——它们的 FAIL 只意味着
+            # 「标记过期、该去掉了」，是登记问题，不该因此拦住版本。
+            severity  = if ($isUnsupported) { 'normal' } else { 'release-blocker' }
+            comment   = $comment
+        }
+    }
+}
+
 # 合并人工维护的条目：已知不支持、已知限制等只能人工判断，不能被重新生成冲掉。
 if (Test-Path -LiteralPath $overridesPath) {
     $overrides = Get-Content -LiteralPath $overridesPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -187,6 +235,7 @@ $manifest = [ordered]@{
         core    = @('reference', 'dimensions', 'extension-mismatch', 'path-filename', 'exif')
         modern  = @('modern-formats')
         pro     = @('professional')
+        raw     = @('raw')
         corrupt = @('corrupt')
         large   = @('large-image')
     }
