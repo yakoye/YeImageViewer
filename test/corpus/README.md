@@ -9,6 +9,7 @@
 | 目录 | 内容 | 判定标准 |
 | --- | --- | --- |
 | `00-reference/` | 人工视觉参考图 | 能解码，尺寸与生成时一致 |
+| `01-modern-formats/` | AVIF / JXL / WebP / QOI / JP2 的 Smoke、Alpha、奇数尺寸、位深与编码变体 | 能解码，尺寸精确匹配；带透明的素材还要求 alpha 通道没被丢掉 |
 | `12-exif/` | EXIF Orientation 1～8、无 EXIF、超大 EXIF | 八个方向解出的尺寸都应是基准的 600×400 |
 | `13-dimensions/` | 尺寸边界：1×1、1×10000、19200×200、8191×8193 等 | 能解码，尺寸精确匹配 |
 | `14-corrupt/` | 空文件、随机字节、截断、坏 CRC、伪造巨大尺寸头 | 允许解码失败，但绝不允许崩溃、卡死、界面冻结 |
@@ -32,9 +33,13 @@ ImageMagick。
 
 # 执行
 .\tools\image-test-runner\run-tests.ps1 -Suite core
+.\tools\image-test-runner\run-tests.ps1 -Suite modern
 .\tools\image-test-runner\run-tests.ps1 -Suite corrupt
 .\tools\image-test-runner\run-tests.ps1 -All
 ```
+
+改动解码路径后，`-Suite modern` 与 `-Suite corrupt` 都要跑：前者验证解码结果，后者验证
+异常文件不会把界面搞死，两者判定的是不同的东西。
 
 报告写到 `artifacts/test-report/`：`summary.md` 给人看，`results.json` 给机器读。
 存在 release-blocker 失败时退出码非 0，CI 可据此阻断发布。
@@ -75,6 +80,59 @@ ImageMagick。
 | `KNOWN_LIMITATION` | 能打开，但存在明确登记的已知限制 |
 | `SKIPPED` | 素材不在本地，未执行 |
 | `ERROR` | 测试框架自身出错——绝不记为 PASS |
+
+## 现代格式专项（测试规格 Phase 3）
+
+`01-modern-formats/` 按 Smoke / Alpha / 奇数尺寸 / 位深或编码变体四类建立，适用才建，
+共 21 个用例，全部是本机真实编码，不是改扩展名伪装。
+
+| 格式 | 变体 | 为什么值得单列 |
+|---|---|---|
+| AVIF | smoke、alpha、odd(199×101)、10bit、grayscale | 10 位与单色（yuv400）是 AV1 特有的编码路径 |
+| JXL | smoke、alpha、odd、16bit、lossless | 无损写出 ISOBMFF 容器（`JXL ` box），有损是裸码流（`FF 0A`），解码入口不同 |
+| WebP | smoke、alpha、odd、lossless、lowquality | 有损与无损是两条完全独立的解码路径 |
+| QOI | smoke、alpha、odd | 规范只有 8 位 RGB/RGBA，没有位深变体可言 |
+| JP2 | smoke、alpha、odd | |
+
+损坏变体放在 `14-corrupt/`（`*_truncated.*`，截在 40%）。这些格式各有独立解码器
+（AVIF→dav1d、JXL→libjxl、JP2→openjpeg、QOI 是手写解码），PNG/JPEG 的容错不能代表它们。
+`qoi_truncated.qoi` 的预期是**解码成功**：QOI 流里没有长度字段和校验，截断后解码器会按
+run-length 把剩余缓冲填完，不崩溃即为合格。
+
+### 已知覆盖缺口：HEIC / HEIF / JXR / WP2 只有 Smoke
+
+ImageMagick 7.1.2 的 HEIC 是只读的（`r--`），请它写 `.heic` **不报错**，而是写出一个 PNG
+只换扩展名——实测头部是 `89 50 4E 47`。程序按内容嗅探，照样报「解码成功 160×80」。
+这种文件冒充不了 HEIC 覆盖，所以本目录不含 HEIC 变体；HEIC/HEIF 的 Smoke 继续依赖
+`test/format corpus` 里 libheif 的真实样本。JXR（ImageMagick 不支持）、WP2（同样不支持）
+情况相同。要补齐必须引入真正的编码器或许可清晰的上游样本。
+
+生成脚本里的 `Assert-NotFallbackEncoding` 逐个核对魔数，发现退化就删掉文件并报错，
+避免以后有人无意间把这类文件当成新增覆盖提交进来。
+
+### 透明通道的断言：别用 `%[opaque]`
+
+`%[opaque]` 只判「是否存在非 255 的 alpha」。实测 `avif_smoke.avif` 本无透明，但 AV1 把恒
+255 的 alpha 面压成了最低 254，`%[opaque]` 因此报 false。若据此断言「alpha 必须小于 255」，
+解码器真把 alpha 丢了也能靠 254 蒙过去——断言就成了装饰。
+
+现在看 `%[fx:minima.a]` 的最小值，三种情况分得很开：
+
+```text
+真有透明        0        ~ 0.0046
+不透明          0.99     ~ 1
+无 alpha 通道   2.7e+303（垃圾值）
+```
+
+只有最小值 ≤ 128（归一化 0.5）的素材才会被写入 `channels` 和 `maxMinAlpha` 预期，当前是
+5 个 alpha 素材。`maxMinAlpha = 16` 是解码后允许的最小 alpha 上限：有损编码会让 0 变成
+1~2，而丢掉 alpha 会得到 255，两者离得很远。
+
+`--decode-probe` 为此追加了通道数与最小 alpha 两个字段（第 6、7 列）。旧版程序不输出这两
+列，runner 记为未知并明确报「请用当前版本重新构建」，不会静默当成通过。
+
+断言做过红灯验证：把不透明的 `webp_smoke.webp` 硬标上透明预期，通道数与 alpha 两条断言
+都触发，退出码非 0。
 
 ## 一条教训：先证明素材是对的
 

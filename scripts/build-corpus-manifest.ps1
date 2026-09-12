@@ -29,6 +29,10 @@ if (-not (Test-Path -LiteralPath $corpusRoot)) {
 # 类别 → 预期模板。分类决定这个素材"算通过"的标准是什么。
 $categoryRules = @{
     '00-reference'         = @{ Category = 'reference';          Severity = 'release-blocker'; Decodable = $true }
+    # 现代格式变体：除了尺寸，带透明的素材还要求解码后 alpha 通道真的在。
+    # 只验尺寸的话，解码器把 alpha 丢掉或整层填成不透明都能「通过」。
+    '01-modern-formats'    = @{ Category = 'modern-formats';     Severity = 'release-blocker'; Decodable = $true
+                                CheckAlpha = $true }
     # EXIF 方向组的期望尺寸不能取自 identify：它读的是存储尺寸、不应用方向，
     # orientation 5～8 会读成 400x600。正确应用方向后，八张都应显示为基准的 600x400。
     '12-exif'              = @{ Category = 'exif';               Severity = 'release-blocker'; Decodable = $true
@@ -59,6 +63,31 @@ function Get-Sha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
 
+# 素材 alpha 通道的最小值，归一化到 0~255；没有 alpha 通道时返回 $null。
+# 预期从素材推导，不手写——手写的预期迟早和素材脱节。
+#
+# 不用 %[opaque]：它只判"是否存在非 255 的 alpha"，对有损编码毫无意义。
+# 实测 avif_smoke.avif 本无透明，但 AV1 把恒 255 的 alpha 面压成了最低 254，
+# %[opaque] 因此报 false。若据此断言"alpha 必须小于 255"，解码器真把 alpha
+# 搞坏了也能靠 254 蒙过去。改看最小值：真有透明的素材最小值贴近 0。
+function Get-SourceMinAlpha {
+    param([string]$Path)
+    $output = & magick identify -quiet -format "%[fx:minima.a]" -- "$Path[0]" 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($output)) { return $null }
+    $value = 0.0
+    if (-not [double]::TryParse($output.Trim(), [ref]$value)) { return $null }
+    # 无 alpha 通道时 minima.a 会给出 2.7e+303 这类垃圾值
+    if ($value -lt 0 -or $value -gt 1) { return $null }
+    return [int][Math]::Round($value * 255)
+}
+
+# 判定「素材确实带大面积透明」的门槛。0.5 的归一化 alpha 已经很低，
+# 有损编码的抖动（几个量化级）远达不到这里。
+$transparencyThreshold = 128
+# 解码后允许的最小 alpha 上限。有损编码会让 0 变成 1~2，留到 16 足够宽松；
+# 而解码器丢掉 alpha 会得到 255，离这个上限很远，两种情况不会混淆。
+$decodedMinAlphaBound = 16
+
 $cases = @()
 foreach ($folder in ($categoryRules.Keys | Sort-Object)) {
     $dir = Join-Path $corpusRoot $folder
@@ -87,6 +116,16 @@ foreach ($folder in ($categoryRules.Keys | Sort-Object)) {
                 if ($geometry) {
                     $expected['width'] = $geometry.Width
                     $expected['height'] = $geometry.Height
+                }
+            }
+            if ($rule.ContainsKey('CheckAlpha')) {
+                $sourceMinAlpha = Get-SourceMinAlpha $file.FullName
+                if ($null -ne $sourceMinAlpha -and $sourceMinAlpha -le $transparencyThreshold) {
+                    # 素材确实带大面积透明：解码后必须仍是 4 通道，
+                    # 且最小 alpha 仍然贴近全透明，说明通道没被丢掉或填平。
+                    $expected['channels'] = 4
+                    $expected['maxMinAlpha'] = $decodedMinAlphaBound
+                    $expected['sourceMinAlpha'] = $sourceMinAlpha
                 }
             }
         }
@@ -133,6 +172,7 @@ $manifest = [ordered]@{
     note        = '由 scripts/build-corpus-manifest.ps1 生成；人工条目写在 manifest.overrides.json。'
     suites      = [ordered]@{
         core    = @('reference', 'dimensions', 'extension-mismatch', 'path-filename', 'exif')
+        modern  = @('modern-formats')
         corrupt = @('corrupt')
         large   = @('large-image')
     }

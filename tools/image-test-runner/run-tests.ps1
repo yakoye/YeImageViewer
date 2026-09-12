@@ -127,6 +127,10 @@ function Invoke-DecodeProbe {
             Height   = if ($fields.Count -ge 3) { [int]$fields[2] } else { 0 }
             Frames   = if ($fields.Count -ge 4) { [int]$fields[3] } else { 0 }
             Kind     = if ($fields.Count -ge 5) { $fields[4] } else { '' }
+            # 通道数与最小 alpha 是后来追加的字段，旧程序不输出，记 $null 以示未知，
+            # 不能当成 0——0 通道会被误判成解码出了空图。
+            Channels = if ($fields.Count -ge 6) { [int]$fields[5] } else { $null }
+            MinAlpha = if ($fields.Count -ge 7) { [int]$fields[6] } else { $null }
         }
     }
     finally {
@@ -230,6 +234,30 @@ foreach ($case in $cases) {
                         $actualValue = if ($dimension -eq 'width') { $probe.Width } else { $probe.Height }
                         if ($expectedValue -ne $actualValue) {
                             $failures += "$dimension 期望 $expectedValue，实际 $actualValue"
+                        }
+                    }
+
+                    # 透明通道：素材本身有非不透明像素时，解码结果必须留住它。
+                    # 只比尺寸的话，解码器丢掉 alpha 或把整层填成 255 都能蒙过去。
+                    if ($case.expected.PSObject.Properties['channels']) {
+                        if ($null -eq $probe.Channels) {
+                            $failures += '程序未输出通道数：请用当前版本重新构建 YeImageViewer.exe'
+                        }
+                        elseif ([int]$case.expected.channels -ne $probe.Channels) {
+                            $failures += "通道数期望 $([int]$case.expected.channels)，实际 $($probe.Channels)"
+                        }
+                    }
+                    if ($case.expected.PSObject.Properties['maxMinAlpha']) {
+                        $bound = [int]$case.expected.maxMinAlpha
+                        if ($null -eq $probe.MinAlpha) {
+                            $failures += '程序未输出 alpha 信息：请用当前版本重新构建 YeImageViewer.exe'
+                        }
+                        elseif ($probe.MinAlpha -gt $bound) {
+                            $failures += ("素材最小 alpha 为 $($case.expected.sourceMinAlpha)，" +
+                                "解码后却是 $($probe.MinAlpha)（上限 $bound）：透明通道被丢弃或填平")
+                        }
+                        else {
+                            $details += "minAlpha=$($probe.MinAlpha)"
                         }
                     }
                 }
