@@ -290,7 +290,11 @@ struct CurImageParameter {
         Init();
     }
 
-    void Init(int winWidth = 0, int winHeight = 0, int initialRotation = 0, bool preventUpscale = false) {
+    // forceFitWindow: 模糊预览专用。预览图最大只有 1024 像素，通常比窗口小，
+    // 按常规规则会以 1:1 缩在窗口中央，等真图（远大于窗口）到手改成适应窗口，
+    // 画面会突然铺开。强制按窗口适配后，预览与真图的取景一致，只是清晰度不同。
+    void Init(int winWidth = 0, int winHeight = 0, int initialRotation = 0,
+        bool preventUpscale = false, bool forceFitWindow = false) {
 
         curFrameIdx = 0;
         curFrameDelay = 0;
@@ -330,7 +334,8 @@ struct CurImageParameter {
             int64_t zoomFitWindow = (displayWidth > 0 && displayHeight > 0) ?
                 std::min(winWidth * ZOOM_BASE / displayWidth, winHeight * ZOOM_BASE / displayHeight) :
                 ZOOM_BASE;
-            zoomTarget = (displayHeight > winHeight || displayWidth > winWidth) ? zoomFitWindow :
+            zoomTarget = (displayHeight > winHeight || displayWidth > winWidth || forceFitWindow) ?
+                zoomFitWindow :
                 ((preventUpscale || GlobalVar::settingParameter.isOneToOnePreferred) ? ZOOM_BASE : zoomFitWindow);
             zoomCur = zoomTarget;
 
@@ -518,6 +523,8 @@ public:
     // 真图仍在后台解码时，这里记着它的路径，主循环据此轮询接手。
     wstring pendingImagePath;
     std::chrono::steady_clock::time_point loadingStartedAt{};
+    // 模糊预览是否已经顶上去了，避免每帧重复替换
+    bool pendingPreviewShown = false;
     bool windowDragActive = false;
     POINT windowDragCursorStart{};
     RECT windowDragWindowStart{};
@@ -740,12 +747,18 @@ public:
         }
     }
 
+    // 当前显示的是模糊预览（而不是 1×1 空占位、也不是真图）
+    bool showingPreview() const {
+        return curPar.imageAssetPtr && curPar.imageAssetPtr->isLoading &&
+            curPar.imageAssetPtr->primaryFrame.cols > 1;
+    }
+
     void initCurrentImageParameters() {
         const bool isRealImage = hasCurrentImagePath();
         const int savedRotation = isRealImage ? rotationStore.get(imgFileList[curFileIdx]) : 0;
         // The functional home page is native-DPI text. Never enlarge its
         // already rasterized glyphs when the user resizes the window.
-        curPar.Init(winWidth, winHeight, savedRotation, true);
+        curPar.Init(winWidth, winHeight, savedRotation, true, showingPreview());
         if (presentationMode)
             applyPresentationImageLayout();
         else if (framedWindowAnchored)
@@ -1053,6 +1066,8 @@ public:
         curFileIdx = -1;
         imgFileList.clear();
         imgDB.clear();
+        // 重命名也走这里，旧路径的预览已经失效
+        imgDB.clearPreviews();
 
         if (filePath.empty()) {
             imgFileList.emplace_back(m_wndCaption);
@@ -1128,31 +1143,98 @@ public:
         // 大图解码要好几秒，死等的话这几秒里连窗口都没有。
         const auto& currentPath = imgFileList[curFileIdx];
         const auto& nextPath = imgFileList[(curFileIdx + 1) % imgFileList.size()];
-        curPar.imageAssetPtr = imgDB.getOrPlaceholderPtr(currentPath, nextPath);
-        pendingImagePath = curPar.imageAssetPtr->isLoading ? currentPath : wstring{};
-        loadingStartedAt = std::chrono::steady_clock::now();
+        auto ready = imgDB.tryGetOrRequest(currentPath, nextPath);
+        curPar.imageAssetPtr = ready ? ready : imgDB.makeLoadingAsset();
+        beginPendingImage(ready ? wstring{} : currentPath);
         initCurrentImageParameters();
     }
 
-    // 占位期间轮询真图；换好后重新按真实尺寸初始化视图参数。
+    // 切到另一张图。不阻塞等待解码：真图没好就先留着当前画面，
+    // 由主循环依次换成模糊预览、清晰原图。连续快速翻页时不会卡在解码上。
+    // 返回值表示画面是否已经换成新文件的内容（真图或模糊预览）——
+    // 还停在上一张时做切图动画没有意义，跳过。
+    bool switchToImage(int newIdx, int neighborIdx) {
+        curFileIdx = newIdx;
+        const auto& targetPath = imgFileList[newIdx];
+        const auto& neighborPath = imgFileList[neighborIdx];
+
+        if (auto ready = imgDB.tryGetOrRequest(targetPath, neighborPath)) {
+            curPar.imageAssetPtr = ready;
+            beginPendingImage({});
+            initCurrentImageParameters();
+            return true;
+        }
+
+        // 先试试模糊预览，拿得到就立刻顶上，省掉一次「还是旧图」的中间态
+        beginPendingImage(targetPath);
+        if (auto preview = imgDB.tryMakePreviewAsset(targetPath)) {
+            curPar.imageAssetPtr = preview;
+            pendingPreviewShown = true;
+            initCurrentImageParameters();
+            return true;
+        }
+        return false;
+    }
+
+    int neighborIndexBefore(int idx) const {
+        const int count = (int)imgFileList.size();
+        return (idx + count - 1) % count;
+    }
+
+    int neighborIndexAfter(int idx) const {
+        return (idx + 1) % (int)imgFileList.size();
+    }
+
+    void beginPendingImage(wstring path) {
+        pendingImagePath = std::move(path);
+        pendingPreviewShown = false;
+        loadingStartedAt = std::chrono::steady_clock::now();
+    }
+
+    // 等待真图期间每帧调用。显示内容按优先级推进：真图 > 模糊预览 > 当前画面。
+    // 预览都取不到时（系统没有该格式的缩略图）才退回空占位，免得长时间显示上一张图
+    // 而标题栏已经是新文件名。
     bool adoptPendingImageIfReady() {
         if (pendingImagePath.empty())
             return false;
-        auto ready = imgDB.tryGetPtr(pendingImagePath);
-        if (!ready)
+
+        if (auto ready = imgDB.tryGetPtr(pendingImagePath)) {
+            pendingImagePath.clear();
+            pendingPreviewShown = false;
+            curPar.imageAssetPtr = ready;
+            initCurrentImageParameters();
+            // 占位期间窗口是按默认尺寸摆的，真图到手才知道该多大。
+            if (!presentationMode &&
+                ViewerOptions::openMode(GlobalVar::settingParameter.reserve) ==
+                    ViewerOptions::OpenMode::FitImage) {
+                applyImageFittedWindowSize();
+            }
+            operateQueue.push({ ActionENUM::refresh });
+            return true;
+        }
+
+        if (pendingPreviewShown)
             return false;
 
-        pendingImagePath.clear();
-        curPar.imageAssetPtr = ready;
-        initCurrentImageParameters();
-        // 占位期间窗口是按默认尺寸摆的，真图到手才知道该多大。
-        if (!presentationMode &&
-            ViewerOptions::openMode(GlobalVar::settingParameter.reserve) ==
-                ViewerOptions::OpenMode::FitImage) {
-            applyImageFittedWindowSize();
+        if (auto preview = imgDB.tryMakePreviewAsset(pendingImagePath)) {
+            pendingPreviewShown = true;
+            curPar.imageAssetPtr = preview;
+            initCurrentImageParameters();
+            operateQueue.push({ ActionENUM::refresh });
+            return true;
         }
-        operateQueue.push({ ActionENUM::refresh });
-        return true;
+
+        // 超过这个时长仍没有预览，说明这个文件系统给不出缩略图，清空画面等真图
+        constexpr int64_t PREVIEW_GRACE_MS = 250;
+        const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - loadingStartedAt).count();
+        if (waited >= PREVIEW_GRACE_MS && !curPar.imageAssetPtr->isLoading) {
+            curPar.imageAssetPtr = imgDB.makeLoadingAsset();
+            initCurrentImageParameters();
+            operateQueue.push({ ActionENUM::refresh });
+            return true;
+        }
+        return false;
     }
 
     inline void handleAnimationControl(int x, int y) {
@@ -3694,52 +3776,16 @@ public:
         }
     }
 
-    // 真图还在后台解码时的提示。解码没有进度回调，给不出真实百分比，于是用一条往复
-    // 滑动的不确定进度条表示「在动」，再把已用秒数写出来——真卡住时用户能看出区别。
-    void drawLoadingIndicator(cv::Mat& canvas) {
-        if (!curPar.imageAssetPtr || !curPar.imageAssetPtr->isLoading)
-            return;
-        if (canvas.cols < 80 || canvas.rows < 40)
-            return;
-
-        const int dpi = overlayDpi();
-        const auto scale = [dpi](int value) { return MulDiv(value, dpi, USER_DEFAULT_SCREEN_DPI); };
-
-        const int barHeight = scale(4);
-        cv::rectangle(canvas, { 0, 0, canvas.cols, barHeight },
-            jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), -1);
-
-        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - loadingStartedAt).count();
-        constexpr int64_t cycleMs = 1100;
-        const int chunk = std::max(scale(60), canvas.cols / 4);
-        const double phase = static_cast<double>(elapsedMs % cycleMs) / cycleMs;
-        const int left = static_cast<int>((canvas.cols + chunk) * phase) - chunk;
-        const int clampedLeft = std::max(0, left);
-        const int width = std::min(chunk, canvas.cols - clampedLeft);
-        if (width > 0) {
-            cv::rectangle(canvas, { clampedLeft, 0, width, barHeight },
-                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.CHECK), -1);
-        }
-
-        const auto text = std::format("{}  {:.1f}s", getUIString(71), elapsedMs / 1000.0);
-        const int textHeight = scale(28);
-        textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
-            TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
-        textDrawer.putAlignCenter(canvas,
-            { 0, (canvas.rows - textHeight) / 2, canvas.cols, textHeight },
-            text.c_str(), GlobalVar::currentTheme.FG);
-    }
-
     void drawExtraUI(cv::Mat& canvas) {
         const int canvasHeight = canvas.rows;
         const int canvasWidth = canvas.cols;
         if (canvasWidth < 100 || canvasHeight < 100)
             return;
 
-        if (curPar.imageAssetPtr && curPar.imageAssetPtr->isLoading) {
-            // 加载中只画提示：占位图是 1×1，工具栏、翻页箭头这些都无从谈起。
-            drawLoadingIndicator(canvas);
+        // 空占位图只有 1×1，工具栏、翻页箭头这些都无从谈起。
+        // 模糊预览是张真图，照常画 UI。
+        if (curPar.imageAssetPtr && curPar.imageAssetPtr->isLoading &&
+            curPar.imageAssetPtr->primaryFrame.cols <= 1) {
             return;
         }
 
@@ -3849,18 +3895,19 @@ public:
             if (curFileIdx >= 0 && curFileIdx < (int)imgFileList.size()) {
                 const auto currentPath = imgFileList[curFileIdx];
                 imgDB.clear();
+                imgDB.clearPreviews();
 
                 if (currentPath == m_wndCaption) {
                     imgDB.put(m_wndCaption, { ImageFormat::Still,
                         imgDB.getHomeMat(GetDpiForWindow(m_hWnd)), {}, {}, getUIString(32) });
                     curPar.imageAssetPtr = imgDB.getCheckedPtr(currentPath, currentPath);
+                    initCurrentImageParameters();
                 }
                 else {
-                    const auto& nextPath = imgFileList[(curFileIdx + 1) % imgFileList.size()];
-                    curPar.imageAssetPtr = imgDB.getCheckedPtr(currentPath, nextPath);
+                    // 缓存刚清空，这里必然是未命中，走非阻塞路径免得大图卡住整个主循环
+                    switchToImage(curFileIdx, neighborIndexAfter(curFileIdx));
                 }
 
-                initCurrentImageParameters();
                 operateQueue.push({ ActionENUM::refresh });
             }
         }
@@ -4012,15 +4059,13 @@ public:
                 curPar.imageAssetPtr->format = ImageFormat::Animated;
             }
 
-            if (--curFileIdx < 0)
-                curFileIdx = (int)imgFileList.size() - 1;
-            curPar.imageAssetPtr = imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + imgFileList.size() - 1) % imgFileList.size()]);
-            initCurrentImageParameters();
-
-            if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
-                mainCanvasSlideToPreAnimationVertical();      // 竖直滑动
-            else if (GlobalVar::settingParameter.switchImageAnimationMode == 2)
-                mainCanvasSlideToPreAnimationHorizontal();    // 水平滑动
+            const int targetIdx = neighborIndexBefore(curFileIdx);
+            if (switchToImage(targetIdx, neighborIndexBefore(targetIdx))) {
+                if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
+                    mainCanvasSlideToPreAnimationVertical();      // 竖直滑动
+                else if (GlobalVar::settingParameter.switchImageAnimationMode == 2)
+                    mainCanvasSlideToPreAnimationHorizontal();    // 水平滑动
+            }
 
             lastTimestamp = std::chrono::steady_clock::now();
             delayRemain = 0;
@@ -4048,15 +4093,13 @@ public:
                 curPar.imageAssetPtr->format = ImageFormat::Animated;
             }
 
-            if (++curFileIdx >= (int)imgFileList.size())
-                curFileIdx = 0;
-            curPar.imageAssetPtr = imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + 1) % imgFileList.size()]);
-            initCurrentImageParameters();
-
-            if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
-                mainCanvasSlideToNextAnimationVertical();   // 竖直滑动
-            else if (GlobalVar::settingParameter.switchImageAnimationMode == 2)
-                mainCanvasSlideToNextAnimationHorizontal(); // 水平滑动
+            const int targetIdx = neighborIndexAfter(curFileIdx);
+            if (switchToImage(targetIdx, neighborIndexAfter(targetIdx))) {
+                if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
+                    mainCanvasSlideToNextAnimationVertical();   // 竖直滑动
+                else if (GlobalVar::settingParameter.switchImageAnimationMode == 2)
+                    mainCanvasSlideToNextAnimationHorizontal(); // 水平滑动
+            }
 
             lastTimestamp = std::chrono::steady_clock::now();
             delayRemain = 0;
@@ -4084,14 +4127,12 @@ public:
                 curPar.imageAssetPtr->format = ImageFormat::Animated;
             }
 
-            curFileIdx = 0;
-            curPar.imageAssetPtr = imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + imgFileList.size() - 1) % imgFileList.size()]);
-            initCurrentImageParameters();
-
-            if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
-                mainCanvasSlideToPreAnimationVertical();      // 竖直滑动
-            else if (GlobalVar::settingParameter.switchImageAnimationMode == 2)
-                mainCanvasSlideToPreAnimationHorizontal();    // 水平滑动
+            if (switchToImage(0, neighborIndexBefore(0))) {
+                if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
+                    mainCanvasSlideToPreAnimationVertical();      // 竖直滑动
+                else if (GlobalVar::settingParameter.switchImageAnimationMode == 2)
+                    mainCanvasSlideToPreAnimationHorizontal();    // 水平滑动
+            }
 
             lastTimestamp = std::chrono::steady_clock::now();
             delayRemain = 0;
@@ -4117,14 +4158,13 @@ public:
                 curPar.imageAssetPtr->format = ImageFormat::Animated;
             }
 
-            curFileIdx = (int)imgFileList.size() - 1;
-            curPar.imageAssetPtr = imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[(curFileIdx + 1) % imgFileList.size()]);
-            initCurrentImageParameters();
-
-            if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
-                mainCanvasSlideToNextAnimationVertical();   // 竖直滑动
-            else if (GlobalVar::settingParameter.switchImageAnimationMode == 2)
-                mainCanvasSlideToNextAnimationHorizontal(); // 水平滑动
+            const int lastIdx = (int)imgFileList.size() - 1;
+            if (switchToImage(lastIdx, neighborIndexAfter(lastIdx))) {
+                if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
+                    mainCanvasSlideToNextAnimationVertical();   // 竖直滑动
+                else if (GlobalVar::settingParameter.switchImageAnimationMode == 2)
+                    mainCanvasSlideToNextAnimationHorizontal(); // 水平滑动
+            }
 
             lastTimestamp = std::chrono::steady_clock::now();
             delayRemain = 0;
@@ -4316,6 +4356,7 @@ public:
 
             // 文件已删除，缓存必须同步失效，否则之后出现的同名文件会显示旧内容
             imgDB.erase(std::wstring(target));
+            imgDB.erasePreview(std::wstring(target));
 
             imgFileList.erase(imgFileList.begin() + curFileIdx);
 
@@ -4329,10 +4370,7 @@ public:
                 curFileIdx = (int)imgFileList.size() - 1;
             }
 
-            curPar.imageAssetPtr = imgDB.getCheckedPtr(
-                imgFileList[curFileIdx],
-                imgFileList[(curFileIdx + 1) % imgFileList.size()]);
-            initCurrentImageParameters();
+            switchToImage(curFileIdx, neighborIndexAfter(curFileIdx));
             if (!hasCurrentImagePath())
                 applyHomeWindowSize();
         } break;
