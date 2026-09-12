@@ -13,6 +13,9 @@
 #include "PresentationLayout.h"
 #include "OverlayLayout.h"
 #include "LoadingBadge.h"
+#include "JpegQuality.h"
+#include "ColorSpaceName.h"
+#include "ImageHistogram.h"
 #include "DecodeEstimate.h"
 #include "ImageViewTransform.h"
 #include "RotationStore.h"
@@ -554,6 +557,327 @@ void expectSlideshowPolicy() {
         SlideshowPolicy::shouldAdvance(true, 3, true));
 }
 
+// 按 libjpeg 的公式造一张量化表，用来验证反推是否自洽
+static JpegQuality::Table makeLibjpegTable(int quality, int id = 0) {
+    const int scale = quality < 50 ? 5000 / quality : 200 - quality * 2;
+    JpegQuality::Table table;
+    table.id = id;
+    const auto& standard = id == 0 ?
+        JpegQuality::STANDARD_LUMINANCE : JpegQuality::STANDARD_CHROMINANCE;
+    for (int i = 0; i < 64; ++i)
+        table.values[i] = std::clamp((standard[i] * scale + 50) / 100, 1, 255);
+    return table;
+}
+
+void expectJpegQuality() {
+    // 自洽：按 libjpeg 公式造表，再反推应当回到原质量（取整误差 ±1）
+    bool roundTrip = true;
+    for (int q : { 20, 30, 40, 50, 60, 70, 75, 80, 85, 90, 95 }) {
+        const auto table = makeLibjpegTable(q);
+        const auto scale = JpegQuality::estimateScale(table, JpegQuality::STANDARD_LUMINANCE);
+        if (!scale) { roundTrip = false; break; }
+        if (std::abs(JpegQuality::scaleToQuality(*scale) - q) > 1) { roundTrip = false; break; }
+    }
+    passOrFail("jpeg quality round-trips through libjpeg's table scaling", roundTrip);
+
+    // 质量 100 时整张表被夹成全 1，这种情况精确判定而不走反推
+    passOrFail("jpeg quality reports 100 for an all-ones table",
+        JpegQuality::isAllOnes(makeLibjpegTable(100)) &&
+        !JpegQuality::isAllOnes(makeLibjpegTable(90)));
+
+    // 有效项太少就不给结论，不能硬编一个数
+    JpegQuality::Table saturated;
+    saturated.values.fill(255);
+    passOrFail("jpeg quality declines to guess when the table is saturated",
+        !JpegQuality::estimateScale(saturated, JpegQuality::STANDARD_LUMINANCE).has_value());
+
+    // 不是 JPEG 就没有量化表
+    const std::array<uint8_t, 8> png{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+    passOrFail("jpeg quality returns nothing for non-JPEG data",
+        !JpegQuality::estimate(png).has_value() &&
+        JpegQuality::parseTables(png).empty());
+
+    // 真实 JPEG 的标记扫描：造一个只含 SOI + DQT + SOS 的最小文件
+    std::vector<uint8_t> minimal{ 0xFF, 0xD8, 0xFF, 0xDB, 0x00, 0x43, 0x00 };
+    const auto table = makeLibjpegTable(85);
+    for (int i = 0; i < 64; ++i)
+        minimal.push_back(static_cast<uint8_t>(table.values[i]));
+    minimal.insert(minimal.end(), { 0xFF, 0xDA, 0x00, 0x02 });
+    const auto parsed = JpegQuality::parseTables(minimal);
+    const auto estimated = JpegQuality::estimate(minimal);
+    passOrFail("jpeg quality reads the quantization table out of a DQT segment",
+        parsed.size() == 1 && parsed[0].id == 0 && !parsed[0].sixteenBit &&
+        estimated.has_value() && std::abs(*estimated - 85) <= 1);
+}
+
+void expectColorSpaceName() {
+    // EXIF ColorSpace 的三种取值
+    passOrFail("color space maps the EXIF ColorSpace values",
+        ColorSpaceName::fromExifColorSpace("1") == "sRGB" &&
+        ColorSpaceName::fromExifColorSpace("2") == "Adobe RGB" &&
+        // 65535 是「未校准」，等于没说，不能把它当成一个色彩空间显示出来
+        ColorSpaceName::fromExifColorSpace("65535").empty());
+
+    // ICC v2 的 desc 标签：128 字节头 + 标签数 + 一条 12 字节标签项 + textDescriptionType
+    const char* name = "Adobe RGB (1998)";
+    const uint32_t asciiCount = 17;   // 含结尾 0
+    std::vector<uint8_t> icc(128, 0);
+    const auto pushBE32 = [](std::vector<uint8_t>& out, uint32_t v) {
+        out.push_back(static_cast<uint8_t>(v >> 24));
+        out.push_back(static_cast<uint8_t>(v >> 16));
+        out.push_back(static_cast<uint8_t>(v >> 8));
+        out.push_back(static_cast<uint8_t>(v));
+        };
+    pushBE32(icc, 1);              // 标签数
+    pushBE32(icc, 0x64657363u);    // 'desc'
+    const uint32_t dataOffset = 144;
+    pushBE32(icc, dataOffset);
+    pushBE32(icc, 12 + asciiCount);
+    icc.resize(dataOffset, 0);
+    pushBE32(icc, 0x64657363u);    // type 'desc'
+    pushBE32(icc, 0);              // reserved
+    pushBE32(icc, asciiCount);
+    for (const char* p = name; *p; ++p)
+        icc.push_back(static_cast<uint8_t>(*p));
+    icc.push_back(0);
+    // 头部的声明长度必须与实际一致，否则解析会拒绝跳偏移
+    icc[0] = static_cast<uint8_t>(icc.size() >> 24);
+    icc[1] = static_cast<uint8_t>(icc.size() >> 16);
+    icc[2] = static_cast<uint8_t>(icc.size() >> 8);
+    icc[3] = static_cast<uint8_t>(icc.size());
+
+    passOrFail("color space reads the description out of an ICC v2 profile",
+        ColorSpaceName::fromIccProfile(icc) == "Adobe RGB (1998)");
+
+    // ICC 优先于 EXIF：相机导出 Adobe RGB 时 EXIF 常写 65535，只看 EXIF 会显示不出来
+    passOrFail("color space prefers the ICC description over EXIF",
+        ColorSpaceName::resolve(icc, "65535") == "Adobe RGB (1998)" &&
+        ColorSpaceName::resolve({}, "1") == "sRGB");
+
+    // InteropIndex 是 Adobe RGB 的另一处线索
+    passOrFail("color space falls back to the EXIF interoperability index",
+        ColorSpaceName::resolve({}, "65535", "R03") == "Adobe RGB" &&
+        ColorSpaceName::resolve({}, "65535", "R98") == "sRGB");
+
+    // 什么线索都没有时返回空——不猜
+    passOrFail("color space stays empty when nothing identifies it",
+        ColorSpaceName::resolve({}, "").empty() &&
+        ColorSpaceName::fromIccProfile({}).empty());
+
+    // 截断的 ICC 不能让解析越界或吐出乱码
+    std::vector<uint8_t> truncated(icc.begin(), icc.begin() + 140);
+    passOrFail("color space survives a truncated ICC profile",
+        ColorSpaceName::fromIccProfile(truncated).empty());
+}
+
+void expectImageHistogram() {
+    // 抽样步长：小图全取，大图按目标采样数收敛
+    passOrFail("histogram samples every pixel only while the image is small",
+        ImageHistogram::sampleStride(100, 100) == 1 && ImageHistogram::sampleStride(500, 500) == 1 &&
+        ImageHistogram::sampleStride(9000, 9000) > 1 &&
+        static_cast<uint64_t>(9000 / ImageHistogram::sampleStride(9000, 9000)) *
+            (9000 / ImageHistogram::sampleStride(9000, 9000)) <= ImageHistogram::TARGET_SAMPLES * 2);
+
+    // BT.601 权重：纯绿的亮度应远高于纯蓝
+    passOrFail("histogram weights luminance by BT.601",
+        ImageHistogram::lumaOf(0, 255, 0) == 149 && ImageHistogram::lumaOf(0, 0, 255) == 76 &&
+        ImageHistogram::lumaOf(255, 0, 0) == 29 && ImageHistogram::lumaOf(255, 255, 255) == 255);
+
+    ImageHistogram::Bins bins;
+    ImageHistogram::accumulate(bins, 10, 20, 30);
+    ImageHistogram::accumulate(bins, 10, 20, 30);
+    ImageHistogram::accumulate(bins, 200, 200, 200);
+    passOrFail("histogram counts each sampled pixel once per channel",
+        bins.sampled == 3 && bins.blue[10] == 2 && bins.green[20] == 2 &&
+        bins.red[30] == 2 && bins.blue[200] == 1);
+
+    // 峰值归一化会被单一色块压平：一个 bin 占绝大多数时，
+    // 其余形状必须还能看见，否则直方图等于没显示
+    std::array<uint32_t, ImageHistogram::HISTOGRAM_BINS> flooded{};
+    flooded[0] = 1'000'000;        // 纯色背景
+    flooded[100] = 1000;           // 真正关心的分布
+    flooded[101] = 800;
+    flooded[102] = 600;
+    const auto naive = ImageHistogram::normalize(flooded, 64, 0);   // 不裁离群值
+    const auto clipped = ImageHistogram::normalize(flooded, 64, 3); // 裁掉最高 3 个
+    passOrFail("histogram clips outlier bins so the rest of the shape stays visible",
+        naive[100] == 0 && clipped[100] == 64 && clipped[101] > 0);
+
+    // 全零直方图不能除零
+    std::array<uint32_t, ImageHistogram::HISTOGRAM_BINS> zero{};
+    const auto zeroed = ImageHistogram::normalize(zero, 64);
+    passOrFail("histogram handles an all-zero channel without dividing by zero",
+        std::ranges::all_of(zeroed, [](int v) { return v == 0; }));
+
+    // 只有一个 bin 非零时，裁离群值会把峰值裁成 0，必须退回真实峰值
+    std::array<uint32_t, ImageHistogram::HISTOGRAM_BINS> single{};
+    single[128] = 500;
+    const auto singleHeights = ImageHistogram::normalize(single, 64, 3);
+    passOrFail("histogram falls back to the real peak when clipping empties it",
+        singleHeights[128] == 64);
+
+    // 256 个 bin 摊到窄面板上，细峰不能被漏掉
+    std::vector<int> heights(ImageHistogram::HISTOGRAM_BINS, 0);
+    heights[200] = 50;
+    const auto columns = ImageHistogram::resampleToWidth(heights, 64);
+    passOrFail("histogram resampling keeps a narrow peak visible",
+        columns.size() == 64 &&
+        std::ranges::any_of(columns, [](int v) { return v == 50; }));
+    passOrFail("histogram resampling tolerates a zero width",
+        ImageHistogram::resampleToWidth(heights, 0).empty());
+}
+
+void expectHistogramFromPixels() {
+    // 三通道 BGRA：造一张左半纯蓝、右半纯红的图，统计结果应当各占一半
+    constexpr int width = 64, height = 32, channels = 4;
+    std::vector<uint8_t> buffer(static_cast<std::size_t>(width) * height * channels, 0);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            auto* p = buffer.data() + (static_cast<std::size_t>(y) * width + x) * channels;
+            if (x < width / 2) { p[0] = 255; p[1] = 0; p[2] = 0; }   // 蓝
+            else { p[0] = 0; p[1] = 0; p[2] = 255; }                 // 红
+            p[3] = 255;
+        }
+    }
+    const auto bins = ImageHistogram::accumulateFrom(width, height, channels,
+        [&](int y) { return buffer.data() + static_cast<std::size_t>(y) * width * channels; });
+
+    const uint64_t half = static_cast<uint64_t>(width) * height / 2;
+    passOrFail("histogram accumulates a real pixel buffer channel by channel",
+        bins.sampled == static_cast<uint64_t>(width) * height &&
+        bins.blue[255] == half && bins.blue[0] == half &&
+        bins.red[255] == half && bins.red[0] == half &&
+        bins.green[0] == static_cast<uint64_t>(width) * height);
+
+    // 单通道灰度：三个通道应填同一个值，亮度等于该值
+    std::vector<uint8_t> gray(static_cast<std::size_t>(width) * height, 128);
+    const auto grayBins = ImageHistogram::accumulateFrom(width, height, 1,
+        [&](int y) { return gray.data() + static_cast<std::size_t>(y) * width; });
+    passOrFail("histogram treats a single-channel buffer as gray",
+        grayBins.blue[128] == grayBins.sampled &&
+        grayBins.green[128] == grayBins.sampled &&
+        grayBins.red[128] == grayBins.sampled &&
+        grayBins.luma[128] == grayBins.sampled);
+
+    // 空输入与非法通道数不能越界访问
+    passOrFail("histogram rejects degenerate buffer descriptions",
+        ImageHistogram::accumulateFrom(0, 32, 4, [&](int) { return buffer.data(); }).empty() &&
+        ImageHistogram::accumulateFrom(64, 0, 4, [&](int) { return buffer.data(); }).empty() &&
+        ImageHistogram::accumulateFrom(64, 32, 0, [&](int) { return buffer.data(); }).empty() &&
+        ImageHistogram::accumulateFrom(64, 32, 4,
+            [](int) -> const uint8_t* { return nullptr; }).empty());
+}
+
+void expectInfoPanelFields() {
+    const std::string raw =
+        "路径: D:\\photo\\IMG_0001.jpg\n"
+        "大小: 4.2 MB\n"
+        "分辨率: 6000x4000\n"
+        "色彩空间: 65535\n"
+        "型号: ILCE-7S\n";
+
+    // 解析好的色彩空间与质量因子应当出现在基本信息里
+    const auto model = ImageInfoPresentation::build(raw, true, "RGB · 24bpp",
+        "Adobe RGB (1998)", 85);
+    const auto hasBasic = [&model](std::string_view label, std::string_view value) {
+        return std::ranges::any_of(model.basic, [&](const ImageInfoPresentation::Row& row) {
+            return row.label == label && row.value == value;
+            });
+        };
+    passOrFail("info panel shows the resolved color space and quality factor",
+        hasBasic("色彩空间", "Adobe RGB (1998)") && hasBasic("质量因子", "约 85"));
+
+    // EXIF 原始值 65535 不能再作为「色彩空间」重复列一遍——
+    // 同一个标签出现两次、其中一个还是看不懂的数字，只会让人犯疑
+    passOrFail("info panel drops the raw EXIF color space once it is resolved",
+        std::ranges::none_of(model.details, [](const ImageInfoPresentation::Row& row) {
+            return row.label == "色彩空间";
+            }));
+
+    // 两项都很短，紧凑面板也要能看到
+    const auto compact = ImageInfoPresentation::compactRows(model, true);
+    passOrFail("info panel surfaces both fields in the compact layout",
+        std::ranges::any_of(compact, [](const ImageInfoPresentation::Row& row) {
+            return row.label == "色彩空间"; }) &&
+        std::ranges::any_of(compact, [](const ImageInfoPresentation::Row& row) {
+            return row.label == "质量因子"; }));
+
+    // 估不出质量因子（0）时不能显示「约 0」；色彩空间为空时同理
+    const auto bare = ImageInfoPresentation::build(raw, true, "RGB · 24bpp", {}, 0);
+    passOrFail("info panel omits the fields when nothing identifies them",
+        std::ranges::none_of(bare.basic, [](const ImageInfoPresentation::Row& row) {
+            return row.label == "质量因子" || row.label == "色彩空间"; }) &&
+        // 这时 EXIF 原始值该照旧出现在照片信息里，不能一起丢掉
+        std::ranges::any_of(bare.details, [](const ImageInfoPresentation::Row& row) {
+            return row.label == "色彩空间"; }));
+
+    // 英文界面用英文标签
+    const auto english = ImageInfoPresentation::build(raw, false, "RGB · 24bpp", "sRGB", 92);
+    passOrFail("info panel labels the fields in English when the UI is English",
+        std::ranges::any_of(english.basic, [](const ImageInfoPresentation::Row& row) {
+            return row.label == "Color space" && row.value == "sRGB"; }) &&
+        std::ranges::any_of(english.basic, [](const ImageInfoPresentation::Row& row) {
+            return row.label == "Quality" && row.value == "~92"; }));
+}
+
+void expectInfoPanelOpacity() {
+    using namespace ViewerOptions;
+
+    // 默认档保持加这个选项之前的 alpha，升级后观感不变
+    passOrFail("info panel keeps its original alpha on the default level",
+        infoPanelAlpha(DEFAULT_INFO_PANEL_OPACITY) == 0xD1u &&
+        DEFAULT_INFO_PANEL_OPACITY == InfoPanelOpacity::Strong);
+
+    passOrFail("info panel opacity levels increase monotonically",
+        infoPanelAlpha(InfoPanelOpacity::Light) < infoPanelAlpha(InfoPanelOpacity::Medium) &&
+        infoPanelAlpha(InfoPanelOpacity::Medium) < infoPanelAlpha(InfoPanelOpacity::Strong) &&
+        infoPanelAlpha(InfoPanelOpacity::Strong) < infoPanelAlpha(InfoPanelOpacity::Opaque) &&
+        infoPanelAlpha(InfoPanelOpacity::Opaque) == 0xFFu);
+
+    // 只换 alpha，颜色本身不能动
+    passOrFail("info panel opacity replaces only the alpha byte",
+        withPanelAlpha(0xD10A0E1Au, InfoPanelOpacity::Opaque) == 0xFF0A0E1Au &&
+        withPanelAlpha(0xD10A0E1Au, InfoPanelOpacity::Light) == 0x8C0A0E1Au);
+
+    std::array<uint32_t, 1024> storage{};
+    reset(storage.data(), storage.size());
+    passOrFail("info panel options default after a reset",
+        infoPanelOpacity(storage.data()) == DEFAULT_INFO_PANEL_OPACITY &&
+        infoHistogramEnabled(storage.data()) == DEFAULT_INFO_HISTOGRAM);
+
+    setInfoPanelOpacity(storage.data(), InfoPanelOpacity::Light);
+    setInfoHistogramEnabled(storage.data(), false);
+    passOrFail("info panel options round-trip through storage",
+        infoPanelOpacity(storage.data()) == InfoPanelOpacity::Light &&
+        !infoHistogramEnabled(storage.data()));
+
+    // 越界值回落到默认，不能把野值透出去
+    storage[INFO_PANEL_OPACITY_INDEX] = 99u;
+    storage[INFO_HISTOGRAM_INDEX] = 7u;
+    initialize(storage.data(), storage.size());
+    passOrFail("info panel options fall back when storage holds out-of-range values",
+        infoPanelOpacity(storage.data()) == DEFAULT_INFO_PANEL_OPACITY &&
+        infoHistogramEnabled(storage.data()) == DEFAULT_INFO_HISTOGRAM);
+
+    // 版本 1 的设置文件升级到 2：只补新字段，用户改过的既有配置必须保留
+    std::array<uint32_t, 1024> upgraded{};
+    reset(upgraded.data(), upgraded.size());
+    setOpenMode(upgraded.data(), OpenMode::FitImage);
+    setDoubleClickAction(upgraded.data(), DoubleClickAction::None);
+    setEdgeArrowsEnabled(upgraded.data(), true);
+    upgraded[VERSION_INDEX] = 1u;
+    upgraded[INFO_PANEL_OPACITY_INDEX] = 0u;   // 版本 1 里这两格是空的
+    upgraded[INFO_HISTOGRAM_INDEX] = 0u;
+    initialize(upgraded.data(), upgraded.size());
+    passOrFail("info panel options are seeded incrementally without wiping older settings",
+        upgraded[VERSION_INDEX] == STORAGE_VERSION &&
+        infoPanelOpacity(upgraded.data()) == DEFAULT_INFO_PANEL_OPACITY &&
+        infoHistogramEnabled(upgraded.data()) == DEFAULT_INFO_HISTOGRAM &&
+        openMode(upgraded.data()) == OpenMode::FitImage &&
+        doubleClickAction(upgraded.data()) == DoubleClickAction::None &&
+        edgeArrowsEnabled(upgraded.data()));
+}
+
 void expectLoadingBadge() {
     // 估不出耗时（尺寸没查到）：只出文字，不能凭空编个数字
     passOrFail("loading badge omits the countdown when no estimate is available",
@@ -1073,7 +1397,7 @@ void expectSettingLayout() {
     }
     // 必须与 SettingCommand::resolve 里的 optionCounts 逐项一致，否则命中判定会用错
     // 分段宽度。数量与 GENERAL_RADIOS 对齐由下面的静态断言兜住。
-    constexpr std::array<int, 8> radioOptions{ 3, 3, 2, 2, 3, 3, 2, 2 };
+    constexpr std::array<int, 10> radioOptions{ 3, 3, 2, 2, 3, 3, 2, 2, 2, 4 };
     static_assert(radioOptions.size() == SettingLayout::GENERAL_RADIOS.size());
     for (int rowIndex = 0; rowIndex < static_cast<int>(SettingLayout::GENERAL_RADIOS.size()); ++rowIndex) {
         const auto row = SettingLayout::GENERAL_RADIOS[rowIndex];
@@ -1575,6 +1899,12 @@ int main(int argc, char* argv[]) {
     expectZoomPolicy();
     expectZoomEditPolicy();
     expectSlideshowPolicy();
+    expectJpegQuality();
+    expectColorSpaceName();
+    expectImageHistogram();
+    expectHistogramFromPixels();
+    expectInfoPanelFields();
+    expectInfoPanelOpacity();
     expectLoadingBadge();
     expectDecodeEstimate();
     expectImageViewTransform();

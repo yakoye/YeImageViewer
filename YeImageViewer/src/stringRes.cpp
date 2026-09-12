@@ -80,6 +80,12 @@ std::string_view UIStringTable[STRING_MAX_NUM][2] = {
     {"未放大时移动窗口", "Move Window"},   // 70
     {"正在加载", "Loading"},
     {"原图加载中", "Loading full image"},
+    {"信息面板直方图", "Info Histogram"},
+    {"信息面板透明度", "Info Opacity"},
+    {"最透", "Light"},
+    {"较透", "Medium"},
+    {"默认", "Strong"},
+    {"不透明", "Opaque"},
 };
 
 

@@ -238,7 +238,15 @@ inline int clampScrollOffset(int contentHeight, int viewportHeight, int offset) 
     return std::clamp(offset, 0, std::max(0, contentHeight - viewportHeight));
 }
 
-inline Model build(std::string_view raw, bool chinese, std::string_view colorMode = {}) {
+// colorSpace / qualityFactor 借鉴 QuickView 的信息展示：
+//   colorSpace    由 ICC 配置文件或 EXIF 解出的可读名（见 ColorSpaceName.h），
+//                 优先于下面 preferred 里那条从 EXIF 直读的「色彩空间」——
+//                 EXIF 只有 1/2/65535 三种取值，相机导出 Adobe RGB 时普遍写 65535，
+//                 直读会显示成「未校准」，等于没说。
+//   qualityFactor JPEG 量化表反推的质量因子（见 JpegQuality.h），0 表示估不出来。
+//                 标注「约」是因为只对按 libjpeg 缩放写表的文件准确。
+inline Model build(std::string_view raw, bool chinese, std::string_view colorMode = {},
+    std::string_view colorSpace = {}, int qualityFactor = 0) {
     const auto rows = parseRows(raw);
     Model model;
 
@@ -258,6 +266,12 @@ inline Model build(std::string_view raw, bool chinese, std::string_view colorMod
         model.basic.push_back({ chinese ? "分辨率" : "Dimensions", compactResolution(resolution) });
     if (!colorMode.empty())
         model.basic.push_back({ chinese ? "色彩" : "Color", std::string(colorMode) });
+    if (!colorSpace.empty())
+        model.basic.push_back({ chinese ? "色彩空间" : "Color space", std::string(colorSpace) });
+    if (qualityFactor > 0) {
+        model.basic.push_back({ chinese ? "质量因子" : "Quality",
+            (chinese ? "约 " : "~") + std::to_string(qualityFactor) });
+    }
 
     struct PreferredField {
         const char* zhLabel;
@@ -285,15 +299,23 @@ inline Model build(std::string_view raw, bool chinese, std::string_view colorMod
         const std::string value = findValue(rows, field.aliases);
         if (value.empty())
             continue;
-        model.details.push_back({ chinese ? field.zhLabel : field.enLabel, value });
+        const std::string label = chinese ? field.zhLabel : field.enLabel;
+        // 已经在 basic 里给出解析好的色彩空间时，不要再把 EXIF 原始值（1/65535 这种）
+        // 重复列一遍——同一个标签出现两次、其中一个还是看不懂的数字，只会让人犯疑。
+        if (!colorSpace.empty() && (label == "色彩空间" || label == "Color space"))
+            continue;
+        model.details.push_back({ label, value });
     }
     return model;
 }
 
 inline std::vector<Row> compactRows(const Model& model, bool chinese) {
-    const std::array<std::string_view, 5> labels = chinese ?
-        std::array<std::string_view, 5>{ "格式", "文件大小", "分辨率", "色彩", "文件名" } :
-        std::array<std::string_view, 5>{ "Format", "Size", "Dimensions", "Color", "Name" };
+    // 色彩空间和质量因子都很短，紧凑面板也放得下，一眼能看到才有意义
+    const std::array<std::string_view, 7> labels = chinese ?
+        std::array<std::string_view, 7>{ "格式", "文件大小", "分辨率", "色彩",
+            "色彩空间", "质量因子", "文件名" } :
+        std::array<std::string_view, 7>{ "Format", "Size", "Dimensions", "Color",
+            "Color space", "Quality", "Name" };
     std::vector<Row> result;
     for (const auto label : labels) {
         const auto found = std::ranges::find_if(model.basic, [label](const Row& row) {
