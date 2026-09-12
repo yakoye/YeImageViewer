@@ -247,6 +247,28 @@ foreach ($case in $cases) {
                             $failures += "通道数期望 $([int]$case.expected.channels)，实际 $($probe.Channels)"
                         }
                     }
+                    # 多页 / 动画：帧数不足说明只解出了第一页
+                    if ($case.expected.PSObject.Properties['minimumFrames']) {
+                        $wanted = [int]$case.expected.minimumFrames
+                        if ($probe.Frames -lt $wanted) {
+                            $failures += "帧数期望至少 $wanted，实际 $($probe.Frames)"
+                        }
+                        else { $details += "frames=$($probe.Frames)" }
+                    }
+
+                    # 不透明的素材必须解出不透明。没有这一条就抓不到
+                    # 「整层 alpha 被归零、图变成全透明」——图在界面上完全看不见。
+                    if ($case.expected.PSObject.Properties['minMinAlpha']) {
+                        $floor = [int]$case.expected.minMinAlpha
+                        if ($null -eq $probe.MinAlpha) {
+                            $failures += '程序未输出 alpha 信息：请用当前版本重新构建 YeImageViewer.exe'
+                        }
+                        elseif ($probe.MinAlpha -lt $floor) {
+                            $failures += ("素材不透明，解码后最小 alpha 却是 $($probe.MinAlpha)" +
+                                "（下限 $floor）：透明通道被错误归零，图会显示为全透明")
+                        }
+                    }
+
                     if ($case.expected.PSObject.Properties['maxMinAlpha']) {
                         $bound = [int]$case.expected.maxMinAlpha
                         if ($null -eq $probe.MinAlpha) {

@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | `00-reference/` | 人工视觉参考图 | 能解码，尺寸与生成时一致 |
 | `01-modern-formats/` | AVIF / JXL / WebP / QOI / JP2 的 Smoke、Alpha、奇数尺寸、位深与编码变体 | 能解码，尺寸精确匹配；带透明的素材还要求 alpha 通道没被丢掉 |
+| `02-professional/` | EXR / Radiance HDR / PFM / TIFF / PSD / ICO 的压缩、位深、透明、多页变体 | 同上；另外不透明的素材必须解出不透明 |
 | `12-exif/` | EXIF Orientation 1～8、无 EXIF、超大 EXIF | 八个方向解出的尺寸都应是基准的 600×400 |
 | `13-dimensions/` | 尺寸边界：1×1、1×10000、19200×200、8191×8193 等 | 能解码，尺寸精确匹配 |
 | `14-corrupt/` | 空文件、随机字节、截断、坏 CRC、伪造巨大尺寸头 | 允许解码失败，但绝不允许崩溃、卡死、界面冻结 |
@@ -34,6 +35,7 @@ ImageMagick。
 # 执行
 .\tools\image-test-runner\run-tests.ps1 -Suite core
 .\tools\image-test-runner\run-tests.ps1 -Suite modern
+.\tools\image-test-runner\run-tests.ps1 -Suite pro
 .\tools\image-test-runner\run-tests.ps1 -Suite corrupt
 .\tools\image-test-runner\run-tests.ps1 -All
 ```
@@ -133,6 +135,74 @@ ImageMagick 7.1.2 的 HEIC 是只读的（`r--`），请它写 `.heic` **不报�
 
 断言做过红灯验证：把不透明的 `webp_smoke.webp` 硬标上透明预期，通道数与 alpha 两条断言
 都触发，退出码非 0。
+
+## HDR 与专业格式（测试规格 Phase 4）
+
+`02-professional/` 共 17 个用例：
+
+| 格式 | 变体 | 为什么值得单列 |
+|---|---|---|
+| EXR | color、alpha | |
+| Radiance HDR | radiance | |
+| PFM | color（魔数 `PF`）、gray（魔数 `Pf`） | 两种魔数走不同的解析分支 |
+| TIFF | lzw、deflate、uncompressed、16bit、alpha、multipage | 三种压缩各走不同的 libtiff 路径；多页按动图处理 |
+| PSD | 8bit、16bit、alpha | |
+| ICO | multisize、single、alpha | |
+
+### 当前有一个真实缺陷在阻断发布
+
+`psd_16bit.psd` 是 **FAIL**，这不是夹具问题，也不要把它改成 PASS：
+
+```text
+16 位 PSD 带透明通道时，alpha 整层解码为 0，图在界面上完全不可见。
+```
+
+证据链（都可复现）：
+
+```text
+同一张 alpha 均值 0.5 的源图，导出三种位深的 PSD：
+  8 位   ImageMagick 读 alpha 均值 0.5   程序解出 meanAlpha 128  ✓
+  16 位  ImageMagick 读 alpha 均值 0.5   程序解出 meanAlpha   0  ✗
+不透明源图同样如此：8 位得 255/255，16 位得 0/0（整层全零，不是个别像素）。
+把 16 位 PSD 叠到红底上，红色不透出来 —— 独立证实文件里的 alpha 是不透明的。
+16 位 TIFF 正常（255/255），所以不是通用的 16 位问题。
+连测 4 次结果一致，不是未初始化内存。
+3 通道的 PSD（无透明通道）不受影响：那条分支直接填 alphaMax。
+```
+
+定位：`loadPSD` 对 4 通道 PSD 走 `isRgb = false` 分支，把 `imageData->images[3]` 当 alpha
+读。8 位那条能读到正确数据，16 位读到的恒为零。`psd_sdk` 在本仓库只有头文件，实现是
+预编译的 `Psd_MT.lib`，根因在库内，无法就地修改。
+
+未确认的部分：手上只有 ImageMagick 写出的 16 位 PSD，**没有 Photoshop 原生文件**，
+所以尚不能断定真实相机/设计稿工作流产出的 16 位 PSD 是否同样受影响。补一个原生样本
+是确认影响面的第一步。
+
+可选的兜底（尚未实施，会改变渲染行为，需先定夺）：检测 alpha 整层为零时视为不透明。
+这能让不透明的 16 位 PSD 恢复可见，代价是真正带透明的 16 位 PSD 会丢掉透明度。
+
+### 这一类踩过的三个坑，都已由脚本挡住
+
+**一、源图是黑白渐变时，EXR / PFM 会被静默存成灰度**，「彩色」变体是假的。现在 HDR
+源图用彩色渐变，PFM 另外核对魔数 `PF`（彩色）与 `Pf`（灰度）确实不同。
+
+**二、Q16 构建下不写 `-depth`，TIFF / PSD 一律存成 16 位**，于是「8 位」和「16 位」两个
+变体逐字节相同，测试拿同一份数据跑两遍，看着覆盖变多、实际什么也没多测。现在每个变体
+都显式指定位深，并由 `Assert-DistinctVariants` 兜底：同目录下出现内容完全相同的素材就报错。
+
+**三、编码器不支持时静默降级。** 请 ImageMagick 写 32 位 PSD，它写出的是 16 位，与 16 位
+变体逐字节相同；`icon:auto-resize` 给小于 16 的尺寸会写出 **0 字节**文件。后者一度让人以为
+「程序打不开含 8×8 的 ICO」，实际是空文件，程序报错完全正确。因此这里没有 32 位 PSD 变体。
+
+### 多尺寸 ICO：程序把各尺寸横向拼成一条
+
+本程序显示多尺寸 ICO 时，把各尺寸并排拼成一张图：**宽 = 各尺寸之和，高 = 最大尺寸**。
+`identify` 读的是首帧，两者对不上，所以预期写在 `manifest.overrides.json` 里。拼条规律用
+16、16+32、32+64、16+32+48+64 四组独立验证过。拼条里小图标上下有留白，留白是透明的，
+所以 `ico_multisize.ico` 的最小 alpha 必须贴近 0——若变成不透明，说明留白被填成了实色。
+
+同理多页 TIFF：程序按动图处理，3 页即 3 帧，而 `identify` 对 `[0]` 只报 1 帧，帧数期望也在
+overrides 里。
 
 ## 一条教训：先证明素材是对的
 

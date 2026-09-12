@@ -4581,14 +4581,64 @@ static int runDecodeProbe(const std::wstring& imagePath, const std::wstring& res
     // minAlpha 取解码结果里最小的 alpha 值；无 alpha 通道时记 255。
     const int channels = decodedFrame ? decodedFrame->channels() : 0;
     int minAlpha = 255;
+    int meanAlpha = 255;
     if (decodedFrame && channels == 4) {
         cv::Mat planes[4];
         cv::split(*decodedFrame, planes);
-        double lowest = 255.0;
+        double lowest = 0.0;
         cv::minMaxLoc(planes[3], &lowest, nullptr);
-        // 16 位素材的 alpha 满量程是 65535，换算到 0~255 再比较
-        const double fullScale = decodedFrame->elemSize1() == 1 ? 255.0 : 65535.0;
-        minAlpha = static_cast<int>(std::lround(lowest / fullScale * 255.0));
+
+        // 满量程必须按 Mat 的实际深度取，不能按字节宽度猜：
+        // 浮点图的 alpha 是 0~1，按 65535 归一化会把「完全不透明」算成 0，
+        // 于是不透明的 32 位 PSD / EXR 会被误报成全透明。
+        double fullScale = 255.0;
+        switch (decodedFrame->depth()) {
+        case CV_8U:  case CV_8S:  fullScale = 255.0;   break;
+        case CV_16U: case CV_16S: fullScale = 65535.0; break;
+        case CV_32S:              fullScale = 2147483647.0; break;
+        case CV_32F: case CV_64F: fullScale = 1.0;     break;
+        default:                  fullScale = 255.0;   break;
+        }
+        minAlpha = static_cast<int>(std::lround(
+            std::clamp(lowest / fullScale, 0.0, 1.0) * 255.0));
+        // 平均值用来区分「整层 alpha 都错了」和「只有少数像素偏低」，
+        // 只看最小值分不出这两种情况，而它们的严重程度差很远。
+        meanAlpha = static_cast<int>(std::lround(
+            std::clamp(cv::mean(planes[3])[0] / fullScale, 0.0, 1.0) * 255.0));
+    }
+
+    // 各通道均值：alpha 出问题时要能立刻分清「只有 alpha 错」还是「整张图都错」，
+    // 这两种情况的修法完全不同。
+    int meanB = 0, meanG = 0, meanR = 0;
+    if (decodedFrame && !decodedFrame->empty() && channels >= 3) {
+        double fullScale = 255.0;
+        switch (decodedFrame->depth()) {
+        case CV_16U: case CV_16S: fullScale = 65535.0; break;
+        case CV_32F: case CV_64F: fullScale = 1.0;     break;
+        default: break;
+        }
+        const auto means = cv::mean(*decodedFrame);
+        const auto scale = [fullScale](double value) {
+            return static_cast<int>(std::lround(std::clamp(value / fullScale, 0.0, 1.0) * 255.0));
+        };
+        meanB = scale(means[0]);
+        meanG = scale(means[1]);
+        meanR = scale(means[2]);
+    }
+
+    // Mat 深度也报出来：alpha 归一化依赖它，出问题时不至于只能靠猜
+    const char* depthName = "?";
+    if (decodedFrame) {
+        switch (decodedFrame->depth()) {
+        case CV_8U:  depthName = "8U";  break;
+        case CV_8S:  depthName = "8S";  break;
+        case CV_16U: depthName = "16U"; break;
+        case CV_16S: depthName = "16S"; break;
+        case CV_32S: depthName = "32S"; break;
+        case CV_32F: depthName = "32F"; break;
+        case CV_64F: depthName = "64F"; break;
+        default: break;
+        }
     }
 
     result << (success ? "OK" : "ERROR") << '\t'
@@ -4597,7 +4647,10 @@ static int runDecodeProbe(const std::wstring& imagePath, const std::wstring& res
         << asset.frames.size() << '\t'
         << format << '\t'
         << channels << '\t'
-        << minAlpha << '\n';
+        << minAlpha << '\t'
+        << depthName << '\t'
+        << meanAlpha << '\t'
+        << meanB << ',' << meanG << ',' << meanR << '\n';
     return success ? 0 : 2;
 }
 

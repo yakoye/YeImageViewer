@@ -1,0 +1,34 @@
+{
+  "note": "人工维护的预期。这里只放「无法从素材自动推导」的条目——identify 读到的和程序实际显示的不是一回事时，自动推导必然错。重新生成 manifest 时这些会被合并进去，不会丢。",
+  "cases": [
+    {
+      "id": "02-professional-ico_multisize-ico",
+      "comment": "多尺寸 ICO：本程序把各尺寸横向拼成一条显示，宽 = 各尺寸之和、高 = 最大尺寸。素材含 16/32/48/64，因此是 160x64。identify 读的是首帧（16x16），自动推导会得到错的期望。拼条规律已用 16、16+32、32+64、16+32+48+64 四组独立验证。拼条里小图标上下有留白，留白是透明的，所以最小 alpha 必须贴近 0——若变成不透明，说明留白被填成了实色。",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 64,
+        "channels": 4,
+        "maxMinAlpha": 16,
+        "sourceMinAlpha": 0
+      },
+      "severity": "release-blocker"
+    },
+    {
+      "id": "02-professional-tiff_multipage-tif",
+      "comment": "多页 TIFF：程序按动图处理，3 页即 3 帧。identify 对 [0] 只报 1 帧，所以帧数期望必须写在这里。",
+      "expected": {
+        "open": true,
+        "crash": false,
+        "hang": false,
+        "width": 160,
+        "height": 80,
+        "minimumFrames": 3,
+        "minMinAlpha": 250
+      },
+      "severity": "release-blocker"
+    }
+  ]
+}
