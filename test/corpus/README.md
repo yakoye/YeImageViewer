@@ -269,6 +269,69 @@ runner 开测前先比对文件的 SHA-256 与 manifest 登记值，不符则记
 不是「测过了没问题」，放它过去 CI 就会带着一批根本没测到的用例放行。
 急着调试时可以 `-SkipHashCheck` 跳过，常规运行不要加。
 
+## 性能压测（测试规格 Phase 6）
+
+```powershell
+.\tools\image-test-runner\run-performance.ps1 -Count 100
+.\tools\image-test-runner\run-performance.ps1 -Count 100,1000,10000 -Switches 200
+```
+
+素材由脚本生成到 `test/corpus/_local/06-performance/`（`.gitignore` 已挡）。10000 张即使
+每张只有十几 KB 也不该进仓库。首次生成后复用。
+
+采集的指标（都不依赖读屏幕，锁屏也能跑）：
+
+| 指标 | 口径 |
+|---|---|
+| 启动时间 | 进程启动 → 顶层窗口出现 |
+| 首次可交互 | 进程启动 → 窗口能在限定时间内回应 `WM_NULL`，说明 DrawScene 已跑起来 |
+| 扫描时间 | 启动时间随图片数增长的部分（打开图片时要扫目录建列表），按相邻档位的增量估 |
+| 切换延迟 | 连发翻页键，每次紧跟一次 `SendMessageTimeout` 探主线程被堵多久（中位/P95/最大） |
+| 资源 | WorkingSet、私有内存、句柄数、GDI 对象、USER 对象、CPU 时间 |
+
+**资源在切换前后各取一次**，专为查泄漏：句柄或 GDI 对象翻倍以上直接判 FAIL。
+翻页期间出现主线程无响应同样判 FAIL。
+
+结果写到 `artifacts/test-report/performance.csv`，逐版本对比才有意义——绝对值随机器变化，
+所以脚本只卡「明显坏掉」的情形，不设固定的耗时阈值。
+
+压测期间不要操作机器：CPU 和内存会被前台程序干扰。
+
+素材生成的两个坑：逐张调 `magick` 的话，10000 次进程启动光开销就要十几分钟；
+把 10000 张塞进一次调用则会超过 Windows 32KB 的命令行上限，`magick` 报「文件名或扩展名
+太长」。现在先生成 32 张不同色调的基图，再复制成 N 个文件名。基图放在各档位目录**之外**，
+否则会被程序当成待浏览的图片扫进列表，图片数就跟档位名对不上了。
+
+## 发布闸门（测试规格 Phase 7）
+
+一条命令跑完全部测试：
+
+```powershell
+.\run-release-tests.ps1                    # 全量
+.\run-release-tests.ps1 -SkipBuild         # 复用已有构建
+.\run-release-tests.ps1 -SkipPerformance   # 跳过压测，适合提交前自检
+```
+
+六个环节，全部标为阻断发布：
+
+1. Release 构建
+2. `runTests.ps1`：单元测试 + 窗口行为 + 格式语料
+3. 图片语料全套 `run-tests.ps1 -All`
+4. 大图渐进加载探针
+5. 翻页响应性探针
+6. 性能压测
+
+产出在 `artifacts/release-gate/`：`summary.md` 给人看，`results.json` 给机器读
+（含语料的逐用例数据），`performance.csv` 是各档位的性能与资源数据，
+`stages/*.log` 是每个环节的完整输出。存在阻断失败时退出码非 0。
+
+两条刻意的设计：
+
+- **单个环节失败不中断后续环节**，最后统一判定。一次跑完能看到全部问题，
+  不用修一个再跑一遍才发现下一个。
+- **跳过的环节在报告里单独列出，并明写「不代表它们通过」**。
+  `-SkipPerformance` 之后报告仍可能是 PASS，必须让人看清哪些没跑。
+
 ## 一条教训：先证明素材是对的
 
 `12-exif/` 最初用 ImageMagick 的 `-orient` 生成，测出 Orientation 5～8 失败，一度被当成
