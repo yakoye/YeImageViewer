@@ -38,12 +38,28 @@ Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public class LoadProbe {
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr h, int index, StringBuilder buf, int length, out int needed);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+
+    // 锁屏或 UAC 安全桌面显示时，输入桌面是 Winlogon，普通进程打不开；
+    // 只有能打开且名字是 Default 时，屏幕上显示的才是用户桌面。
+    public static string InputDesktopName() {
+        IntPtr h = OpenInputDesktop(0, false, 0x0001);
+        if (h == IntPtr.Zero) return "";
+        var name = new StringBuilder(256);
+        int needed;
+        GetUserObjectInformation(h, 2, name, name.Capacity * 2, out needed);
+        CloseDesktop(h);
+        return name.ToString();
+    }
 }
 "@
 
@@ -61,7 +77,9 @@ foreach ($p in @($Exe, $Image)) {
 
 # 本测试靠读屏幕像素判定。锁屏时 CopyFromScreen 抓到的是锁屏界面，
 # 指标全是噪声——那时报 FAIL 与被测行为无关，只会掩盖真实回归。
-if (Get-Process LogonUI -ErrorAction SilentlyContinue) {
+# 判定看输入桌面而不是 LogonUI 进程：有的机器解锁后 LogonUI.exe 仍常驻，
+# 按进程判会把已解锁误报成锁定，这条阻断项就永远跑不起来。
+if ([LoadProbe]::InputDesktopName() -ne "Default") {
     Write-Output "SKIPPED 屏幕已锁定，无法读取窗口像素"
     exit $EXIT_SKIPPED
 }
