@@ -992,7 +992,25 @@ finally {
         (Join-Path $freshDirectory "YeImageViewer.rotations.db.tmp")
     )) {
         if (Test-Path -LiteralPath $freshFile) {
-            Remove-Item -LiteralPath $freshFile -Force
+            # 进程刚退出时，它的 exe 可能还被杀毒扫描或程序兼容性助手短暂占用，
+            # 删除会报拒绝访问。稍候重试，而不是让清理失败把后面的窗口回归整段中断。
+            $removeWatch = [Diagnostics.Stopwatch]::StartNew()
+            while ($true) {
+                try {
+                    Remove-Item -LiteralPath $freshFile -Force -ErrorAction Stop
+                    break
+                }
+                catch {
+                    if ($removeWatch.Elapsed.TotalSeconds -ge 10) {
+                        throw
+                    }
+                    Start-Sleep -Milliseconds 250
+                }
+            }
+            if ($removeWatch.Elapsed.TotalMilliseconds -ge 250) {
+                Write-Host ("NOTE {0} was locked after exit; removed after {1:N0} ms." -f
+                    (Split-Path -Leaf $freshFile), $removeWatch.Elapsed.TotalMilliseconds)
+            }
         }
     }
     if (Test-Path -LiteralPath $freshDirectory) {
