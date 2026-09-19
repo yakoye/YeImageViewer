@@ -34,6 +34,10 @@ public:
     void putWrappedLeft(cv::Mat& img, cv::Rect rect, const char* str, intUnion color,
         bool isAdaptiveFG = false, bool enhanceGlyphCoverage = true);
 
+    // 用与绘制相同的字体（含中文字体回退）量出单行文字的像素宽度。排版时据此留足空间，
+    // 不必按字符猜宽度——猜窄了 putAlignCenter 会把文字截成省略号。
+    int measureWidth(const char* str) const;
+
 private:
     bool hasInit = false;
     float scale = 0;

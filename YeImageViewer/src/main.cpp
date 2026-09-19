@@ -4129,8 +4129,16 @@ public:
 
         const int dpi = overlayDpi();
         const char* label = getUIString(82);
+        textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
+            TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
+        // 按实际字形量出文字宽度（物理像素），换回逻辑像素交给布局；量不出来才按字符估算。
+        // 多留 2 个逻辑像素：换算舍入后若刚好差一点，DrawText 会把文字截成省略号。
+        const int measuredWidth = textDrawer.measureWidth(label);
+        const int labelWidth = measuredWidth > 0 ?
+            MulDiv(measuredWidth, USER_DEFAULT_SCREEN_DPI, dpi) + 2 :
+            LivePhotoBadge::logicalTextWidth(jarkUtils::utf8ToWstring(label));
         const auto rect = LivePhotoBadge::place(currentImageRectOnCanvas(canvas), canvas.cols, canvas.rows,
-            dpi, LivePhotoBadge::logicalTextWidth(jarkUtils::utf8ToWstring(label)));
+            dpi, labelWidth);
         if (rect.empty())
             return;
         liveBadgeRect = rect;
@@ -4160,8 +4168,6 @@ public:
                 fixed(0.75 * unit), white, cv::FILLED, cv::LINE_AA, SHIFT);
         }
 
-        textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
-            TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
         const int textX = rect.x + LivePhotoBadge::scaled(LivePhotoBadge::LOGICAL_PADDING_LEFT +
             LivePhotoBadge::LOGICAL_ICON_SIZE + LivePhotoBadge::LOGICAL_GAP, dpi);
         const int textRight = rect.x + rect.width - LivePhotoBadge::scaled(LivePhotoBadge::LOGICAL_PADDING_RIGHT, dpi);
