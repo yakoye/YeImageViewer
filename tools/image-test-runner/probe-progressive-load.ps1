@@ -84,6 +84,20 @@ if ([LoadProbe]::InputDesktopName() -ne "Default") {
     exit $EXIT_SKIPPED
 }
 
+# 远程桌面客户端最小化或断开时，输入桌面仍是 Default，但屏幕根本抓不下来
+# （CopyFromScreen 报句柄无效）。同样与被测行为无关，记为未执行而不是失败。
+try {
+    $trialBitmap = New-Object System.Drawing.Bitmap 1, 1
+    $trialGraphics = [System.Drawing.Graphics]::FromImage($trialBitmap)
+    $trialGraphics.CopyFromScreen(0, 0, 0, 0, (New-Object System.Drawing.Size 1, 1))
+    $trialGraphics.Dispose()
+    $trialBitmap.Dispose()
+}
+catch {
+    Write-Output "SKIPPED 无法读取屏幕像素（远程桌面最小化或已断开）"
+    exit $EXIT_SKIPPED
+}
+
 function Measure-Frame($bmp) {
     $w = $bmp.Width; $h = $bmp.Height
     $data = $bmp.LockBits(
