@@ -13,6 +13,9 @@
 #include "PresentationLayout.h"
 #include "OverlayLayout.h"
 #include "LoadingBadge.h"
+#include "LivePhotoBadge.h"
+#include "MotionTiming.h"
+#include "AudioClip.h"
 #include "JpegQuality.h"
 #include "ColorSpaceName.h"
 #include "ImageHistogram.h"
@@ -878,6 +881,144 @@ void expectInfoPanelOpacity() {
         edgeArrowsEnabled(upgraded.data()));
 }
 
+void expectLivePhotoOptions() {
+    using namespace ViewerOptions;
+    std::array<uint32_t, 1024> storage{};
+    reset(storage.data(), storage.size());
+    passOrFail("live photo autoplay is muted by default, matching macOS Photos",
+        !livePhotoAutoSound(storage.data()) && !DEFAULT_LIVE_PHOTO_SOUND);
+
+    setLivePhotoAutoSound(storage.data(), true);
+    passOrFail("live photo autoplay sound round-trips through storage",
+        livePhotoAutoSound(storage.data()));
+
+    storage[LIVE_PHOTO_SOUND_INDEX] = 5u;
+    initialize(storage.data(), storage.size());
+    passOrFail("live photo autoplay sound falls back when storage holds an out-of-range value",
+        livePhotoAutoSound(storage.data()) == DEFAULT_LIVE_PHOTO_SOUND);
+
+    // 版本 2 升级到 3：只补新字段。这一格故意放个 1，证明迁移确实写了默认值，
+    // 而不是碰巧原本就是 0。用户改过的既有配置必须原样保留。
+    std::array<uint32_t, 1024> upgraded{};
+    reset(upgraded.data(), upgraded.size());
+    setOpenMode(upgraded.data(), OpenMode::FitImage);
+    setInfoPanelOpacity(upgraded.data(), InfoPanelOpacity::Light);
+    setInfoHistogramEnabled(upgraded.data(), false);
+    upgraded[VERSION_INDEX] = 2u;
+    upgraded[LIVE_PHOTO_SOUND_INDEX] = 1u;
+    initialize(upgraded.data(), upgraded.size());
+    passOrFail("live photo sound is seeded incrementally without wiping version 2 settings",
+        upgraded[VERSION_INDEX] == STORAGE_VERSION && STORAGE_VERSION == 3u &&
+        livePhotoAutoSound(upgraded.data()) == DEFAULT_LIVE_PHOTO_SOUND &&
+        openMode(upgraded.data()) == OpenMode::FitImage &&
+        infoPanelOpacity(upgraded.data()) == InfoPanelOpacity::Light &&
+        !infoHistogramEnabled(upgraded.data()));
+
+    // 已经是版本 3 的文件：用户打开的声音不能被迁移逻辑冲掉
+    std::array<uint32_t, 1024> current{};
+    reset(current.data(), current.size());
+    setLivePhotoAutoSound(current.data(), true);
+    initialize(current.data(), current.size());
+    passOrFail("a version 3 settings file keeps the user's live photo sound choice",
+        livePhotoAutoSound(current.data()));
+}
+
+void expectMotionTiming() {
+    using namespace MotionTiming;
+    passOrFail("frame duration follows the stream frame rate",
+        frameMsFromRate(30, 1) == 33 && frameMsFromRate(60, 1) == 17 &&
+        frameMsFromRate(30000, 1001) == 33 && frameMsFromRate(24, 1) == 42 &&
+        frameMsFromRate(0, 0) == FALLBACK_FRAME_MS && frameMsFromRate(30, 0) == FALLBACK_FRAME_MS);
+
+    passOrFail("30 fps timestamps give per-frame durations that add up to real time",
+        durationsFromTimestamps({ 0, 33, 67, 100 }, 33) == std::vector<int>{ 33, 34, 33, 33 });
+    passOrFail("60 fps clips are timed at 60 fps instead of the old fixed 33 ms",
+        durationsFromTimestamps({ 0, 17, 33, 50 }, 33) == std::vector<int>{ 17, 16, 17, 17 });
+    passOrFail("missing timestamps fall back to the stream frame duration",
+        durationsFromTimestamps({ 0, NO_TIMESTAMP, 67, 100 }, 33) == std::vector<int>{ 33, 33, 33, 33 });
+    passOrFail("backwards or huge timestamp jumps are not trusted",
+        durationsFromTimestamps({ 0, 33, 20, 53 }, 30) == std::vector<int>{ 33, 30, 33, 33 } &&
+        durationsFromTimestamps({ 0, 5000 }, 40) == std::vector<int>{ 40, 40 });
+    passOrFail("degenerate timestamp lists stay well formed",
+        durationsFromTimestamps({}, 33).empty() &&
+        durationsFromTimestamps({ 7 }, 25) == std::vector<int>{ 25 });
+
+    const std::vector<int> durations{ 33, 34, 33 };
+    passOrFail("frame start times accumulate along the timeline",
+        frameStartMs(durations, 0) == 0 && frameStartMs(durations, 1) == 33 &&
+        frameStartMs(durations, 2) == 67 && frameStartMs(durations, 3) == 100 &&
+        totalMs(durations) == 100);
+    passOrFail("the timeline picks the frame covering the elapsed time",
+        frameIndexAt(durations, -5) == 0 && frameIndexAt(durations, 0) == 0 &&
+        frameIndexAt(durations, 32) == 0 && frameIndexAt(durations, 33) == 1 &&
+        frameIndexAt(durations, 66) == 1 && frameIndexAt(durations, 67) == 2 &&
+        frameIndexAt(durations, 99) == 2);
+    passOrFail("the timeline reports the end once all frames have been shown",
+        frameIndexAt(durations, 100) == -1 && frameIndexAt({}, 0) == -1);
+
+    // 1 kHz 单声道：一个采样正好 1 ms，偏移量一眼看得出来
+    const std::vector<int16_t> ramp{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    auto late = ramp;
+    alignAudio(late, 1000, 1, 3, 100);
+    passOrFail("audio that starts after the first frame is padded with silence",
+        late.size() == 13 && late[0] == 0 && late[2] == 0 && late[3] == 1 && late[12] == 10);
+    auto early = ramp;
+    alignAudio(early, 1000, 1, -3, 100);
+    passOrFail("audio that starts before the first frame has its head trimmed",
+        early.size() == 7 && early.front() == 4 && early.back() == 10);
+    auto longer = ramp;
+    alignAudio(longer, 1000, 1, 0, 5);
+    passOrFail("audio stops together with the last frame",
+        longer.size() == 5 && longer.back() == 5);
+    std::vector<int16_t> stereo{ 1, -1, 2, -2, 3, -3, 4, -4 };
+    alignAudio(stereo, 1000, 2, -1, 100);
+    passOrFail("alignment moves whole sample frames so stereo channels stay paired",
+        stereo.size() == 6 && stereo[0] == 2 && stereo[1] == -2);
+    auto afterEnd = ramp;
+    alignAudio(afterEnd, 1000, 1, 100, 100);
+    auto implausible = ramp;
+    alignAudio(implausible, 1000, 1, -(MAX_AUDIO_LEAD_MS + 1), 100);
+    passOrFail("audio that cannot overlap the picture is dropped rather than misplaced",
+        afterEnd.empty() && implausible.empty());
+
+    AudioClip clip;
+    clip.sampleRate = 48000;
+    clip.channels = 2;
+    clip.samples.resize(48000 * 2 * 3);
+    passOrFail("an audio clip reports its length in milliseconds",
+        clip.durationMs() == 3000 && clip.frameCount() == 144000 && !clip.empty() && AudioClip{}.empty());
+}
+
+void expectLivePhotoBadge() {
+    using namespace LivePhotoBadge;
+    passOrFail("the LIVE badge text width follows the loading badge estimate",
+        logicalTextWidth(L"实况") == 28 && logicalTextWidth(L"LIVE") == 28 && logicalWidth(28) == 66);
+
+    const Rect image{ 100, 50, 400, 300 };
+    const Rect placed = place(image, 800, 600, 96, 28);
+    passOrFail("the LIVE badge sits just inside the image's top-left corner",
+        placed.x == 112 && placed.y == 62 && placed.width == 66 && placed.height == 24);
+
+    const Rect zoomed = place({ -500, -300, 2000, 1500 }, 800, 600, 96, 28);
+    passOrFail("a zoomed-in image keeps the badge at the window's top-left",
+        zoomed.x == 12 && zoomed.y == 12);
+
+    const Rect offRight = place({ 790, 590, 400, 300 }, 800, 600, 96, 28);
+    passOrFail("the badge is kept inside the window when the image is panned away",
+        offRight.x == 800 - 66 - 12 && offRight.y == 600 - 24 - 12);
+
+    const Rect hiDpi = place(image, 1600, 1200, 192, 28);
+    passOrFail("the badge scales with DPI",
+        hiDpi.width == 132 && hiDpi.height == 48 && hiDpi.x == 124 && hiDpi.y == 74);
+
+    passOrFail("a window too small for the badge draws and hits nothing",
+        place(image, 60, 40, 96, 28).empty() && !place(image, 60, 40, 96, 28).contains(0, 0));
+
+    passOrFail("the badge hit area is its own rectangle",
+        placed.contains(112, 62) && placed.contains(177, 85) &&
+        !placed.contains(178, 62) && !placed.contains(112, 86) && !placed.contains(111, 70));
+}
+
 void expectLoadingBadge() {
     // 估不出耗时（尺寸没查到）：只出文字，不能凭空编个数字
     passOrFail("loading badge omits the countdown when no estimate is available",
@@ -1397,7 +1538,7 @@ void expectSettingLayout() {
     }
     // 必须与 SettingCommand::resolve 里的 optionCounts 逐项一致，否则命中判定会用错
     // 分段宽度。数量与 GENERAL_RADIOS 对齐由下面的静态断言兜住。
-    constexpr std::array<int, 10> radioOptions{ 3, 3, 2, 2, 3, 3, 2, 2, 2, 4 };
+    constexpr std::array<int, 11> radioOptions{ 3, 3, 2, 2, 3, 3, 2, 2, 2, 4, 2 };
     static_assert(radioOptions.size() == SettingLayout::GENERAL_RADIOS.size());
     for (int rowIndex = 0; rowIndex < static_cast<int>(SettingLayout::GENERAL_RADIOS.size()); ++rowIndex) {
         const auto row = SettingLayout::GENERAL_RADIOS[rowIndex];
@@ -1920,6 +2061,9 @@ int main(int argc, char* argv[]) {
     expectWindowTitlePresentation();
     expectWheelInput();
     expectShortcutConfig();
+    expectLivePhotoOptions();
+    expectMotionTiming();
+    expectLivePhotoBadge();
     expectExternalEditorConfig();
     expectRotationPersistence();
     expectRenamePolicy();

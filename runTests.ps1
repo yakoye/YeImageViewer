@@ -329,6 +329,93 @@ finally {
 Write-Host "PASS $($formatCases.Count) real format fixtures decode through the production loader."
 Write-Host "PASS format corpus covers every declared static extension except documented LEP."
 
+# 实况照片：谷歌 MicroVideo、苹果 .livp、同名 .mov 配对三种封装走三条不同的加载路径，
+# 都要解出完整画面、按时间戳算出的每帧时长和声音，且声音与画面对齐。素材由
+# scripts/generate-live-photo-fixtures.ps1 生成：t = 1.000 s 那一帧整帧纯白，同一时刻
+# 有一声 1 kHz 响声，其余时间是轻微的 440 Hz 底音。
+$livePhotoRoot = Join-Path $repoRoot "test\live-photo"
+$livePhotoFixtures = @("live-microvideo.jpg", "live-photo.livp", "live-sidecar.jpg")
+$liveProbeDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Live-Probes-" + [Guid]::NewGuid().ToString("N"))
+[void](New-Item -ItemType Directory -Path $liveProbeDirectory)
+try {
+    foreach ($liveFixtureName in $livePhotoFixtures) {
+        $liveFixture = Join-Path $livePhotoRoot $liveFixtureName
+        if (-not (Test-Path -LiteralPath $liveFixture -PathType Leaf)) {
+            throw "Live photo fixture is missing: $liveFixture"
+        }
+        $liveResult = Join-Path $liveProbeDirectory ($liveFixtureName + ".tsv")
+        $liveDump = Join-Path $liveProbeDirectory ($liveFixtureName + ".dump")
+        $liveProbe = Start-Process -FilePath $viewer -ArgumentList @(
+            "--decode-probe", ('"' + $liveFixture + '"'), ('"' + $liveResult + '"'), ('"' + $liveDump + '"')
+        ) -WindowStyle Hidden -Wait -PassThru
+        if ($liveProbe.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $liveResult)) {
+            throw "Live photo regression failed: $liveFixtureName was rejected with exit code $($liveProbe.ExitCode)."
+        }
+
+        # 第 4 列帧数、第 5 列类型；第 11~14 列：实况总时长、采样率、声道数、音频时长。
+        # 90 帧而不是八十几帧：解码器结尾要冲刷，否则多线程解码压住的最后几帧会丢。
+        $liveFields = @((Get-Content -LiteralPath $liveResult -Raw).Trim() -split "`t")
+        if ($liveFields.Count -lt 14 -or $liveFields[0] -ne "OK" -or $liveFields[4] -ne "animated" -or
+            [int]$liveFields[3] -ne 90) {
+            throw "Live photo regression failed: $liveFixtureName decoded as $($liveFields -join '|'), expected 90 animated frames."
+        }
+        $motionMs = [int]$liveFields[10]
+        $audioRate = [int]$liveFields[11]
+        $audioChannels = [int]$liveFields[12]
+        $audioMs = [int]$liveFields[13]
+        if ([Math]::Abs($motionMs - 3000) -gt 5 -or $audioRate -ne 48000 -or $audioChannels -ne 2 -or
+            [Math]::Abs($audioMs - 3000) -gt 5) {
+            throw "Live photo regression failed: $liveFixtureName has motion $motionMs ms, audio $audioRate Hz x $audioChannels, $audioMs ms."
+        }
+
+        # 音画对齐：最亮那一帧的起点，与响声（幅度超过满量程 40%）的起点比较
+        $liveFrames = @(Import-Csv -LiteralPath (Join-Path $liveDump "frames.csv"))
+        $flashFrame = $liveFrames | Sort-Object { [double]$_.meanLuma } -Descending | Select-Object -First 1
+        $flashStartMs = [int]$flashFrame.startMs
+        if ([int]$flashFrame.index -ne 30 -or [Math]::Abs($flashStartMs - 1000) -gt 5) {
+            throw "Live photo regression failed: $liveFixtureName flash frame is #$($flashFrame.index) at $flashStartMs ms, expected #30 at 1000 ms."
+        }
+
+        $wav = [IO.File]::ReadAllBytes((Join-Path $liveDump "audio.wav"))
+        $wavChannels = [BitConverter]::ToUInt16($wav, 22)
+        $wavRate = [BitConverter]::ToUInt32($wav, 24)
+        $chunkOffset = 12
+        $dataOffset = -1
+        $dataLength = 0
+        while ($chunkOffset + 8 -le $wav.Length) {
+            $chunkId = [Text.Encoding]::ASCII.GetString($wav, $chunkOffset, 4)
+            $chunkSize = [BitConverter]::ToUInt32($wav, $chunkOffset + 4)
+            if ($chunkId -eq "data") {
+                $dataOffset = $chunkOffset + 8
+                $dataLength = [Math]::Min([int64]$chunkSize, [int64]($wav.Length - $dataOffset))
+                break
+            }
+            $chunkOffset += 8 + $chunkSize
+        }
+        if ($dataOffset -lt 0) {
+            throw "Live photo regression failed: the audio dump of $liveFixtureName has no data chunk."
+        }
+        $beepThreshold = 0.4 * 32767
+        $frameBytes = 2 * $wavChannels
+        $beepOnsetMs = -1.0
+        for ($sampleOffset = 0; $sampleOffset + 1 -lt $dataLength; $sampleOffset += $frameBytes) {
+            if ([Math]::Abs([BitConverter]::ToInt16($wav, $dataOffset + $sampleOffset)) -gt $beepThreshold) {
+                $beepOnsetMs = ($sampleOffset / $frameBytes) * 1000.0 / $wavRate
+                break
+            }
+        }
+        if ($beepOnsetMs -lt 0 -or [Math]::Abs($beepOnsetMs - $flashStartMs) -gt 15) {
+            throw "Live photo regression failed: $liveFixtureName sound starts at $beepOnsetMs ms but the flash frame at $flashStartMs ms."
+        }
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $liveProbeDirectory) {
+        [IO.Directory]::Delete($liveProbeDirectory, $true)
+    }
+}
+Write-Host "PASS live photos decode every frame with real timing and in-sync sound from .livp, MicroVideo and sidecar packaging."
+
 if (-not ("YeImageViewerTestNativeV1365" -as [type])) {
 Add-Type @"
 using System;

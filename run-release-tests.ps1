@@ -11,7 +11,8 @@
       3. 语料测试 run-tests.ps1 -All                     阻断
       4. 大图渐进加载探针                                 阻断
       5. 翻页响应性探针                                   阻断
-      6. 性能压测 run-performance.ps1                    阻断
+      6. 实况照片声音探针（没有音频设备时记为跳过）          阻断
+      7. 性能压测 run-performance.ps1                    阻断
     产出写到 artifacts/release-gate/：
       summary.md        给人看的总结
       results.json      给机器读的结果（含语料的逐用例数据）
@@ -154,15 +155,19 @@ Invoke-Stage -Name "单元测试 + 窗口行为 + 格式语料（runTests.ps1）
 Invoke-Stage -Name "图片语料全套（run-tests.ps1 -All）" -LogName "03-corpus.log" -Blocking $true `
     -Body { & (Join-Path $repoRoot "tools\image-test-runner\run-tests.ps1") -All -OutputDir $corpusReportDir }
 
-# ---------------------------------------------------------------- 4/5 专项探针
+# ---------------------------------------------------------------- 4~6 专项探针
 Invoke-Stage -Name "大图渐进加载探针" -LogName "04-progressive.log" -Blocking $true `
     -Body { & (Join-Path $repoRoot "tools\image-test-runner\probe-progressive-load.ps1") }
 
 Invoke-Stage -Name "翻页响应性探针" -LogName "05-paging.log" -Blocking $true `
     -Body { & (Join-Path $repoRoot "tools\image-test-runner\probe-paging-responsiveness.ps1") }
 
-# ---------------------------------------------------------------- 6 性能压测
-Invoke-Stage -Name "性能压测" -LogName "06-performance.log" -Blocking $true `
+# 读音频会话电平判定：自动播放默认静音，空格重播与悬停「实况」标记出声
+Invoke-Stage -Name "实况照片声音探针" -LogName "06-live-audio.log" -Blocking $true `
+    -Body { & (Join-Path $repoRoot "tools\image-test-runner\probe-live-photo-audio.ps1") }
+
+# ---------------------------------------------------------------- 7 性能压测
+Invoke-Stage -Name "性能压测" -LogName "07-performance.log" -Blocking $true `
     -SkipReason $(if ($SkipPerformance) { "指定了 -SkipPerformance" } else { '' }) `
     -Body {
         & (Join-Path $repoRoot "tools\image-test-runner\run-performance.ps1") `

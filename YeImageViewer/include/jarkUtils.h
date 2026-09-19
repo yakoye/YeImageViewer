@@ -35,6 +35,7 @@ using std::unordered_map;
 #include "resource.h"
 #include "ShortcutConfig.h"
 #include "ViewerOptions.h"
+#include "AudioClip.h"
 
 #include "psapi.h"
 #include <dxgi.h>
@@ -374,6 +375,7 @@ struct ImageAsset {
     std::vector<uint8_t> iccProfile;         // 图像内嵌ICC配置文件
     std::shared_ptr<SvgRenderer> svgRenderer; // SVG文档，用于按当前视口重新渲染
     bool isLoading = false;                  // 占位图：真图仍在后台解码
+    std::shared_ptr<const AudioClip> audio;  // 实况照片随视频录下的声音，没有则为空
 };
 
 enum class ActionENUM:int64_t {
