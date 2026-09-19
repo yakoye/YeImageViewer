@@ -74,12 +74,20 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.37.1.0"
+$expectedFileVersion = "1.37.2.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
 }
 Write-Host "PASS viewer file version is $expectedFileVersion."
+
+# 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
+$expectedProductVersion = "1.37.2-rc1"
+$actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
+if ($actualProductVersion -ne $expectedProductVersion) {
+    throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
+}
+Write-Host "PASS viewer product version is $expectedProductVersion."
 
 $maximumViewerBytes = 92MB
 $viewerBytes = (Get-Item -LiteralPath $viewer).Length
