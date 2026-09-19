@@ -356,3 +356,24 @@ int TextDrawer::putWord(cv::Mat& img, int x, int y, const int codePoint, intUnio
     const int size = int(fontSize * (1 + lineGapPercent));
     return codePoint < 256 ? (size / 2) : size;
 }
+
+int TextDrawer::measureWidth(const char* str) const {
+    if (!str || !*str)
+        return 0;
+    HDC dc = CreateCompatibleDC(nullptr);
+    if (!dc)
+        return 0;
+    // 字体参数与 drawNativeText 保持一致，量出的宽度才与实际绘制相符
+    HFONT font = CreateFontW(-fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_NATURAL_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    const std::wstring text = jarkUtils::utf8ToWstring(str);
+    RECT bounds{ 0, 0, 0, 0 };
+    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &bounds,
+        DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+    SelectObject(dc, oldFont);
+    DeleteObject(font);
+    DeleteDC(dc);
+    return static_cast<int>(bounds.right - bounds.left);
+}
