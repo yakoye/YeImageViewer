@@ -20,6 +20,9 @@
 #include "JpegQuality.h"
 #include "ColorSpaceName.h"
 #include "ImageHistogram.h"
+#include "LiveAudioPlayer.h"
+#include "LivePhotoBadge.h"
+#include "MotionTiming.h"
 #include "ZoomPolicy.h"
 #include "ZoomEditPolicy.h"
 #include "ToolbarCommand.h"
@@ -529,6 +532,17 @@ public:
     std::chrono::steady_clock::time_point loadingStartedAt{};
     // 模糊预览是否已经顶上去了，避免每帧重复替换
     bool pendingPreviewShown = false;
+    // 实况照片按时间轴播放：画面按帧时间戳取，声音从同一时刻起播，两者不会越走越偏。
+    struct LivePlayback {
+        bool active = false;
+        bool withSound = false;
+        std::chrono::steady_clock::time_point start{};
+        int64_t pausedAtMs = -1;   // >= 0 表示暂停在时间轴的这一毫秒
+    } livePlayback;
+    LiveAudioPlayer liveAudio;
+    // 「实况」标记的位置在绘制时算出，鼠标命中靠它；悬停状态用来只在移入的那一刻触发播放
+    LivePhotoBadge::Rect liveBadgeRect;
+    bool liveBadgeHovered = false;
     bool windowDragActive = false;
     POINT windowDragCursorStart{};
     RECT windowDragWindowStart{};
@@ -1081,8 +1095,7 @@ public:
             curFileIdx = 0;
             imgDB.put(m_wndCaption, { ImageFormat::Still,
                 imgDB.getHomeMat(GetDpiForWindow(m_hWnd)), {}, {}, getUIString(32) });
-            curPar.imageAssetPtr = imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[curFileIdx]);
-            initCurrentImageParameters();
+            adoptImage(imgDB.getCheckedPtr(imgFileList[curFileIdx], imgFileList[curFileIdx]));
             applyHomeWindowSize();
             return;
         }
@@ -1151,9 +1164,8 @@ public:
         const auto& currentPath = imgFileList[curFileIdx];
         const auto& nextPath = imgFileList[(curFileIdx + 1) % imgFileList.size()];
         auto ready = imgDB.tryGetOrRequest(currentPath, nextPath);
-        curPar.imageAssetPtr = ready ? ready : imgDB.makeLoadingAsset();
         beginPendingImage(ready ? wstring{} : currentPath);
-        initCurrentImageParameters();
+        adoptImage(ready ? ready : imgDB.makeLoadingAsset());
     }
 
     // 切到另一张图。不阻塞等待解码：真图没好就先留着当前画面，
@@ -1166,18 +1178,16 @@ public:
         const auto& neighborPath = imgFileList[neighborIdx];
 
         if (auto ready = imgDB.tryGetOrRequest(targetPath, neighborPath)) {
-            curPar.imageAssetPtr = ready;
             beginPendingImage({});
-            initCurrentImageParameters();
+            adoptImage(ready);
             return true;
         }
 
         // 先试试模糊预览，拿得到就立刻顶上，省掉一次「还是旧图」的中间态
         beginPendingImage(targetPath);
         if (auto preview = imgDB.tryMakePreviewAsset(targetPath)) {
-            curPar.imageAssetPtr = preview;
             pendingPreviewShown = true;
-            initCurrentImageParameters();
+            adoptImage(preview);
             return true;
         }
         return false;
@@ -1190,6 +1200,127 @@ public:
 
     int neighborIndexAfter(int idx) const {
         return (idx + 1) % (int)imgFileList.size();
+    }
+
+    // ---- 实况照片播放 ----
+    // 交互对齐 macOS「照片」：打开时自动播放一遍（是否出声按设置，默认静音）；
+    // 悬停或点击「实况」标记、按空格重播属于主动操作，总是连同声音从头播放。
+
+    static bool isLivePhoto(const ImageAsset& asset) {
+        return !asset.isLoading && !asset.frames.empty() && !asset.primaryFrame.empty() &&
+            asset.frameDurations.size() == asset.frames.size();
+    }
+
+    bool currentIsLivePhoto() const {
+        return curPar.imageAssetPtr && isLivePhoto(*curPar.imageAssetPtr);
+    }
+
+    int64_t livePlaybackElapsedMs() const {
+        if (livePlayback.pausedAtMs >= 0)
+            return livePlayback.pausedAtMs;
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - livePlayback.start).count();
+    }
+
+    void stopLivePlayback() {
+        liveAudio.stop();
+        livePlayback = {};
+    }
+
+    // 从头播放当前实况照片。withSound 只在这张带音轨时才生效。
+    void startLivePlayback(bool withSound) {
+        stopLivePlayback();
+        if (!currentIsLivePhoto())
+            return;
+        auto& asset = *curPar.imageAssetPtr;
+        // 播完会切成 Still 停在主图上，重播要先切回来。两种状态的尺寸分别取自视频帧和主图，
+        // 要重新初始化视图。
+        if (asset.format != ImageFormat::Animated) {
+            asset.format = ImageFormat::Animated;
+            initCurrentImageParameters();
+        }
+        curPar.curFrameIdx = 0;
+        curPar.isAnimationPause = false;
+        livePlayback.active = true;
+        livePlayback.withSound = withSound && asset.audio && !asset.audio->empty();
+        livePlayback.start = std::chrono::steady_clock::now();
+        if (livePlayback.withSound)
+            liveAudio.play(asset.audio, 0);
+        operateQueue.push({ ActionENUM::refresh });
+    }
+
+    // 时间轴走完：停在主图上。
+    void finishLivePlayback() {
+        stopLivePlayback();
+        curPar.imageAssetPtr->format = ImageFormat::Still;
+        initCurrentImageParameters();
+        operateQueue.push({ ActionENUM::refresh });
+    }
+
+    // 动图暂停/继续。实况暂停时声音一起停；继续时从当前帧的时间点接着走——
+    // 暂停期间可能逐帧前后翻过。
+    void toggleAnimationPause() {
+        curPar.isAnimationPause = !curPar.isAnimationPause;
+        if (!livePlayback.active)
+            return;
+        if (curPar.isAnimationPause) {
+            livePlayback.pausedAtMs = livePlaybackElapsedMs();
+            liveAudio.stop();
+            return;
+        }
+        const int64_t resumeAtMs = MotionTiming::frameStartMs(
+            curPar.imageAssetPtr->frameDurations, curPar.curFrameIdx);
+        livePlayback.pausedAtMs = -1;
+        livePlayback.start = std::chrono::steady_clock::now() - std::chrono::milliseconds(resumeAtMs);
+        if (livePlayback.withSound)
+            liveAudio.play(curPar.imageAssetPtr->audio, resumeAtMs);
+    }
+
+    // 空格 / 播放键：播完的实况从头重播（主动操作，出声），动图暂停或继续。
+    // 返回 false 表示当前不是动图，调用方照原逻辑处理（翻到下一张）。
+    bool replayOrTogglePause() {
+        if (currentIsLivePhoto() && curPar.imageAssetPtr->format == ImageFormat::Still) {
+            startLivePlayback(true);
+            return true;
+        }
+        if (curPar.imageAssetPtr->format == ImageFormat::Still && !curPar.imageAssetPtr->frames.empty()) {
+            curPar.imageAssetPtr->format = ImageFormat::Animated;
+            initCurrentImageParameters();
+            operateQueue.push({ ActionENUM::refresh });
+            return true;
+        }
+        if (curPar.imageAssetPtr->format == ImageFormat::Animated) {
+            toggleAnimationPause();
+            operateQueue.push({ ActionENUM::refresh });
+            return true;
+        }
+        return false;
+    }
+
+    // 与 macOS「照片」一致：鼠标移到「实况」标记上，连同声音从头播放一遍。
+    // 只在移入的那一刻触发，停在上面不会反复重播；已经在出声播放时不打断。
+    void updateLiveBadgeHover(int x, int y) {
+        const bool hovered = !mouseIsPressing && currentIsLivePhoto() && liveBadgeRect.contains(x, y);
+        if (hovered == liveBadgeHovered)
+            return;
+        liveBadgeHovered = hovered;
+        if (hovered && !(livePlayback.active && livePlayback.withSound))
+            startLivePlayback(true);
+        operateQueue.push({ ActionENUM::refresh });
+    }
+
+    // 换上一张图（真图、模糊预览或占位）。上一张实况的声音先停；新图若是实况，
+    // 每次打开都从头播放一遍，自动播放是否出声按设置（默认静音）。
+    void adoptImage(std::shared_ptr<ImageAsset> asset) {
+        stopLivePlayback();
+        liveBadgeHovered = false;
+        curPar.imageAssetPtr = std::move(asset);
+        // 播完的实况停在 Still，缓存里存的也是这个状态；重新打开时恢复成动态
+        if (currentIsLivePhoto())
+            curPar.imageAssetPtr->format = ImageFormat::Animated;
+        initCurrentImageParameters();
+        if (currentIsLivePhoto())
+            startLivePlayback(ViewerOptions::livePhotoAutoSound(GlobalVar::settingParameter.reserve));
     }
 
     void beginPendingImage(wstring path) {
@@ -1208,8 +1339,7 @@ public:
         if (auto ready = imgDB.tryGetPtr(pendingImagePath)) {
             pendingImagePath.clear();
             pendingPreviewShown = false;
-            curPar.imageAssetPtr = ready;
-            initCurrentImageParameters();
+            adoptImage(ready);
             // 占位期间窗口是按默认尺寸摆的，真图到手才知道该多大。
             if (!presentationMode &&
                 ViewerOptions::openMode(GlobalVar::settingParameter.reserve) ==
@@ -1225,8 +1355,7 @@ public:
 
         if (auto preview = imgDB.tryMakePreviewAsset(pendingImagePath)) {
             pendingPreviewShown = true;
-            curPar.imageAssetPtr = preview;
-            initCurrentImageParameters();
+            adoptImage(preview);
             operateQueue.push({ ActionENUM::refresh });
             return true;
         }
@@ -1236,8 +1365,7 @@ public:
         const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - loadingStartedAt).count();
         if (waited >= PREVIEW_GRACE_MS && !curPar.imageAssetPtr->isLoading) {
-            curPar.imageAssetPtr = imgDB.makeLoadingAsset();
-            initCurrentImageParameters();
+            adoptImage(imgDB.makeLoadingAsset());
             operateQueue.push({ ActionENUM::refresh });
             return true;
         }
@@ -1258,7 +1386,7 @@ public:
                 operateQueue.push({ ActionENUM::refresh });
             }break;
             case 1: {
-                curPar.isAnimationPause = !curPar.isAnimationPause;
+                toggleAnimationPause();
                 operateQueue.push({ ActionENUM::refresh });
             }break;
             case 2: {
@@ -1290,7 +1418,7 @@ public:
         }
         else {
             if (buttonIdx == 1) {
-                curPar.isAnimationPause = !curPar.isAnimationPause;
+                toggleAnimationPause();
                 operateQueue.push({ ActionENUM::refresh });
             }
         }
@@ -1313,6 +1441,15 @@ public:
                 presentationClickCandidate = false;
                 mouseIsPressing = false;
                 openImageFromDialog();
+                return;
+            }
+
+            // 点「实况」标记只当作播放请求：不开始拖动，沉浸预览下也不算点在图片外面
+            if (currentIsLivePhoto() && liveBadgeRect.contains(x, y)) {
+                presentationClickCandidate = false;
+                mouseIsPressing = false;
+                if (!(livePlayback.active && livePlayback.withSound))
+                    startLivePlayback(true);
                 return;
             }
 
@@ -1517,7 +1654,9 @@ public:
                 presentationClickCandidate = false;
         }
 
-        if (mouseIsPressing) {
+        updateLiveBadgeHover(x, y);
+        // 悬停在「实况」标记上时不唤出顶部动图条等浮层，免得挡住标记
+        if (mouseIsPressing || liveBadgeHovered) {
             cursorPos = CursorPos::centerArea;
         }
         else {
@@ -1654,6 +1793,7 @@ public:
 
     void OnMouseLeave() override {
         endWindowDrag();
+        liveBadgeHovered = false;
         SetCursor(LoadCursorW(nullptr, IDC_ARROW));
         cursorPosLast = cursorPos = CursorPos::centerArea;
         extraUIFlag = zoomTextEditing ? ShowExtraUI::bottomToolbar : ShowExtraUI::none;
@@ -1860,7 +2000,7 @@ public:
             break;
         case ShortcutConfig::Action::ToggleAnimation:
             if (curPar.imageAssetPtr->format == ImageFormat::Animated) {
-                curPar.isAnimationPause = !curPar.isAnimationPause;
+                toggleAnimationPause();
                 operateQueue.push({ ActionENUM::refresh });
             }
             break;
@@ -1923,19 +2063,8 @@ public:
             operateQueue.push({ ActionENUM::finalImg });
             break;
         case ShortcutConfig::Action::PlayPause:
-            if (curPar.imageAssetPtr->format == ImageFormat::Still &&
-                !curPar.imageAssetPtr->frames.empty()) {
-                curPar.imageAssetPtr->format = ImageFormat::Animated;
-                initCurrentImageParameters();
-                operateQueue.push({ ActionENUM::refresh });
-            }
-            else if (curPar.imageAssetPtr->format == ImageFormat::Animated) {
-                curPar.isAnimationPause = !curPar.isAnimationPause;
-                operateQueue.push({ ActionENUM::refresh });
-            }
-            else {
+            if (!replayOrTogglePause())
                 operateQueue.push({ ActionENUM::nextImg });
-            }
             break;
         case ShortcutConfig::Action::ToggleImageInfo:
             operateQueue.push({ ActionENUM::toggleExif });
@@ -2121,7 +2250,7 @@ public:
 
             case 'K': { // 动图 暂停/继续
                 if (curPar.imageAssetPtr->format == ImageFormat::Animated) {
-                    curPar.isAnimationPause = !curPar.isAnimationPause;
+                    toggleAnimationPause();
                     operateQueue.push({ ActionENUM::refresh });
                 }
             }break;
@@ -2231,18 +2360,8 @@ public:
             }break;
 
             case VK_SPACE: {
-                if (curPar.imageAssetPtr->format == ImageFormat::Still && !curPar.imageAssetPtr->frames.empty()) {
-                    curPar.imageAssetPtr->format = ImageFormat::Animated;
-                    initCurrentImageParameters();
-                    operateQueue.push({ ActionENUM::refresh });
-                }
-                else if (curPar.imageAssetPtr->format == ImageFormat::Animated) {
-                    curPar.isAnimationPause = !curPar.isAnimationPause;
-                    operateQueue.push({ ActionENUM::refresh });
-                }
-                else {
+                if (!replayOrTogglePause())
                     operateQueue.push({ ActionENUM::nextImg });
-                }
             }break;
 
             case VK_TAB:
@@ -2713,19 +2832,19 @@ public:
         const uint32_t lineColor = 0xFF808080;
         if (0 < xStart && xStart < canvasW) {
             for (int y = std::max(yStart - 1, 0); y < std::min(yEnd + 1, canvasH); ++y)
-                canvas.at<uint32_t>(y, xStart - 1) = lineColor;
+                canvas.ptr<uint32_t>(y)[xStart - 1] = lineColor;
         }
         if (0 < xEnd && xEnd < canvasW) {
             for (int y = std::max(yStart - 1, 0); y < std::min(yEnd + 1, canvasH); ++y)
-                canvas.at<uint32_t>(y, xEnd) = lineColor;
+                canvas.ptr<uint32_t>(y)[xEnd] = lineColor;
         }
         if (0 < yStart && yStart < canvasH) {
             for (int x = xStart; x < xEnd; ++x)
-                canvas.at<uint32_t>(yStart - 1, x) = lineColor;
+                canvas.ptr<uint32_t>(yStart - 1)[x] = lineColor;
         }
         if (0 < yEnd && yEnd < canvasH) {
             for (int x = xStart; x < xEnd; ++x)
-                canvas.at<uint32_t>(yEnd, x) = lineColor;
+                canvas.ptr<uint32_t>(yEnd)[x] = lineColor;
         }
     }
 
@@ -3986,6 +4105,69 @@ public:
         textDrawer.putAlignCenter(canvas, { x, y, width, height }, text, 0xFFE8EAF0u);
     }
 
+    // 当前图片在画布上的显示区域，与 drawCanvas 的定位算法一致
+    LivePhotoBadge::Rect currentImageRectOnCanvas(const cv::Mat& canvas) const {
+        const bool upright = curPar.rotation == 0 || curPar.rotation == 2;
+        const int srcW = upright ? curPar.width : curPar.height;
+        const int srcH = upright ? curPar.height : curPar.width;
+        const double renderedW = (double)srcW * curPar.zoomCur / curPar.ZOOM_BASE;
+        const double renderedH = (double)srcH * curPar.zoomCur / curPar.ZOOM_BASE;
+        return {
+            curPar.slideCur.x + (int)std::round((canvas.cols - renderedW) / 2.0),
+            curPar.slideCur.y + (int)std::round((canvas.rows - renderedH) / 2.0),
+            (int)std::round(renderedW),
+            (int)std::round(renderedH),
+        };
+    }
+
+    // 实况照片左上角的「实况」标记：仿 macOS 的同心圆图标加文字，半透明胶囊底。
+    // 位置记进 liveBadgeRect，鼠标移入即连同声音播放。
+    void drawLivePhotoBadge(cv::Mat& canvas) {
+        liveBadgeRect = {};
+        if (!currentIsLivePhoto())
+            return;
+
+        const int dpi = overlayDpi();
+        const char* label = getUIString(82);
+        const auto rect = LivePhotoBadge::place(currentImageRectOnCanvas(canvas), canvas.cols, canvas.rows,
+            dpi, LivePhotoBadge::logicalTextWidth(jarkUtils::utf8ToWstring(label)));
+        if (rect.empty())
+            return;
+        liveBadgeRect = rect;
+
+        // 悬停或正在出声播放时底色加深，示意这是个可操作的东西
+        const bool emphasized = liveBadgeHovered || (livePlayback.active && livePlayback.withSound);
+        auto surface = roundedSurface(rect.width, rect.height, rect.height / 2,
+            emphasized ? 0xD9000000u : 0x8C000000u, 0x33FFFFFFu);
+        jarkUtils::overlayImg(canvas, surface, rect.x, rect.y);
+
+        // 图标：实心圆点、细圆环、外圈一圈小点。坐标按 1/16 像素定点，小尺寸下也圆润。
+        constexpr int SHIFT = 4;
+        const auto fixed = [](double value) { return (int)std::lround(value * (1 << SHIFT)); };
+        const double unit = dpi / (double)USER_DEFAULT_SCREEN_DPI;
+        const double centerX = rect.x +
+            (LivePhotoBadge::LOGICAL_PADDING_LEFT + LivePhotoBadge::LOGICAL_ICON_SIZE / 2.0) * unit;
+        const double centerY = rect.y + rect.height / 2.0;
+        const cv::Scalar white(255, 255, 255, 255);
+        cv::circle(canvas, { fixed(centerX), fixed(centerY) }, fixed(2.1 * unit),
+            white, cv::FILLED, cv::LINE_AA, SHIFT);
+        cv::circle(canvas, { fixed(centerX), fixed(centerY) }, fixed(4.6 * unit),
+            white, std::max(1, (int)std::lround(1.2 * unit)), cv::LINE_AA, SHIFT);
+        for (int dot = 0; dot < 16; ++dot) {
+            const double angle = dot * CV_PI / 8.0;
+            cv::circle(canvas,
+                { fixed(centerX + std::cos(angle) * 7.2 * unit), fixed(centerY + std::sin(angle) * 7.2 * unit) },
+                fixed(0.75 * unit), white, cv::FILLED, cv::LINE_AA, SHIFT);
+        }
+
+        textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
+            TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
+        const int textX = rect.x + LivePhotoBadge::scaled(LivePhotoBadge::LOGICAL_PADDING_LEFT +
+            LivePhotoBadge::LOGICAL_ICON_SIZE + LivePhotoBadge::LOGICAL_GAP, dpi);
+        const int textRight = rect.x + rect.width - LivePhotoBadge::scaled(LivePhotoBadge::LOGICAL_PADDING_RIGHT, dpi);
+        textDrawer.putAlignCenter(canvas, { textX, rect.y, textRight - textX, rect.height }, label, 0xFFFFFFFFu);
+    }
+
     void drawExtraUI(cv::Mat& canvas) {
         const int canvasHeight = canvas.rows;
         const int canvasWidth = canvas.cols;
@@ -3993,6 +4175,7 @@ public:
             return;
 
         drawLoadingBadge(canvas);
+        drawLivePhotoBadge(canvas);
 
         // 空占位图只有 1×1，工具栏、翻页箭头这些都无从谈起。
         // 模糊预览是张真图，照常画 UI。
@@ -4112,8 +4295,7 @@ public:
                 if (currentPath == m_wndCaption) {
                     imgDB.put(m_wndCaption, { ImageFormat::Still,
                         imgDB.getHomeMat(GetDpiForWindow(m_hWnd)), {}, {}, getUIString(32) });
-                    curPar.imageAssetPtr = imgDB.getCheckedPtr(currentPath, currentPath);
-                    initCurrentImageParameters();
+                    adoptImage(imgDB.getCheckedPtr(currentPath, currentPath));
                 }
                 else {
                     // 缓存刚清空，这里必然是未命中，走非阻塞路径免得大图卡住整个主循环
@@ -4265,11 +4447,6 @@ public:
                 drawCanvas(srcImg, mainCanvas); //先更新无额外按钮UI的原图
                 drawExifInfo(mainCanvas);
             }
-            
-            // 播放过的实况图，状态会变成静态图，切走前恢复一下
-            if (curPar.imageAssetPtr->format == ImageFormat::Still && !curPar.imageAssetPtr->frames.empty()) {
-                curPar.imageAssetPtr->format = ImageFormat::Animated;
-            }
 
             const int targetIdx = neighborIndexBefore(curFileIdx);
             if (switchToImage(targetIdx, neighborIndexBefore(targetIdx))) {
@@ -4298,11 +4475,6 @@ public:
 
                 drawCanvas(srcImg, mainCanvas); //先更新无额外按钮UI的原图
                 drawExifInfo(mainCanvas);
-            }
-
-            // 播放过的实况图，状态会变成静态图，切走前恢复一下
-            if (curPar.imageAssetPtr->format == ImageFormat::Still && !curPar.imageAssetPtr->frames.empty()) {
-                curPar.imageAssetPtr->format = ImageFormat::Animated;
             }
 
             const int targetIdx = neighborIndexAfter(curFileIdx);
@@ -4334,11 +4506,6 @@ public:
                 drawExifInfo(mainCanvas);
             }
 
-            // 播放过的实况图，状态会变成静态图，切走前恢复一下
-            if (curPar.imageAssetPtr->format == ImageFormat::Still && !curPar.imageAssetPtr->frames.empty()) {
-                curPar.imageAssetPtr->format = ImageFormat::Animated;
-            }
-
             if (switchToImage(0, neighborIndexBefore(0))) {
                 if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
                     mainCanvasSlideToPreAnimationVertical();      // 竖直滑动
@@ -4363,11 +4530,6 @@ public:
 
                 drawCanvas(srcImg, mainCanvas); //先更新无额外按钮UI的原图
                 drawExifInfo(mainCanvas);
-            }
-
-            // 播放过的实况图，状态会变成静态图，切走前恢复一下
-            if (curPar.imageAssetPtr->format == ImageFormat::Still && !curPar.imageAssetPtr->frames.empty()) {
-                curPar.imageAssetPtr->format = ImageFormat::Animated;
             }
 
             const int lastIdx = (int)imgFileList.size() - 1;
@@ -4684,18 +4846,30 @@ public:
             if (frameDuration > elapsed)
                 std::this_thread::sleep_for(frameDuration - elapsed);
 
-            delayRemain -= elapsed.count();
-            if (delayRemain <= 0) {
-                delayRemain = curPar.curFrameDelay;
-                curPar.curFrameIdx++;
-                if (curPar.curFrameIdx > curPar.curFrameIdxMax) {
-                    curPar.curFrameIdx = 0;
+            if (livePlayback.active) {
+                // 实况按时间轴取帧，与声音同步。逐帧累加延时会把每一帧的超时都攒下来，
+                // 几秒下来画面就落后声音一截。
+                const int frameIndex = MotionTiming::frameIndexAt(
+                    curPar.imageAssetPtr->frameDurations, livePlaybackElapsedMs());
+                if (frameIndex < 0)
+                    finishLivePlayback();
+                else
+                    curPar.curFrameIdx = frameIndex;
+            }
+            else {
+                delayRemain -= elapsed.count();
+                if (delayRemain <= 0) {
+                    delayRemain = curPar.curFrameDelay;
+                    curPar.curFrameIdx++;
+                    if (curPar.curFrameIdx > curPar.curFrameIdxMax) {
+                        curPar.curFrameIdx = 0;
 
-                    // 动态帧播放完，若有主图，则是当前实况图像
-                    if (!curPar.imageAssetPtr->primaryFrame.empty()) {
-                        curPar.imageAssetPtr->format = ImageFormat::Still;
-                        initCurrentImageParameters();
-                        operateQueue.push({ ActionENUM::refresh });
+                        // 动态帧播放完，若有主图，则是当前实况图像
+                        if (!curPar.imageAssetPtr->primaryFrame.empty()) {
+                            curPar.imageAssetPtr->format = ImageFormat::Still;
+                            initCurrentImageParameters();
+                            operateQueue.push({ ActionENUM::refresh });
+                        }
                     }
                 }
             }
@@ -4715,7 +4889,54 @@ public:
 
 void test();
 
-static int runDecodeProbe(const std::wstring& imagePath, const std::wstring& resultPath) {
+// 探针给了导出目录时，把实况的时间轴和声音写出来，供测试脚本验证音画对齐：
+//   frames.csv  帧序号, 起始毫秒, 时长毫秒, 平均亮度
+//   audio.wav   解码并与画面对齐后的 16 位 PCM
+static void dumpMotionForProbe(const ImageAsset& asset, const std::filesystem::path& directory) {
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+
+    std::ofstream csv(directory / "frames.csv", std::ios::trunc);
+    csv << "index,startMs,durationMs,meanLuma\n";
+    int64_t startMs = 0;
+    for (size_t i = 0; i < asset.frames.size(); ++i) {
+        const int durationMs = i < asset.frameDurations.size() ? asset.frameDurations[i] : 0;
+        cv::Mat gray;
+        const cv::Mat& frame = asset.frames[i];
+        if (frame.channels() == 4)
+            cv::cvtColor(frame, gray, cv::COLOR_BGRA2GRAY);
+        else if (frame.channels() == 3)
+            cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+        else
+            gray = frame;
+        csv << i << ',' << startMs << ',' << durationMs << ',' << cv::mean(gray)[0] << '\n';
+        startMs += durationMs;
+    }
+
+    if (!asset.audio || asset.audio->empty())
+        return;
+    const AudioClip& audio = *asset.audio;
+    std::ofstream wav(directory / "audio.wav", std::ios::binary | std::ios::trunc);
+    const auto put32 = [&](uint32_t value) { wav.write(reinterpret_cast<const char*>(&value), 4); };
+    const auto put16 = [&](uint16_t value) { wav.write(reinterpret_cast<const char*>(&value), 2); };
+    const auto dataBytes = static_cast<uint32_t>(audio.samples.size() * sizeof(int16_t));
+    wav.write("RIFF", 4);
+    put32(36 + dataBytes);
+    wav.write("WAVEfmt ", 8);
+    put32(16);
+    put16(1);   // PCM
+    put16(static_cast<uint16_t>(audio.channels));
+    put32(static_cast<uint32_t>(audio.sampleRate));
+    put32(static_cast<uint32_t>(audio.sampleRate * audio.channels * 2));
+    put16(static_cast<uint16_t>(audio.channels * 2));
+    put16(16);
+    wav.write("data", 4);
+    put32(dataBytes);
+    wav.write(reinterpret_cast<const char*>(audio.samples.data()), dataBytes);
+}
+
+static int runDecodeProbe(const std::wstring& imagePath, const std::wstring& resultPath,
+    const std::wstring& dumpDirectory = {}) {
     ImageDatabase imageDatabase;
     const cv::Mat errorTips = imageDatabase.getErrorTipsMat();
     const ImageAsset asset = imageDatabase.myLoader(imagePath);
@@ -4820,7 +5041,14 @@ static int runDecodeProbe(const std::wstring& imagePath, const std::wstring& res
         << minAlpha << '\t'
         << depthName << '\t'
         << meanAlpha << '\t'
-        << meanB << ',' << meanG << ',' << meanR << '\n';
+        << meanB << ',' << meanG << ',' << meanR << '\t'
+        // 第 11~14 列：实况按时间戳的总时长，以及随视频录下的声音（没有则全为 0）
+        << MotionTiming::totalMs(asset.frameDurations) << '\t'
+        << (asset.audio ? asset.audio->sampleRate : 0) << '\t'
+        << (asset.audio ? asset.audio->channels : 0) << '\t'
+        << (asset.audio ? asset.audio->durationMs() : 0) << '\n';
+    if (!dumpDirectory.empty())
+        dumpMotionForProbe(asset, dumpDirectory);
     return success ? 0 : 2;
 }
 
@@ -4868,9 +5096,10 @@ int WINAPI wWinMain(
 
     int argumentCount = 0;
     LPWSTR* arguments = ::CommandLineToArgvW(::GetCommandLineW(), &argumentCount);
-    if (arguments != nullptr && argumentCount == 4
+    if (arguments != nullptr && (argumentCount == 4 || argumentCount == 5)
         && std::wstring_view(arguments[1]) == L"--decode-probe") {
-        const int probeResult = runDecodeProbe(arguments[2], arguments[3]);
+        const int probeResult = runDecodeProbe(arguments[2], arguments[3],
+            argumentCount == 5 ? std::wstring(arguments[4]) : std::wstring{});
         ::LocalFree(arguments);
         ::CoUninitialize();
         return probeResult;

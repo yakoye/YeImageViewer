@@ -163,6 +163,9 @@ private:
                     &GlobalVar::settingParameter.reserve[ViewerOptions::INFO_HISTOGRAM_INDEX] },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[9]), {74, 75, 76, 77, 78},
                     &GlobalVar::settingParameter.reserve[ViewerOptions::INFO_PANEL_OPACITY_INDEX] },
+                // 实况照片打开时自动播放那一遍是否出声；悬停「实况」标记的主动播放总是出声
+                { toCvRect(SettingLayout::GENERAL_RADIOS[10]), {79, 80, 81},
+                    &GlobalVar::settingParameter.reserve[ViewerOptions::LIVE_PHOTO_SOUND_INDEX] },
             };
         }
 

@@ -22,7 +22,7 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 每次修改后至少保证 `buildRelease.ps1` 能干净编译通过。
 
 测试用发布闸门，一条命令跑完全部环节（构建、单元测试、窗口行为、格式语料、图片语料、
-渐进加载、翻页响应、性能压测），存在阻断失败时退出码非 0：
+渐进加载、翻页响应、实况声音、性能压测），存在阻断失败时退出码非 0：
 
 ```powershell
 # 全量（含 10000 张性能压测，约 30 分钟）
@@ -47,6 +47,7 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 
 `test/corpus/_local/` 和 `test/bigimage/` 是不进仓库的大体积素材，本地缺失时测试记 SKIPPED。
 RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 356 MB）。
+实况照片素材在 `test/live-photo/`（入库），用 `./scripts/generate-live-photo-fixtures.ps1` 重建，说明见该目录的 README。
 
 ## 构建前提
 

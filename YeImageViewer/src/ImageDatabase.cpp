@@ -3071,9 +3071,9 @@ ImageAsset ImageDatabase::loadLivp(wstring_view path, std::span<const uint8_t> f
         return { ImageFormat::Still, img, {}, {}, exifInfo };
     }
 
-    auto frames = DecodeVideoFrames(videoFileData.data(), videoFileData.size());
+    auto motion = DecodeMotionClip(videoFileData.data(), videoFileData.size());
 
-    if (frames.empty()) {
+    if (motion.frames.empty()) {
         ImageAsset imageAsset{ ImageFormat::Still, img, {}, {}, exifInfo };
         if (GlobalVar::settingParameter.enableColorManagement) {
             imageAsset.iccProfile = (imageExt == "heic" || imageExt == "heif") ?
@@ -3083,7 +3083,9 @@ ImageAsset ImageDatabase::loadLivp(wstring_view path, std::span<const uint8_t> f
         return imageAsset;
     }
 
-    ImageAsset imageAsset{ ImageFormat::Animated, img, frames, std::vector<int>(frames.size(), 33), exifInfo };
+    // 每帧时长按视频时间戳算，声音随画面一起播；此前一律按 33 ms，60 fps 的片段会慢放一倍
+    ImageAsset imageAsset{ ImageFormat::Animated, img, std::move(motion.frames), std::move(motion.frameDurationsMs), exifInfo };
+    imageAsset.audio = std::move(motion.audio);
     if (GlobalVar::settingParameter.enableColorManagement) {
         imageAsset.iccProfile = (imageExt == "heic" || imageExt == "heif") ?
             readHeifIccProfile(imageFileData) :
@@ -3104,7 +3106,7 @@ static std::vector<std::wstring> getVideoCandidatePaths(std::wstring_view imageP
     };
 }
 
-static std::vector<cv::Mat> decodeMotionPhotoSidecarVideo(wstring_view path) {
+static MotionClip decodeMotionPhotoSidecarVideo(wstring_view path) {
     for (const auto& videoPath : getVideoCandidatePaths(path)) {
         auto fileReader = MappedFileReader(videoPath);
         if (fileReader.isEmpty()) {
@@ -3112,9 +3114,9 @@ static std::vector<cv::Mat> decodeMotionPhotoSidecarVideo(wstring_view path) {
         }
 
         const auto videoBuf = fileReader.view();
-        auto frames = DecodeVideoFrames(videoBuf.data(), videoBuf.size(), MAX_VIDEO_FRAMES);
-        if (!frames.empty()) {
-            return frames;
+        auto motion = DecodeMotionClip(videoBuf.data(), videoBuf.size(), MAX_VIDEO_FRAMES);
+        if (!motion.frames.empty()) {
+            return motion;
         }
     }
 
@@ -3143,22 +3145,23 @@ ImageAsset ImageDatabase::loadMotionPhoto(wstring_view path, std::span<const uin
     }
 
     auto videoSize = MotionPhotoUtils::getVideoSize(exifInfo);
-    std::vector<cv::Mat> frames;
+    MotionClip motion;
     if (videoSize >= MIN_VIDEO_BUFF_SIZE && videoSize < fileBuf.size()) {
-        frames = DecodeVideoFrames(fileBuf.data() + fileBuf.size() - videoSize, videoSize);
+        motion = DecodeMotionClip(fileBuf.data() + fileBuf.size() - videoSize, videoSize);
     }
     else {
-        frames = decodeMotionPhotoSidecarVideo(path); // 苹果/VIVO等 独立视频文件的实况照片，尝试从同目录下的同名视频文件解码
+        motion = decodeMotionPhotoSidecarVideo(path); // 苹果/VIVO等 独立视频文件的实况照片，尝试从同目录下的同名视频文件解码
     }
 
-    if (frames.empty()) {
+    if (motion.frames.empty()) {
         ImageAsset imageAsset{ ImageFormat::Still, img, {}, {}, exifInfo };
         if (GlobalVar::settingParameter.enableColorManagement && !isJPG)
             imageAsset.iccProfile = readHeifIccProfile(fileBuf);
         return imageAsset;
     }
 
-    ImageAsset imageAsset{ ImageFormat::Animated, img, frames, std::vector<int>(frames.size(), 33), exifInfo };
+    ImageAsset imageAsset{ ImageFormat::Animated, img, std::move(motion.frames), std::move(motion.frameDurationsMs), exifInfo };
+    imageAsset.audio = std::move(motion.audio);
     if (GlobalVar::settingParameter.enableColorManagement && !isJPG)
         imageAsset.iccProfile = readHeifIccProfile(fileBuf);
     return imageAsset;

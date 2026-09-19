@@ -86,6 +86,10 @@ std::string_view UIStringTable[STRING_MAX_NUM][2] = {
     {"较透", "Medium"},
     {"默认", "Strong"},
     {"不透明", "Opaque"},
+    {"实况自动播放", "Live Autoplay"},
+    {"静音", "Muted"},
+    {"有声", "With Sound"},
+    {"实况", "LIVE"},   // 实况照片左上角的标记
 };
 
 

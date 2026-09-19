@@ -12,7 +12,7 @@ namespace ViewerOptions {
 inline constexpr std::size_t STORAGE_BASE = 256;
 inline constexpr std::size_t SLOT_COUNT = 16;
 inline constexpr uint32_t STORAGE_MAGIC = 0x564F5054u; // "VOPT"
-inline constexpr uint32_t STORAGE_VERSION = 2;
+inline constexpr uint32_t STORAGE_VERSION = 3;
 
 inline constexpr std::size_t MAGIC_INDEX = STORAGE_BASE + 0;
 inline constexpr std::size_t VERSION_INDEX = STORAGE_BASE + 1;
@@ -23,6 +23,8 @@ inline constexpr std::size_t DRAG_MOVES_WINDOW_INDEX = STORAGE_BASE + 5;
 // 版本 2 新增
 inline constexpr std::size_t INFO_PANEL_OPACITY_INDEX = STORAGE_BASE + 6;
 inline constexpr std::size_t INFO_HISTOGRAM_INDEX = STORAGE_BASE + 7;
+// 版本 3 新增
+inline constexpr std::size_t LIVE_PHOTO_SOUND_INDEX = STORAGE_BASE + 8;
 
 enum class DoubleClickAction : uint32_t {
     ToggleFullscreen = 0,
@@ -72,6 +74,9 @@ inline constexpr bool DEFAULT_DRAG_MOVES_WINDOW = true;
 // 默认沿用加这个选项之前的观感，升级后不变
 inline constexpr auto DEFAULT_INFO_PANEL_OPACITY = InfoPanelOpacity::Strong;
 inline constexpr bool DEFAULT_INFO_HISTOGRAM = true;
+// 打开实况照片时自动播放的那一遍默认静音，与 macOS「照片」一致；
+// 主动播放（悬停「实况」标记、空格重播）不受这个设置影响，总是出声。
+inline constexpr bool DEFAULT_LIVE_PHOTO_SOUND = false;
 
 constexpr bool fits(std::size_t count) {
     return count >= STORAGE_BASE + SLOT_COUNT;
@@ -88,6 +93,7 @@ inline void reset(uint32_t* storage, std::size_t count) {
     storage[DRAG_MOVES_WINDOW_INDEX] = DEFAULT_DRAG_MOVES_WINDOW ? 1u : 0u;
     storage[INFO_PANEL_OPACITY_INDEX] = static_cast<uint32_t>(DEFAULT_INFO_PANEL_OPACITY);
     storage[INFO_HISTOGRAM_INDEX] = DEFAULT_INFO_HISTOGRAM ? 1u : 0u;
+    storage[LIVE_PHOTO_SOUND_INDEX] = DEFAULT_LIVE_PHOTO_SOUND ? 1u : 0u;
 }
 
 inline void initialize(uint32_t* storage, std::size_t count) {
@@ -107,6 +113,8 @@ inline void initialize(uint32_t* storage, std::size_t count) {
         storage[INFO_PANEL_OPACITY_INDEX] = static_cast<uint32_t>(DEFAULT_INFO_PANEL_OPACITY);
         storage[INFO_HISTOGRAM_INDEX] = DEFAULT_INFO_HISTOGRAM ? 1u : 0u;
     }
+    if (version < 3)
+        storage[LIVE_PHOTO_SOUND_INDEX] = DEFAULT_LIVE_PHOTO_SOUND ? 1u : 0u;
     storage[VERSION_INDEX] = STORAGE_VERSION;
     if (storage[EDGE_ARROWS_INDEX] > 1u)
         storage[EDGE_ARROWS_INDEX] = DEFAULT_EDGE_ARROWS ? 1u : 0u;
@@ -120,6 +128,8 @@ inline void initialize(uint32_t* storage, std::size_t count) {
         storage[INFO_PANEL_OPACITY_INDEX] = static_cast<uint32_t>(DEFAULT_INFO_PANEL_OPACITY);
     if (storage[INFO_HISTOGRAM_INDEX] > 1u)
         storage[INFO_HISTOGRAM_INDEX] = DEFAULT_INFO_HISTOGRAM ? 1u : 0u;
+    if (storage[LIVE_PHOTO_SOUND_INDEX] > 1u)
+        storage[LIVE_PHOTO_SOUND_INDEX] = DEFAULT_LIVE_PHOTO_SOUND ? 1u : 0u;
 }
 
 inline bool edgeArrowsEnabled(const uint32_t* storage) {
@@ -186,6 +196,16 @@ inline bool infoHistogramEnabled(const uint32_t* storage) {
 inline void setInfoHistogramEnabled(uint32_t* storage, bool enabled) {
     if (storage)
         storage[INFO_HISTOGRAM_INDEX] = enabled ? 1u : 0u;
+}
+
+// 打开实况照片时自动播放的那一遍是否出声
+inline bool livePhotoAutoSound(const uint32_t* storage) {
+    return storage && storage[LIVE_PHOTO_SOUND_INDEX] != 0u;
+}
+
+inline void setLivePhotoAutoSound(uint32_t* storage, bool enabled) {
+    if (storage)
+        storage[LIVE_PHOTO_SOUND_INDEX] = enabled ? 1u : 0u;
 }
 
 // 打开图片时是否走无边框沉浸预览。另外两种模式都直接给带边框的普通窗口。

@@ -61,7 +61,7 @@ constexpr Command resolve(int tab, int x, int windowY, int scrollOffset,
         }
         // 与 Setting::generalTabRadioList 的顺序一一对应。少一项就会越界取到 0，
         // 后面的分段宽度除法直接整数除零，所以这里用断言钉住数量。
-        constexpr std::array<int, 10> optionCounts{ 3, 3, 2, 2, 3, 3, 2, 2, 2, 4 };
+        constexpr std::array<int, 11> optionCounts{ 3, 3, 2, 2, 3, 3, 2, 2, 2, 4, 2 };
         static_assert(optionCounts.size() == SettingLayout::GENERAL_RADIOS.size());
         constexpr int labelWidth = 138;
         for (int index = 0; index < static_cast<int>(SettingLayout::GENERAL_RADIOS.size()); ++index) {

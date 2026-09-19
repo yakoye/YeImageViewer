@@ -114,10 +114,10 @@ constexpr Rect generalRadioRow(int index) {
         GENERAL_RADIO_HEIGHT };
 }
 
-inline constexpr std::array<Rect, 10> GENERAL_RADIOS{
+inline constexpr std::array<Rect, 11> GENERAL_RADIOS{
     generalRadioRow(0), generalRadioRow(1), generalRadioRow(2), generalRadioRow(3),
     generalRadioRow(4), generalRadioRow(5), generalRadioRow(6), generalRadioRow(7),
-    generalRadioRow(8), generalRadioRow(9),
+    generalRadioRow(8), generalRadioRow(9), generalRadioRow(10),
 };
 
 inline constexpr Rect ASSOCIATION_SEARCH{ 20, 20, 580, 46 };
