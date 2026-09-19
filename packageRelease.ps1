@@ -35,6 +35,12 @@ if ($versionParts.Count -lt 3) {
     throw "Unexpected viewer file version: $fileVersion"
 }
 $version = "v$($versionParts[0]).$($versionParts[1]).$($versionParts[2])"
+# 预发布版（如 1.37.2-rc1）的后缀写在 ProductVersion 字符串里——FILEVERSION 必须是四段数字，
+# 放不下后缀。有后缀就用它命名，免得候选版的安装包和正式版同名。
+$productVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
+if ($productVersion -match '^\d+\.\d+\.\d+-[0-9A-Za-z.]+$') {
+    $version = "v$productVersion"
+}
 $packageName = "YeImageViewer-$version-win-x64-full"
 
 $sevenZipCandidates = @(
