@@ -210,8 +210,11 @@ if ($Install) {
     $backup = Join-Path $repoRoot "lib-backup"
     New-Item -ItemType Directory -Force -Path $backup | Out-Null
     foreach ($item in $results) {
-        if (Test-Path -LiteralPath $item.Target) {
-            Copy-Item -LiteralPath $item.Target -Destination (Join-Path $backup $item.Lib) -Force
+        $backupFile = Join-Path $backup $item.Lib
+        # 只在第一次建立备份：再跑一次 -Install 时仓库里已经是上一次的产物，
+        # 再备份一遍就把上游原件覆盖没了。
+        if ((Test-Path -LiteralPath $item.Target) -and -not (Test-Path -LiteralPath $backupFile)) {
+            Copy-Item -LiteralPath $item.Target -Destination $backupFile -Force
         }
         Copy-Item -LiteralPath $item.Path -Destination $item.Target -Force
         Write-Host "已替换 $($item.Target)"

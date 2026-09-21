@@ -87,7 +87,7 @@ RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 3
 - 新增图片格式时，同时检查 `ImageDatabase::supportExt` / `supportRaw`、加载分派逻辑、EXIF/方向处理、设置页文件关联列表和 README 格式列表。
 - UI 文本来自 `stringRes`，设置/帮助/关于和打印按钮大量使用资源图切片；改文案或布局时要同步检查中文、英文、浅色、深色资源。
 - OpenCV 用的是自己重建的精简版：只含 core / imgproc / imgcodecs，去掉了 IPP、contrib、videoio 和 highgui（主程序一次 highgui 调用都没有）。重建脚本是 `scripts/build-opencv-slim.ps1`，换版本或换机器都用它，别直接拿官方全功能包。
-- `imgcodecs` 的分辨率上限不再靠改 OpenCV 源码：`wWinMain` 里设 `OPENCV_IO_MAX_IMAGE_WIDTH/HEIGHT/PIXELS` 环境变量，效果一样且不用维护补丁。上游 README 提到的 HighGUI 光标改动（`IDC_CROSS` → `IDC_ARROW`）也随 highgui 一起不再需要。
+- `imgcodecs` 的分辨率上限仍然必须改 OpenCV 源码，`build-opencv-slim.ps1` 里有这一步。不能改成在程序里设 `OPENCV_IO_MAX_IMAGE_*` 环境变量：那三个上限是 `loadsave.cpp` 里的命名空间作用域 `static const`，CRT 在进入 `wWinMain` 之前就初始化完了，设了也没用（曾经这样改过，结果 240MP 以上的 PNG 全被拒绝）。上游 README 提到的 HighGUI 光标改动（`IDC_CROSS` → `IDC_ARROW`）随 highgui 一起不再需要。
 - 不要提交 `.vcxproj.user`、`.vs/` 或机器相关的本地库路径。
 - 主窗口渲染路径以 OpenCV `cv::Mat` 作为 CPU 画布，再交给 Direct3D 显示；避免在高频绘制路径中引入阻塞 I/O 或昂贵同步操作。
 - Debug 构建会分配控制台并启用 `JARK_LOG`；Release 下日志宏为空。

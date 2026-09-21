@@ -46,7 +46,7 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.37.2-rc2";
+std::wstring_view appVersion = L"v1.37.2-rc3";
 constinit int appVersionCode = 13630; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
@@ -5087,16 +5087,10 @@ int WINAPI wWinMain(
     ::SetEnvironmentVariableW(L"OPENCV_IO_ENABLE_OPENEXR", L"1");
     ::_wputenv_s(L"OPENCV_IO_ENABLE_OPENEXR", L"1");
 
-    // imgcodecs 默认拒收超过 2^20 边长、2^30 像素的图片，看图软件不该有这个上限。
-    // 以前靠改 OpenCV 源码去掉判断，其实这几个上限本来就认环境变量——改成在这里设一次，
-    // 换 OpenCV 版本时不用再维护补丁。两套接口都要设：Win32 环境块给子进程用，
-    // CRT 环境块才是 OpenCV 的 getenv 真正读的那一份。
-    for (const auto* name : { L"OPENCV_IO_MAX_IMAGE_WIDTH", L"OPENCV_IO_MAX_IMAGE_HEIGHT" }) {
-        ::SetEnvironmentVariableW(name, L"1073741824");
-        ::_wputenv_s(name, L"1073741824");
-    }
-    ::SetEnvironmentVariableW(L"OPENCV_IO_MAX_IMAGE_PIXELS", L"17179869184");
-    ::_wputenv_s(L"OPENCV_IO_MAX_IMAGE_PIXELS", L"17179869184");
+    // imgcodecs 的尺寸上限不在这里设：OPENCV_IO_MAX_IMAGE_WIDTH / HEIGHT / PIXELS
+    // 在 loadsave.cpp 里是命名空间作用域的 static const，CRT 早在进入本函数之前就
+    // 初始化完了，这里再设环境变量没有任何作用。上限改在 OpenCV 自己的源码里，
+    // 见 scripts/build-opencv-slim.ps1。
 
     Exiv2::enableBMFF();
 
