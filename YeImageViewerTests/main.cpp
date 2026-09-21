@@ -1462,21 +1462,16 @@ void expectRenamePolicy() {
     std::filesystem::remove(testDirectory, ignored);
 }
 
+// 关闭图片已经变成快捷键动作（默认绑 Esc），这里只剩「Esc 没被快捷键占用时干什么」。
 void expectEscapeBehavior() {
-    passOrFail("Escape close preference closes directly from presentation",
-        EscapeBehavior::resolve(true, false, false, true) == EscapeBehavior::Action::CloseImage);
-    passOrFail("Escape close preference closes directly from fullscreen",
-        EscapeBehavior::resolve(false, true, false, true) == EscapeBehavior::Action::CloseImage);
-    passOrFail("Escape leaves presentation when close preference is disabled",
-        EscapeBehavior::resolve(true, false, false, false) == EscapeBehavior::Action::ExitPresentation);
-    passOrFail("Escape exits fullscreen when close preference is disabled",
-        EscapeBehavior::resolve(false, true, true, false) == EscapeBehavior::Action::ExitFullScreen);
-    passOrFail("Escape restores a maximized window when close preference is disabled",
-        EscapeBehavior::resolve(false, false, true, false) == EscapeBehavior::Action::RestoreWindow);
-    passOrFail("Escape does not close a normal window by default",
-        EscapeBehavior::resolve(false, false, false, false) == EscapeBehavior::Action::Ignore);
-    passOrFail("Escape closes a normal window only when explicitly enabled",
-        EscapeBehavior::resolve(false, false, false, true) == EscapeBehavior::Action::CloseImage);
+    passOrFail("an unbound Escape leaves presentation first",
+        EscapeBehavior::resolve(true, true, true) == EscapeBehavior::Action::ExitPresentation);
+    passOrFail("an unbound Escape exits fullscreen when not presenting",
+        EscapeBehavior::resolve(false, true, true) == EscapeBehavior::Action::ExitFullScreen);
+    passOrFail("an unbound Escape restores a maximized window",
+        EscapeBehavior::resolve(false, false, true) == EscapeBehavior::Action::RestoreWindow);
+    passOrFail("an unbound Escape does nothing in a normal window",
+        EscapeBehavior::resolve(false, false, false) == EscapeBehavior::Action::Ignore);
 }
 
 void expectSettingLayout() {
@@ -1959,6 +1954,68 @@ void expectShortcutConfig() {
         future[ShortcutConfig::VERSION_INDEX] == ShortcutConfig::STORAGE_VERSION &&
         ShortcutConfig::getBinding(future.data(), ShortcutConfig::Action::ZoomActual) ==
             ShortcutConfig::binding('1'));
+
+    // 「关闭图片」从「行为」里的开关变成了快捷键，默认就绑在 Esc 上。
+    std::array<uint32_t, 777> closing{};
+    ShortcutConfig::reset(closing.data(), closing.size());
+    passOrFail("closing the image defaults to Escape",
+        ShortcutConfig::matches(ShortcutConfig::getBinding(closing.data(),
+            ShortcutConfig::Action::CloseImage), 0x1B /* VK_ESCAPE */, 0) &&
+        ShortcutConfig::keyName(ShortcutConfig::binding(0x1B /* VK_ESCAPE */), true) == "Esc");
+
+    // 从版本 2 升级只能补第 32 个动作。按版本 1 的数量去补会把 31 号（实际大小）
+    // 一起重写，用户改过的键位就没了——这条盯的就是这个回归。
+    std::array<uint32_t, 777> fromVersion2{};
+    ShortcutConfig::reset(fromVersion2.data(), fromVersion2.size());
+    ShortcutConfig::setBinding(fromVersion2.data(), ShortcutConfig::Action::ZoomActual,
+        ShortcutConfig::binding('8'));
+    fromVersion2[ShortcutConfig::VERSION_INDEX] = 2;
+    fromVersion2[ShortcutConfig::BINDING_BASE_INDEX +
+        ShortcutConfig::actionIndex(ShortcutConfig::Action::CloseImage)] = 0;
+    const uint32_t previous = ShortcutConfig::initialize(fromVersion2.data(), fromVersion2.size());
+    passOrFail("upgrading version two storage adds Escape without touching custom keys",
+        previous == 2 &&
+        ShortcutConfig::matches(ShortcutConfig::getBinding(fromVersion2.data(),
+            ShortcutConfig::Action::CloseImage), 0x1B /* VK_ESCAPE */, 0) &&
+        ShortcutConfig::matches(ShortcutConfig::getBinding(fromVersion2.data(),
+            ShortcutConfig::Action::ZoomActual), '8', 0));
+    // 返回值是给调用方用的：只有读到旧版本才需要迁移「Esc 关闭图片」这类老开关
+    std::array<uint32_t, 777> blank{};
+    passOrFail("initialize reports the version it read so callers know when to migrate",
+        ShortcutConfig::initialize(fromVersion2.data(), fromVersion2.size()) ==
+            ShortcutConfig::STORAGE_VERSION &&
+        ShortcutConfig::initialize(blank.data(), blank.size()) == 0);
+
+    // 清空后必须留在「未设置」，不能被下一次校验悄悄填回默认键
+    std::array<uint32_t, 777> cleared{};
+    ShortcutConfig::reset(cleared.data(), cleared.size());
+    ShortcutConfig::setBinding(cleared.data(), ShortcutConfig::Action::DeleteImage, 0);
+    ShortcutConfig::initialize(cleared.data(), cleared.size());
+    passOrFail("a cleared shortcut stays unassigned and never fires",
+        ShortcutConfig::getBinding(cleared.data(), ShortcutConfig::Action::DeleteImage) == 0 &&
+        !ShortcutConfig::matches(0, 0x2E /* VK_DELETE */, 0) &&
+        ShortcutConfig::keyName(0, true) == "未设置" &&
+        ShortcutConfig::keyName(0, false) == "Unassigned");
+
+    // 双键、三键、四键：修饰键任意组合都要存得下、认得出、显示得对
+    std::array<uint32_t, 777> combos{};
+    ShortcutConfig::reset(combos.data(), combos.size());
+    const uint32_t triple = ShortcutConfig::binding('S',
+        ShortcutConfig::MODIFIER_CONTROL | ShortcutConfig::MODIFIER_SHIFT);
+    const uint32_t quad = ShortcutConfig::binding('P',
+        ShortcutConfig::MODIFIER_CONTROL | ShortcutConfig::MODIFIER_SHIFT |
+        ShortcutConfig::MODIFIER_ALT);
+    ShortcutConfig::setBinding(combos.data(), ShortcutConfig::Action::ExportFrames, triple);
+    ShortcutConfig::setBinding(combos.data(), ShortcutConfig::Action::PrintImage, quad);
+    ShortcutConfig::initialize(combos.data(), combos.size());
+    passOrFail("two, three and four key combinations round-trip through storage",
+        ShortcutConfig::getBinding(combos.data(), ShortcutConfig::Action::ExportFrames) == triple &&
+        ShortcutConfig::getBinding(combos.data(), ShortcutConfig::Action::PrintImage) == quad &&
+        ShortcutConfig::matches(quad, 'P', ShortcutConfig::MODIFIER_CONTROL |
+            ShortcutConfig::MODIFIER_SHIFT | ShortcutConfig::MODIFIER_ALT) &&
+        !ShortcutConfig::matches(quad, 'P', ShortcutConfig::MODIFIER_CONTROL) &&
+        ShortcutConfig::keyName(triple, true) == "Ctrl+Shift+S" &&
+        ShortcutConfig::keyName(quad, true) == "Ctrl+Shift+Alt+P");
 }
 
 void expectDrawioTextFallback(std::string_view path) {

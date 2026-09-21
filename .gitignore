@@ -10,3 +10,6 @@ x64
 # 大体积测试素材：本地存在即参与测试，不进仓库（见 test/corpus/README.md）
 /test/bigimage/
 /test/corpus/_local/
+
+# 重建第三方静态库时自动备份的原件，几百 MB，只在本机留一份
+/lib-backup/

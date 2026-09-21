@@ -29,12 +29,33 @@ inline constexpr int ABOUT_TITLE_FONT_SIZE = FONT_SIZE;
 inline constexpr int SCROLLBAR_WIDTH = 4;
 inline constexpr int SCROLLBAR_RIGHT_MARGIN = 5;
 
-inline constexpr Rect GENERAL_BEHAVIOR_CARD{ 20, 20, 580, 178 };
+// 复选框的几何。和单选组一样，定义在卡片之前，好让「行为」卡片的高度、以及它下面
+// 所有卡片的起点都从行数推导出来——写死数字的话，增减一个开关就得手算一遍。
+inline constexpr int GENERAL_CHECK_FIRST_Y = 54;
+inline constexpr int GENERAL_CHECK_PITCH = 36;
+inline constexpr int GENERAL_CHECK_HEIGHT = 32;
+inline constexpr int GENERAL_CHECK_ROWS = 3;   // 两列排布，共 6 个开关
+
+constexpr Rect generalCheckBoxRect(int index) {
+    return { (index % 2 == 0) ? 38 : 318,
+        GENERAL_CHECK_FIRST_Y + (index / 2) * GENERAL_CHECK_PITCH, 262,
+        GENERAL_CHECK_HEIGHT };
+}
+
+inline constexpr int GENERAL_CHECK_BOTTOM =
+    GENERAL_CHECK_FIRST_Y + (GENERAL_CHECK_ROWS - 1) * GENERAL_CHECK_PITCH +
+    GENERAL_CHECK_HEIGHT;
+
+inline constexpr Rect GENERAL_BEHAVIOR_CARD{ 20, 20, 580, GENERAL_CHECK_BOTTOM + 4 - 20 };
+
+// 显示卡片紧跟在行为卡片下面，间距 16
+inline constexpr int GENERAL_DISPLAY_CARD_Y =
+    GENERAL_BEHAVIOR_CARD.y + GENERAL_BEHAVIOR_CARD.height + 16;
 
 // 单选组的几何。定义在卡片之前，好让卡片高度和编辑器起点从行数推导出来——
 // 写死数字的话，每次增减单选组都得手算一遍，漏改就会和下面的编辑器卡片重叠。
 inline constexpr int GENERAL_RADIO_COUNT = 10;
-inline constexpr int GENERAL_RADIO_FIRST_Y = 252;
+inline constexpr int GENERAL_RADIO_FIRST_Y = GENERAL_DISPLAY_CARD_Y + 38;
 inline constexpr int GENERAL_RADIO_PITCH = 48;
 inline constexpr int GENERAL_RADIO_HEIGHT = 38;
 inline constexpr int GENERAL_RADIO_BOTTOM =
@@ -42,7 +63,6 @@ inline constexpr int GENERAL_RADIO_BOTTOM =
     GENERAL_RADIO_HEIGHT;
 
 // 显示卡片包住全部单选组，末行下面留 18 的边距
-inline constexpr int GENERAL_DISPLAY_CARD_Y = 214;
 inline constexpr Rect GENERAL_DISPLAY_CARD{ 20, GENERAL_DISPLAY_CARD_Y, 580,
     GENERAL_RADIO_BOTTOM + 18 - GENERAL_DISPLAY_CARD_Y };
 inline constexpr int GENERAL_EDITOR_CARD_Y =
@@ -94,15 +114,10 @@ constexpr int generalContentHeight(int editorCount) {
 
 inline constexpr int GENERAL_CONTENT_HEIGHT = generalContentHeight(10);
 
-// 四行两列，行距从 40 收到 36；高度保持 32，仍留得下一行字。
-inline constexpr std::array<Rect, 7> GENERAL_CHECK_BOXES{
-    Rect{ 38, 54, 262, 32 },
-    Rect{ 318, 54, 262, 32 },
-    Rect{ 38, 90, 262, 32 },
-    Rect{ 318, 90, 262, 32 },
-    Rect{ 38, 126, 262, 32 },
-    Rect{ 318, 126, 262, 32 },
-    Rect{ 38, 162, 262, 32 },
+// 三行两列，行距 36、高度 32，留得下一行字。几何见上面的 generalCheckBoxRect。
+inline constexpr std::array<Rect, GENERAL_CHECK_ROWS * 2> GENERAL_CHECK_BOXES{
+    generalCheckBoxRect(0), generalCheckBoxRect(1), generalCheckBoxRect(2),
+    generalCheckBoxRect(3), generalCheckBoxRect(4), generalCheckBoxRect(5),
 };
 
 // 行距从 62 收到 48：十组单选按 62 排会占掉 620 像素，整页显得松垮。
@@ -136,7 +151,6 @@ constexpr Rect associationButtonRect(int index, int buttonsY) {
     return { PAGE_PADDING + index * (width + gap), buttonsY, width, ASSOCIATION_BUTTON_HEIGHT };
 }
 
-inline constexpr Rect SHORTCUT_CARD{ 20, 20, 580, 1510 };
 inline constexpr Rect SHORTCUT_WHEEL_HEADER{ 36, 36, 548, 32 };
 inline constexpr int SHORTCUT_WHEEL_ROW_Y = 72;
 inline constexpr int SHORTCUT_WHEEL_ROW_HEIGHT = 42;
@@ -145,9 +159,13 @@ inline constexpr Rect SHORTCUT_KEYBOARD_HEADER{ 36, 252, 548, 32 };
 inline constexpr int SHORTCUT_KEYBOARD_ROW_Y = 288;
 inline constexpr int SHORTCUT_KEYBOARD_ROW_HEIGHT = 40;
 // 必须与 ShortcutConfig::Action::Count 一致；这里不引用那个头以保持布局可独立测试，
-// 由单元测试断言两者相等。新增动作时行数和内容高度都要跟着加一行。
-inline constexpr int SHORTCUT_KEYBOARD_ROW_COUNT = 31;
-inline constexpr int SHORTCUT_CONTENT_HEIGHT = 1590;
+// 由单元测试断言两者相等。新增动作时只改这一个数，卡片和内容高度会跟着算出来。
+inline constexpr int SHORTCUT_KEYBOARD_ROW_COUNT = 32;
+inline constexpr int SHORTCUT_KEYBOARD_BOTTOM =
+    SHORTCUT_KEYBOARD_ROW_Y + SHORTCUT_KEYBOARD_ROW_COUNT * SHORTCUT_KEYBOARD_ROW_HEIGHT;
+inline constexpr Rect SHORTCUT_CARD{ 20, 20, 580, SHORTCUT_KEYBOARD_BOTTOM + 10 - 20 };
+inline constexpr int SHORTCUT_CONTENT_HEIGHT =
+    SHORTCUT_CARD.y + SHORTCUT_CARD.height + PAGE_PADDING;
 
 constexpr Rect shortcutWheelRow(int index) {
     return { 36, SHORTCUT_WHEEL_ROW_Y + index * SHORTCUT_WHEEL_ROW_HEIGHT,
@@ -157,6 +175,26 @@ constexpr Rect shortcutWheelRow(int index) {
 constexpr Rect shortcutKeyboardRow(int index) {
     return { 36, SHORTCUT_KEYBOARD_ROW_Y + index * SHORTCUT_KEYBOARD_ROW_HEIGHT,
         548, SHORTCUT_KEYBOARD_ROW_HEIGHT };
+}
+
+// 一行里的三块：动作名、当前按键、清空按钮。按键格子留得下 Ctrl+Shift+Alt+某键
+// 这样的四键组合，清空按钮单独占一格——取消快捷键得有个看得见的入口。
+inline constexpr int SHORTCUT_NAME_WIDTH = 240;
+inline constexpr int SHORTCUT_KEY_CELL_X = 256;
+inline constexpr int SHORTCUT_KEY_CELL_WIDTH = 250;
+inline constexpr int SHORTCUT_CLEAR_X = 512;
+inline constexpr int SHORTCUT_CLEAR_SIZE = 30;
+
+constexpr Rect shortcutKeyCell(int index) {
+    const auto row = shortcutKeyboardRow(index);
+    return { row.x + SHORTCUT_KEY_CELL_X, row.y + 5, SHORTCUT_KEY_CELL_WIDTH,
+        row.height - 10 };
+}
+
+constexpr Rect shortcutClearButton(int index) {
+    const auto row = shortcutKeyboardRow(index);
+    return { row.x + SHORTCUT_CLEAR_X, row.y + (row.height - SHORTCUT_CLEAR_SIZE) / 2,
+        SHORTCUT_CLEAR_SIZE, SHORTCUT_CLEAR_SIZE };
 }
 
 inline constexpr Rect ABOUT_HERO_CARD{ 20, 20, 580, 432 };
@@ -243,12 +281,24 @@ constexpr bool shortcutItemsAreSeparated() {
         const auto item = shortcutKeyboardRow(i);
         if (!isInsidePage(item, SHORTCUT_CONTENT_HEIGHT))
             return false;
+        // 动作名、按键格子、清空按钮三块必须都在行内且互不重叠，
+        // 否则点「清空」会落到按键格子上、反而进入录制状态。
+        const auto key = shortcutKeyCell(i);
+        const auto clear = shortcutClearButton(i);
+        const int nameRight = item.x + 8 + SHORTCUT_NAME_WIDTH;
+        if (nameRight > key.x || overlaps(key, clear) ||
+            key.y < item.y || key.y + key.height > item.y + item.height ||
+            clear.y < item.y || clear.y + clear.height > item.y + item.height ||
+            clear.x + clear.width > item.x + item.width)
+            return false;
         for (int j = i + 1; j < SHORTCUT_KEYBOARD_ROW_COUNT; ++j) {
             if (overlaps(item, shortcutKeyboardRow(j)))
                 return false;
         }
     }
-    return true;
+    // 卡片要装得下最后一行，内容高度要滚得到卡片底部
+    return SHORTCUT_CARD.y + SHORTCUT_CARD.height >= SHORTCUT_KEYBOARD_BOTTOM &&
+        isInsidePage(SHORTCUT_CARD, SHORTCUT_CONTENT_HEIGHT);
 }
 
 constexpr bool aboutLayoutIsOrdered() {

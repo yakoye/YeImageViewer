@@ -26,6 +26,7 @@ enum class Kind {
     ShortcutWheel,
     ShortcutReset,
     ShortcutBinding,
+    ShortcutClear,
     AboutProject,
     AboutUpstream,
 };
@@ -121,6 +122,9 @@ constexpr Command resolve(int tab, int x, int windowY, int scrollOffset,
         if (contains(SettingLayout::SHORTCUT_RESET_BUTTON, x, y))
             return { Kind::ShortcutReset, 0, -1 };
         for (int index = 0; index < SettingLayout::SHORTCUT_KEYBOARD_ROW_COUNT; ++index) {
+            // 清空按钮压在行内，必须先判，否则点它会被当成「开始录制」
+            if (contains(SettingLayout::shortcutClearButton(index), x, y))
+                return { Kind::ShortcutClear, index, -1 };
             if (contains(SettingLayout::shortcutKeyboardRow(index), x, y))
                 return { Kind::ShortcutBinding, index, -1 };
         }

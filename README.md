@@ -69,7 +69,8 @@ git clone git@github.com:jark006/JarkViewer.git --depth=50
 直接拿上游的库会链接失败。先跑一次下面的脚本重建这两个库（约 4.9 MiB 的体积差就来自这里）：
 
 ```powershell
-.\scripts\build-thirdparty-slim.ps1 -Install
+.\scripts\build-thirdparty-slim.ps1 -Install   # libavif / libheif，去掉编码器
+.\scripts\build-opencv-slim.ps1 -Install       # opencv_world，去掉 IPP 与用不到的模块
 ```
 
 上游实现资料可参考 [DeepWiki](https://deepwiki.com/jark006/JarkViewer) 和 [Zread](https://zread.ai/jark006/JarkViewer)。

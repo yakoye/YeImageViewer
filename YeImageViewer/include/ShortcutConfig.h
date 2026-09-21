@@ -8,11 +8,13 @@
 namespace ShortcutConfig {
 
 inline constexpr uint32_t STORAGE_MAGIC = 0x594B4559u; // "YKEY"
-inline constexpr uint32_t STORAGE_VERSION = 2;
+inline constexpr uint32_t STORAGE_VERSION = 3;
 
-// 版本 1 的动作数量。新动作只能追加在 Action 末尾：动作的枚举值就是它在存储里的
-// 下标，中间插入会让其后所有已保存的自定义绑定整体错位。
+// 各历史版本的动作数量。新动作只能追加在 Action 末尾：动作的枚举值就是它在存储里的
+// 下标，中间插入会让其后所有已保存的自定义绑定整体错位。升级时要按「存的是哪一版」
+// 决定从第几个动作开始补默认值，按固定的版本 1 数量去补会把后来版本的绑定洗掉。
 inline constexpr std::size_t VERSION1_BINDING_COUNT = 30;
+inline constexpr std::size_t VERSION2_BINDING_COUNT = 31;
 inline constexpr std::size_t MAGIC_INDEX = 0;
 inline constexpr std::size_t VERSION_INDEX = 1;
 inline constexpr std::size_t WHEEL_BASE_INDEX = 2;
@@ -56,6 +58,7 @@ enum class Action : uint32_t {
     OpenAbout,
     DeleteImage,
     ZoomActual,
+    CloseImage,
     Count,
 };
 
@@ -104,10 +107,21 @@ inline constexpr std::array<uint32_t, static_cast<std::size_t>(Action::Count)> D
     binding(0x73),             // OpenAbout: VK_F4
     binding(0x2E),             // DeleteImage: VK_DELETE
     binding('1'),              // ZoomActual
+    binding(0x1B),             // CloseImage: VK_ESCAPE
 };
 
 static_assert(DEFAULT_BINDINGS.size() == static_cast<std::size_t>(Action::Count));
 static_assert(VERSION1_BINDING_COUNT <= DEFAULT_BINDINGS.size());
+static_assert(VERSION2_BINDING_COUNT <= DEFAULT_BINDINGS.size());
+
+// 某个历史版本的存储里有多少个动作。未知版本按当前版本处理，migrate 会因此什么都不补。
+constexpr std::size_t bindingCountForVersion(uint32_t version) {
+    switch (version) {
+    case 1: return VERSION1_BINDING_COUNT;
+    case 2: return VERSION2_BINDING_COUNT;
+    default: return DEFAULT_BINDINGS.size();
+    }
+}
 
 inline constexpr std::array<WheelAction, 3> DEFAULT_WHEEL_ACTIONS{
     WheelAction::PanVertical,
@@ -156,17 +170,19 @@ inline void migrate(uint32_t* storage, std::size_t storedBindingCount) {
     }
 }
 
-inline void initialize(uint32_t* storage, std::size_t count) {
+// 返回这次读到的旧配置版本；0 表示没有可用的旧配置、已经整体写回默认值。
+// 调用方据此把老版本里存在别处的开关（如「Esc 关闭图片」）迁移成快捷键绑定。
+inline uint32_t initialize(uint32_t* storage, std::size_t count) {
     if (!storage || count < BINDING_BASE_INDEX + DEFAULT_BINDINGS.size())
-        return;
+        return 0;
     const uint32_t storedVersion = storage[VERSION_INDEX];
     if (storage[MAGIC_INDEX] != STORAGE_MAGIC ||
         storedVersion == 0 || storedVersion > STORAGE_VERSION) {
         reset(storage, count);
-        return;
+        return 0;
     }
     if (storedVersion < STORAGE_VERSION) {
-        migrate(storage, VERSION1_BINDING_COUNT);
+        migrate(storage, bindingCountForVersion(storedVersion));
         storage[VERSION_INDEX] = STORAGE_VERSION;
     }
     for (std::size_t index = 0; index < DEFAULT_WHEEL_ACTIONS.size(); ++index) {
@@ -177,6 +193,7 @@ inline void initialize(uint32_t* storage, std::size_t count) {
         if (!isStoredBindingValid(storage[BINDING_BASE_INDEX + index]))
             storage[BINDING_BASE_INDEX + index] = DEFAULT_BINDINGS[index];
     }
+    return storedVersion;
 }
 
 inline uint32_t getBinding(const uint32_t* storage, Action action) {
@@ -234,6 +251,7 @@ inline std::string keyName(uint32_t value, bool chinese) {
         case 0x08: result += "Backspace"; break;
         case 0x09: result += "Tab"; break;
         case 0x0D: result += "Enter"; break;
+        case 0x1B: result += "Esc"; break;
         case 0x20: result += chinese ? "空格" : "Space"; break;
         case 0x21: result += "PageUp"; break;
         case 0x22: result += "PageDown"; break;

@@ -234,6 +234,9 @@ protected:
     virtual void onMouseMove(WPARAM keyState) {}
     virtual void onMouseWheel(int delta) {}
     virtual void onKeyDown(WPARAM key) {}
+    // Alt 组合键走的是 WM_SYSKEYDOWN 而不是 WM_KEYDOWN。返回 true 表示自己收下了，
+    // 返回 false 交还系统——Alt+F4、Alt+Space 这些系统快捷键必须照常生效。
+    virtual bool onSysKeyDown(WPARAM key) { return false; }
     virtual void onChar(WPARAM character) {}
     virtual void onClose() {
         if (m_hwnd)
@@ -318,6 +321,11 @@ protected:
         case WM_KEYDOWN:
             onKeyDown(wParam);
             return 0;
+
+        case WM_SYSKEYDOWN:
+            if (onSysKeyDown(wParam))
+                return 0;
+            break;
 
         case WM_CHAR:
             onChar(wParam);

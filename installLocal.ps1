@@ -45,6 +45,14 @@ if (-not $SkipRegistration) {
     New-Item -Path $appPathKey -Force | Out-Null
     Set-Item -Path $appPathKey -Value $targetExe
     New-ItemProperty -Path $appPathKey -Name "Path" -Value $InstallDir -PropertyType String -Force | Out-Null
+
+    # 登记到右键「打开方式」。不登记的话，用户每次都得翻到 exe 的安装路径手动选一次。
+    # 扩展名列表在程序里（SettingParameter::defaultExtList），所以交给 exe 自己写注册表，
+    # 免得脚本里再抄一份、两边走偏。这只是加入候选列表，不会抢走默认打开程序。
+    $openWithProcess = Start-Process -FilePath $targetExe -ArgumentList @("--register-open-with") -Wait -PassThru
+    if ($openWithProcess.ExitCode -ne 0) {
+        throw "Open-with registration failed with exit code $($openWithProcess.ExitCode)."
+    }
     $registered = $true
 }
 
