@@ -69,7 +69,8 @@ a viewer only decodes, so this repository drops the AV1 (aom) and HEVC (x265) en
 Rebuild those two libraries once before building (this is where the 4.9 MiB size difference comes from):
 
 ```powershell
-.\scripts\build-thirdparty-slim.ps1 -Install
+.\scripts\build-thirdparty-slim.ps1 -Install   # libavif / libheif, encoders dropped
+.\scripts\build-opencv-slim.ps1 -Install       # opencv_world, IPP and unused modules dropped
 ```
 
 Additional upstream implementation notes are available on [DeepWiki](https://deepwiki.com/jark006/JarkViewer) and [Zread](https://zread.ai/jark006/JarkViewer).

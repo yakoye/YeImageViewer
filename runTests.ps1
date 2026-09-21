@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$SkipBuild
 )
 
@@ -82,21 +82,21 @@ if ($actualFileVersion -ne $expectedFileVersion) {
 Write-Host "PASS viewer file version is $expectedFileVersion."
 
 # 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
-$expectedProductVersion = "1.37.2-rc1"
+$expectedProductVersion = "1.37.2-rc2"
 $actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
 }
 Write-Host "PASS viewer product version is $expectedProductVersion."
 
-# 体积上限：去掉用不到的 HEVC 编码器后实测 83.78 MiB，上限收到 85 MiB 锁住这次减重成果。
+# 体积上限：去掉用不到的编码器和 OpenCV 的 IPP/contrib 之后实测 57.6 MiB，上限收到 60 MiB。
 # 减重每推进一步就把上限往下收一档，避免又被新的第三方库悄悄顶回去。
-$maximumViewerBytes = 85MB
+$maximumViewerBytes = 60MB
 $viewerBytes = (Get-Item -LiteralPath $viewer).Length
 if ($viewerBytes -gt $maximumViewerBytes) {
-    throw "Viewer is $([math]::Round($viewerBytes / 1MB, 2)) MiB; the size budget is 85 MiB."
+    throw "Viewer is $([math]::Round($viewerBytes / 1MB, 2)) MiB; the size budget is 60 MiB."
 }
-Write-Host "PASS viewer stays within the 85 MiB size budget ($([math]::Round($viewerBytes / 1MB, 2)) MiB)."
+Write-Host "PASS viewer stays within the 60 MiB size budget ($([math]::Round($viewerBytes / 1MB, 2)) MiB)."
 
 Write-Host "Checking local installer copy, shortcut, prompt, and launch contract..."
 $installerScript = Join-Path $repoRoot "installLocal.ps1"
@@ -157,6 +157,66 @@ finally {
     }
 }
 Write-Host "PASS installer copies the runtime and defaults to desktop/Start-menu shortcuts, completion prompt, and launch."
+
+Write-Host "Checking open-with registration covers every default format..."
+if (-not $installerSource.Contains("--register-open-with")) {
+    throw "Installer regression failed: installLocal.ps1 no longer registers the open-with entries."
+}
+# 期望的扩展名直接从程序的常量里读，避免脚本另抄一份、两边走偏
+$defaultExtSource = [IO.File]::ReadAllText((Join-Path $repoRoot "YeImageViewer\include\jarkUtils.h"))
+if ($defaultExtSource -notmatch 'defaultExtList\{\s*\r?\n?\s*"([^"]+)"') {
+    throw "Could not read SettingParameter::defaultExtList from jarkUtils.h."
+}
+$expectedOpenWithExt = $Matches[1] -split ","
+$openWithAppKey = "HKCU:\Software\Classes\Applications\YeImageViewer.exe"
+# 取键的默认值。Get-ItemProperty -Name "(default)" 在值不存在时会抛，严格模式下直接中断，
+# 而「这个值还没设过」恰恰是要区分的正常情况。
+function Get-RegistryDefaultValue([string]$Path) {
+    $key = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    if ($null -eq $key) { return $null }
+    return $key.GetValue("")
+}
+# 「打开方式」只往候选列表里加一项，绝不能顺手改掉默认打开程序，先记下来后面对比
+$defaultHandlerBefore = Get-RegistryDefaultValue "HKCU:\Software\Classes\.png"
+# 有上限地等：这一步只写注册表，正常 0.1 秒就退出。真卡住多半是通知 shell 时被拖住，
+# 那就是产品缺陷（安装脚本同样是同步等它），不能让测试无限期挂在这儿。
+$registerProcess = Start-Process -FilePath $viewer -ArgumentList @("--register-open-with") -PassThru
+if (-not $registerProcess.WaitForExit(30000)) {
+    Stop-Process -Id $registerProcess.Id -Force -ErrorAction SilentlyContinue
+    throw "Open-with registration did not finish within 30 seconds."
+}
+if ($registerProcess.ExitCode -ne 0) {
+    throw "Open-with registration exited with code $($registerProcess.ExitCode)."
+}
+$supportedTypes = (Get-Item -LiteralPath "$openWithAppKey\SupportedTypes" -ErrorAction SilentlyContinue).Property
+$openCommand = Get-RegistryDefaultValue "$openWithAppKey\shell\open\command"
+if ($openCommand -ne ('"' + $viewer + '" "%1"')) {
+    throw "Open-with regression failed: shell\open\command is '$openCommand'."
+}
+foreach ($ext in $expectedOpenWithExt) {
+    if ($supportedTypes -notcontains ".$ext") {
+        throw "Open-with regression failed: .$ext missing from SupportedTypes."
+    }
+    $progIds = (Get-Item -LiteralPath "HKCU:\Software\Classes\.$ext\OpenWithProgids" `
+        -ErrorAction SilentlyContinue).Property
+    if ($progIds -notcontains "YeImageViewer.ImageFile.$ext") {
+        throw "Open-with regression failed: .$ext is not offered in the Open with list."
+    }
+}
+$defaultHandlerAfter = Get-RegistryDefaultValue "HKCU:\Software\Classes\.png"
+if ($defaultHandlerBefore -ne $defaultHandlerAfter) {
+    throw "Open-with regression failed: registration changed the default handler for .png."
+}
+# 测试用的是构建目录里的 exe，跑完把注册指回已安装的那份，免得「打开方式」指向构建产物
+$installedViewer = Join-Path $env:LOCALAPPDATA "Programs\YeImageViewer\YeImageViewer.exe"
+if (Test-Path -LiteralPath $installedViewer -PathType Leaf) {
+    $restoreProcess = Start-Process -FilePath $installedViewer `
+        -ArgumentList @("--register-open-with") -PassThru
+    if (-not $restoreProcess.WaitForExit(30000)) {
+        Stop-Process -Id $restoreProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+}
+Write-Host "PASS open-with registration lists all $($expectedOpenWithExt.Count) default formats without changing the default handler."
 
 $packageScript = Join-Path $repoRoot "packageRelease.ps1"
 $packageSource = [IO.File]::ReadAllText($packageScript)
@@ -1225,25 +1285,44 @@ else {
     }
 }
 
-Write-Host "Checking configured Escape behavior in presentation and framed modes..."
+Write-Host "Checking the Escape shortcut in presentation and framed modes..."
+# 关闭图片以前是「行为」里的开关，现在是快捷键页的一个动作，默认绑在 Esc 上。
+# 这一段盯两件事：默认 Esc 真的关图片；在快捷键页点 x 清空后，Esc 退回原来的
+# 「退出沉浸预览」，而且清空结果要写进 4096 字节的设置文件、重开仍然有效。
 $escapeDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Escape-" + [Guid]::NewGuid().ToString("N"))
 $escapeViewer = Join-Path $escapeDirectory "YeImageViewer.exe"
 $escapeProcess = $null
-try {
-    [void](New-Item -ItemType Directory -Path $escapeDirectory)
-    Copy-Item -LiteralPath $viewer -Destination $escapeViewer
-    $escapeProcess = Start-Process -FilePath $escapeViewer -ArgumentList ('"' + $sharpSvgFixture + '"') -PassThru
+
+function Start-EscapeViewer {
+    $process = Start-Process -FilePath $escapeViewer -ArgumentList ('"' + $sharpSvgFixture + '"') -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds(6)
     do {
         Start-Sleep -Milliseconds 150
-        $escapeProcess.Refresh()
-    } while (-not $escapeProcess.HasExited -and $escapeProcess.MainWindowHandle -eq 0 -and
+        $process.Refresh()
+    } while (-not $process.HasExited -and $process.MainWindowHandle -eq 0 -and
         [DateTime]::UtcNow -lt $deadline)
-    if ($escapeProcess.HasExited -or $escapeProcess.MainWindowHandle -eq 0) {
-        throw "Configured-Escape regression failed: initial viewer did not open."
+    if ($process.HasExited -or $process.MainWindowHandle -eq 0) {
+        throw "Escape-shortcut regression failed: the viewer did not open."
     }
+    return $process
+}
+
+try {
+    [void](New-Item -ItemType Directory -Path $escapeDirectory)
+    Copy-Item -LiteralPath $viewer -Destination $escapeViewer
+
+    $escapeProcess = Start-EscapeViewer
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        [IntPtr]$escapeProcess.MainWindowHandle, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    if (-not $escapeProcess.WaitForExit(3000)) {
+        throw "Escape-shortcut regression failed: Escape does not close the image by default."
+    }
+    Write-Host "PASS Escape closes the image out of the box."
+
+    # 清空「关闭图片」的快捷键：F3 直接开到快捷键页，点该行末尾的 x
+    $escapeProcess = Start-EscapeViewer
     $escapeWindow = [IntPtr]$escapeProcess.MainWindowHandle
-    [void][YeImageViewerTestNativeV1365]::SendMessage($escapeWindow, 0x0111, [UIntPtr]1010, [IntPtr]::Zero)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($escapeWindow, 0x0100, [UIntPtr]0x72, [IntPtr]::Zero)
     $settingDeadline = [DateTime]::UtcNow.AddSeconds(3)
     do {
         Start-Sleep -Milliseconds 100
@@ -1251,67 +1330,59 @@ try {
             [uint32]$escapeProcess.Id, "YeImageViewerSettingWnd")
     } while ($escapeSettingWindow -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $settingDeadline)
     if ($escapeSettingWindow -eq [IntPtr]::Zero) {
-        throw "Configured-Escape regression failed: Settings did not open."
+        throw "Escape-shortcut regression failed: F3 did not open the Shortcuts page."
     }
-    # General checkbox 6 is "Esc closes image". Its coordinates live in the fixed
-    # logical 620x620 canvas, but mouse messages carry physical client pixels.
-    # Derive the factor from the real client width rather than from the DPI: the
-    # viewer caps its own scaling when the window would not fit the work area.
+    # 坐标写在固定的 620x620 逻辑画布里，鼠标消息带的是物理客户区像素；缩放倍率按
+    # 实际客户区宽度反推，不能直接用 DPI——窗口放不下时程序会自己压低缩放。
     $escapeSettingRect = New-Object YeImageViewerTestNativeV1365+RECT
     [void][YeImageViewerTestNativeV1365]::GetClientRect($escapeSettingWindow, [ref]$escapeSettingRect)
     $escapeSettingWidth = $escapeSettingRect.Right - $escapeSettingRect.Left
     if ($escapeSettingWidth -le 0) { $escapeSettingWidth = 620 }
-    $escapeToggleX = [int][Math]::Round((318 + 131) * $escapeSettingWidth / 620.0)
-    $escapeToggleY = [int][Math]::Round((52 + 138 + 16) * $escapeSettingWidth / 620.0)
-    $escapeTogglePosition = [IntPtr](($escapeToggleY -shl 16) -bor ($escapeToggleX -band 0xFFFF))
+    # 「关闭图片」是键盘快捷键里的第 5 行（下标 4）：行 y = 288 + 4*40，x 见 SettingLayout 的
+    # SHORTCUT_CLEAR_X；再加上标签页高度 52 换算成窗口坐标。
+    $clearX = [int][Math]::Round((36 + 512 + 15) * $escapeSettingWidth / 620.0)
+    $clearY = [int][Math]::Round((52 + 288 + 4 * 40 + 20) * $escapeSettingWidth / 620.0)
+    $clearPosition = [IntPtr](($clearY -shl 16) -bor ($clearX -band 0xFFFF))
     [void][YeImageViewerTestNativeV1365]::SendMessage(
-        $escapeSettingWindow, 0x0201, [UIntPtr]1, $escapeTogglePosition)
+        $escapeSettingWindow, 0x0201, [UIntPtr]1, $clearPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage(
-        $escapeSettingWindow, 0x0202, [UIntPtr]0, $escapeTogglePosition)
+        $escapeSettingWindow, 0x0202, [UIntPtr]0, $clearPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage(
         $escapeSettingWindow, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 250
-    [void][YeImageViewerTestNativeV1365]::SendMessage(
-        $escapeWindow, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
-    if (-not $escapeProcess.WaitForExit(3000)) {
-        throw "Configured-Escape regression failed: enabled Esc did not close presentation mode directly."
-    }
-    Write-Host "PASS enabled Esc closes directly from presentation mode."
 
-    $settingsPath = Join-Path $escapeDirectory "YeImageViewer.db"
-    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf) -or
-        (Get-Item -LiteralPath $settingsPath).Length -ne 4096) {
-        throw "Configured-Escape regression failed: shortcut/general settings were not persisted to the 4096-byte configuration file."
+    [void][YeImageViewerTestNativeV1365]::SendMessage($escapeWindow, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 400
+    $escapeProcess.Refresh()
+    if ($escapeProcess.HasExited) {
+        throw "Escape-shortcut regression failed: Escape still closed the image after the shortcut was cleared."
     }
-    $escapeProcess = Start-Process -FilePath $escapeViewer -ArgumentList ('"' + $sharpSvgFixture + '"') -PassThru
-    $deadline = [DateTime]::UtcNow.AddSeconds(6)
-    do {
-        Start-Sleep -Milliseconds 150
-        $escapeProcess.Refresh()
-    } while (-not $escapeProcess.HasExited -and $escapeProcess.MainWindowHandle -eq 0 -and
-        [DateTime]::UtcNow -lt $deadline)
-    if ($escapeProcess.HasExited -or $escapeProcess.MainWindowHandle -eq 0) {
-        throw "Configured-Escape regression failed: persisted-settings viewer did not reopen."
-    }
-    $escapeWindow = [IntPtr]$escapeProcess.MainWindowHandle
-    $escapeClientRect = New-Object YeImageViewerTestNativeV1365+RECT
-    [void][YeImageViewerTestNativeV1365]::GetClientRect($escapeWindow, [ref]$escapeClientRect)
-    $backgroundY = [int](($escapeClientRect.Bottom - $escapeClientRect.Top) / 2)
-    $backgroundPosition = [IntPtr](($backgroundY -shl 16) -bor 4)
-    [void][YeImageViewerTestNativeV1365]::SendMessage($escapeWindow, 0x0200, [UIntPtr]::Zero, $backgroundPosition)
-    [void][YeImageViewerTestNativeV1365]::SendMessage($escapeWindow, 0x0201, [UIntPtr]1, $backgroundPosition)
-    [void][YeImageViewerTestNativeV1365]::SendMessage($escapeWindow, 0x0202, [UIntPtr]0, $backgroundPosition)
-    Start-Sleep -Milliseconds 350
     $framedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($escapeWindow, -16).ToInt64()
     if (($framedStyle -band 0x00C00000) -eq 0) {
-        throw "Configured-Escape regression failed: background click did not create the framed-mode precondition."
+        throw "Escape-shortcut regression failed: a cleared Escape did not fall back to leaving presentation mode."
     }
-    [void][YeImageViewerTestNativeV1365]::SendMessage(
-        $escapeWindow, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    Write-Host "PASS clearing the shortcut makes Escape leave presentation instead of closing."
+
+    $settingsPath = Join-Path $escapeDirectory "YeImageViewer.db"
+    [void]$escapeProcess.CloseMainWindow()
     if (-not $escapeProcess.WaitForExit(3000)) {
-        throw "Configured-Escape regression failed: enabled Esc did not close framed mode."
+        Stop-Process -Id $escapeProcess.Id -Force
+        $escapeProcess.WaitForExit()
     }
-    Write-Host "PASS enabled Esc persists and closes directly from framed mode."
+    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf) -or
+        (Get-Item -LiteralPath $settingsPath).Length -ne 4096) {
+        throw "Escape-shortcut regression failed: the cleared shortcut was not persisted to the 4096-byte configuration file."
+    }
+
+    $escapeProcess = Start-EscapeViewer
+    [void][YeImageViewerTestNativeV1365]::SendMessage(
+        [IntPtr]$escapeProcess.MainWindowHandle, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 400
+    $escapeProcess.Refresh()
+    if ($escapeProcess.HasExited) {
+        throw "Escape-shortcut regression failed: the cleared shortcut came back after a restart."
+    }
+    Write-Host "PASS a cleared shortcut stays cleared across a restart."
 }
 finally {
     if ($escapeProcess -and -not $escapeProcess.HasExited) {
@@ -1589,7 +1660,14 @@ try {
     }
 
     $restoreWindow = [IntPtr]$restoreTestProcess.MainWindowHandle
-    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    # Esc 默认已改为关闭图片，退出沉浸预览改用文档里写的另一条路：点图片外的背景
+    $restoreEnterRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($restoreWindow, [ref]$restoreEnterRect)
+    $restoreBackgroundY = [int](($restoreEnterRect.Bottom - $restoreEnterRect.Top) / 2)
+    $restoreBackgroundPosition = [IntPtr](($restoreBackgroundY -shl 16) -bor 4)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0200, [UIntPtr]::Zero, $restoreBackgroundPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0201, [UIntPtr]1, $restoreBackgroundPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0202, [UIntPtr]0, $restoreBackgroundPosition)
     Start-Sleep -Milliseconds 500
     $firstRect = New-Object YeImageViewerTestNativeV1365+RECT
     [void][YeImageViewerTestNativeV1365]::GetClientRect($restoreWindow, [ref]$firstRect)
@@ -1612,7 +1690,14 @@ try {
         throw "Current-image restore regression failed: immersive browsing did not reach image 5."
     }
 
-    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    # 同上：Esc 现在默认关闭图片，退出沉浸预览改用点击图片外背景
+    $restoreExitRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($restoreWindow, [ref]$restoreExitRect)
+    $restoreExitY = [int](($restoreExitRect.Bottom - $restoreExitRect.Top) / 2)
+    $restoreExitPosition = [IntPtr](($restoreExitY -shl 16) -bor 4)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0200, [UIntPtr]::Zero, $restoreExitPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0201, [UIntPtr]1, $restoreExitPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0202, [UIntPtr]0, $restoreExitPosition)
     Start-Sleep -Milliseconds 600
     $fifthStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($restoreWindow, -16).ToInt64()
     $fifthRect = New-Object YeImageViewerTestNativeV1365+RECT
@@ -1666,6 +1751,46 @@ finally {
     }
 }
 
+# 通过设置界面改「关闭图片」的快捷键。这一项在快捷键页的键盘区第 5 行（下标 4）：
+# 几何见 SettingLayout 的 SHORTCUT_KEYBOARD_ROW_Y / SHORTCUT_KEY_CELL_X / SHORTCUT_CLEAR_X。
+# 坐标写在固定的 620x620 逻辑画布里，鼠标消息带的是物理客户区像素，倍率按实际客户区
+# 宽度反推——不能直接用 DPI，窗口放不下时程序会自己压低缩放。
+function Set-CloseImageShortcut {
+    param(
+        [Parameter(Mandatory)][IntPtr]$ViewerWindow,
+        [Parameter(Mandatory)][int]$ProcessId,
+        [Parameter(Mandatory)][bool]$Assign
+    )
+    [void][YeImageViewerTestNativeV1365]::SendMessage($ViewerWindow, 0x0100, [UIntPtr]0x72, [IntPtr]::Zero)
+    $deadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $settingWindow = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$ProcessId, "YeImageViewerSettingWnd")
+    } while ($settingWindow -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
+    if ($settingWindow -eq [IntPtr]::Zero) {
+        throw "Shortcut regression failed: F3 did not open the Shortcuts page."
+    }
+    $rect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($settingWindow, [ref]$rect)
+    $width = $rect.Right - $rect.Left
+    if ($width -le 0) { $width = 620 }
+    $rowCenterY = 52 + 288 + 4 * 40 + 20
+    $targetX = if ($Assign) { 36 + 256 + 125 } else { 36 + 512 + 15 }
+    $x = [int][Math]::Round($targetX * $width / 620.0)
+    $y = [int][Math]::Round($rowCenterY * $width / 620.0)
+    $position = [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF))
+    [void][YeImageViewerTestNativeV1365]::SendMessage($settingWindow, 0x0201, [UIntPtr]1, $position)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($settingWindow, 0x0202, [UIntPtr]0, $position)
+    if ($Assign) {
+        # 点按键格子进入录制，再按 Esc 把它录回去
+        Start-Sleep -Milliseconds 150
+        [void][YeImageViewerTestNativeV1365]::SendMessage($settingWindow, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage($settingWindow, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 300
+}
+
 Write-Host "Opening the SVG background-selector fixture..."
 $viewerProcess = $null
 try {
@@ -1701,6 +1826,9 @@ try {
     Write-Host "PASS SVG background modes switch without exiting or hanging."
 
     $window = [IntPtr]$viewerProcess.MainWindowHandle
+    # Esc 默认绑在「关闭图片」上，先在快捷键页清掉它，下面这串才是 Esc 的回退链：
+    # 退出沉浸预览 -> 退出全屏 -> 还原最大化窗口 -> 普通窗口里什么都不做。
+    Set-CloseImageShortcut -ViewerWindow $window -ProcessId $viewerProcess.Id -Assign $false
     $presentationStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64()
     if (($presentationStyle -band 0x00C00000) -ne 0) {
         throw "Escape regression failed: SVG did not begin in borderless presentation mode."
@@ -1751,9 +1879,42 @@ try {
     Start-Sleep -Milliseconds 250
     $viewerProcess.Refresh()
     if ($viewerProcess.HasExited -or -not $viewerProcess.Responding) {
-        throw "Escape regression failed: default Escape preference closed the normal window."
+        throw "Escape regression failed: a cleared Escape closed the normal window."
     }
-    Write-Host "PASS maximize enters presentation and Escape restores the framed window."
+    Write-Host "PASS with the shortcut cleared, Escape walks back presentation, fullscreen, and maximize."
+
+    # 装回默认绑定：录制时直接按 Esc，验证 Esc 本身能被录成快捷键，也让后续用例回到默认状态
+    Set-CloseImageShortcut -ViewerWindow $window -ProcessId $viewerProcess.Id -Assign $true
+    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 400
+    $viewerProcess.Refresh()
+    if (-not $viewerProcess.HasExited) {
+        throw "Escape regression failed: Escape could not be recorded back onto the close-image action."
+    }
+    Write-Host "PASS Escape itself can be recorded back onto the close-image shortcut."
+    $viewerProcess = Start-Process -FilePath $viewer -ArgumentList ('"' + $sharpSvgFixture + '"') -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(6)
+    do {
+        Start-Sleep -Milliseconds 150
+        $viewerProcess.Refresh()
+    } while (-not $viewerProcess.HasExited -and $viewerProcess.MainWindowHandle -eq 0 -and
+        [DateTime]::UtcNow -lt $deadline)
+    if ($viewerProcess.HasExited -or $viewerProcess.MainWindowHandle -eq 0) {
+        throw "Escape regression failed: the viewer did not reopen after the close-image check."
+    }
+    $window = [IntPtr]$viewerProcess.MainWindowHandle
+    # 重开后又是沉浸预览，点图片外背景退回带边框窗口，后面的用例都基于这个状态
+    $reopenRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($window, [ref]$reopenRect)
+    $reopenY = [int](($reopenRect.Bottom - $reopenRect.Top) / 2)
+    $reopenPosition = [IntPtr](($reopenY -shl 16) -bor 4)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0200, [UIntPtr]::Zero, $reopenPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0201, [UIntPtr]1, $reopenPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0202, [UIntPtr]0, $reopenPosition)
+    Start-Sleep -Milliseconds 400
+    if (([YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64() -band 0x00C00000) -eq 0) {
+        throw "Escape regression failed: the reopened viewer did not return to a framed window."
+    }
 
     $clientRect = New-Object YeImageViewerTestNativeV1365+RECT
     [void][YeImageViewerTestNativeV1365]::GetClientRect($window, [ref]$clientRect)

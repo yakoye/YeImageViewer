@@ -155,7 +155,9 @@ struct SettingParameter {
     bool printerBalancedBrightness = false;// 是否均衡亮度 文档优化
 
     bool isOneToOnePreferred = false;      // 打开图片时优先1:1
-    bool escapeClosesImage = false;          // 按 Esc 是否直接关闭图片查看窗口
+    bool escapeClosesImage = false;          // 旧字段：按 Esc 是否关闭窗口。现已改为快捷键
+                                             // Action::CloseImage，只在升级旧设置时读一次。
+                                             // 结构固定 4096 字节，字段不能删。
 
     bool isAllowRotateAnimation = true;
     bool isAllowZoomAnimation = true;
@@ -259,7 +261,14 @@ struct SettingParameter {
         }
         lastMonitorDevice[CCHDEVICENAME - 1] = L'\0';
 
-        ShortcutConfig::initialize(reserve, std::size(reserve));
+        const uint32_t previousShortcutVersion =
+            ShortcutConfig::initialize(reserve, std::size(reserve));
+        // 「Esc 关闭图片」以前是「行为」里的开关，现在是快捷键页里的一个动作。
+        // 升级时按旧开关决定 Esc 绑不绑，否则关掉过这个开关的人会突然被 Esc 关掉窗口。
+        if (previousShortcutVersion != 0 && previousShortcutVersion < 3) {
+            ShortcutConfig::setBinding(reserve, ShortcutConfig::Action::CloseImage,
+                escapeClosesImage ? ShortcutConfig::binding(VK_ESCAPE) : 0);
+        }
         ViewerOptions::initialize(reserve, std::size(reserve));
 
         // 确保扩展名列表字符串以空字符结尾

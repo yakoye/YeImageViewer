@@ -26,6 +26,7 @@
 #include "ZoomPolicy.h"
 #include "ZoomEditPolicy.h"
 #include "ToolbarCommand.h"
+#include "OpenWithRegistrar.h"
 
 #include "D3D11App.h"
 #include <ppl.h>
@@ -45,7 +46,7 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.37.2-rc1";
+std::wstring_view appVersion = L"v1.37.2-rc2";
 constinit int appVersionCode = 13630; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
@@ -1879,8 +1880,7 @@ public:
 
     void handleEscapeKey() {
         const auto action = EscapeBehavior::resolve(
-            presentationMode, jarkUtils::IsFullScreen(m_hWnd), IsZoomed(m_hWnd),
-            GlobalVar::settingParameter.escapeClosesImage);
+            presentationMode, jarkUtils::IsFullScreen(m_hWnd), IsZoomed(m_hWnd));
         switch (action) {
         case EscapeBehavior::Action::ExitPresentation:
             exitPresentationMode();
@@ -1890,9 +1890,6 @@ public:
             break;
         case EscapeBehavior::Action::RestoreWindow:
             ShowWindow(m_hWnd, SW_RESTORE);
-            break;
-        case EscapeBehavior::Action::CloseImage:
-            operateQueue.push({ ActionENUM::requestExit });
             break;
         case EscapeBehavior::Action::Ignore:
             break;
@@ -2084,6 +2081,9 @@ public:
         case ShortcutConfig::Action::DeleteImage:
             operateQueue.push({ ActionENUM::deleteImg });
             break;
+        case ShortcutConfig::Action::CloseImage:
+            operateQueue.push({ ActionENUM::requestExit });
+            break;
         case ShortcutConfig::Action::Count:
             return false;
         }
@@ -2159,12 +2159,14 @@ public:
             ctrlIsPressing = true;
             return;
         }
+        // 快捷键先于 Esc 的默认行为：Esc 默认绑在「关闭图片」上，把它清空或改派给
+        // 别的动作后，Esc 才退回原来的退出沉浸预览 / 退出全屏 / 还原窗口。
+        if (dispatchConfiguredShortcut(keyValue))
+            return;
         if (keyValue == VK_ESCAPE) {
             handleEscapeKey();
             return;
         }
-        if (dispatchConfiguredShortcut(keyValue))
-            return;
         // Retain familiar secondary aliases while their primary action remains
         // at its default. Customizing that action removes the aliases as well.
         if (!isEnabledLegacyAlias(keyValue))
@@ -2383,10 +2385,6 @@ public:
 
             case VK_F4: {
                 operateQueue.push({ ActionENUM::setting, 3 });
-            }break;
-
-            case VK_ESCAPE: { // ESC
-                handleEscapeKey();
             }break;
 
             case VK_DELETE: { //DELETE
@@ -5089,6 +5087,17 @@ int WINAPI wWinMain(
     ::SetEnvironmentVariableW(L"OPENCV_IO_ENABLE_OPENEXR", L"1");
     ::_wputenv_s(L"OPENCV_IO_ENABLE_OPENEXR", L"1");
 
+    // imgcodecs 默认拒收超过 2^20 边长、2^30 像素的图片，看图软件不该有这个上限。
+    // 以前靠改 OpenCV 源码去掉判断，其实这几个上限本来就认环境变量——改成在这里设一次，
+    // 换 OpenCV 版本时不用再维护补丁。两套接口都要设：Win32 环境块给子进程用，
+    // CRT 环境块才是 OpenCV 的 getenv 真正读的那一份。
+    for (const auto* name : { L"OPENCV_IO_MAX_IMAGE_WIDTH", L"OPENCV_IO_MAX_IMAGE_HEIGHT" }) {
+        ::SetEnvironmentVariableW(name, L"1073741824");
+        ::_wputenv_s(name, L"1073741824");
+    }
+    ::SetEnvironmentVariableW(L"OPENCV_IO_MAX_IMAGE_PIXELS", L"17179869184");
+    ::_wputenv_s(L"OPENCV_IO_MAX_IMAGE_PIXELS", L"17179869184");
+
     Exiv2::enableBMFF();
 
     // 视觉样式要先初始化公共控件，设置页的原生勾选框与单选钮才走当前系统主题。
@@ -5109,6 +5118,23 @@ int WINAPI wWinMain(
         ::LocalFree(arguments);
         ::CoUninitialize();
         return probeResult;
+    }
+    // 安装脚本装完就调一次，把程序登记进右键「打开方式」，省得用户每次翻 exe 路径。
+    if (arguments != nullptr && argumentCount == 2 &&
+        (std::wstring_view(arguments[1]) == L"--register-open-with" ||
+            std::wstring_view(arguments[1]) == L"--unregister-open-with")) {
+        const bool registering = std::wstring_view(arguments[1]) == L"--register-open-with";
+        std::vector<std::wstring> extensions;
+        for (const auto& item : jarkUtils::splitString(SettingParameter::defaultExtList, ","))
+            extensions.push_back(jarkUtils::utf8ToWstring(item));
+        const auto appPath = jarkUtils::getCurrentAppPath();
+        const bool ok = registering ?
+            OpenWithRegistrar::registerApplication(appPath, extensions) :
+            OpenWithRegistrar::unregisterApplication(appPath, extensions);
+        OpenWithRegistrar::notifyShell();
+        ::LocalFree(arguments);
+        ::CoUninitialize();
+        return ok ? 0 : 1;
     }
     if (arguments != nullptr) {
         ::LocalFree(arguments);

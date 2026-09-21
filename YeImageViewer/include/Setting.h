@@ -140,8 +140,8 @@ private:
                 { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[2]), 14, &GlobalVar::settingParameter.isNoteBeforeDelete },
                 { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[3]), 15, &GlobalVar::settingParameter.enableColorManagement },
                 { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[4]), 54, &GlobalVar::settingParameter.isOneToOnePreferred },
-                { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[5]), 55, &GlobalVar::settingParameter.escapeClosesImage },
-                { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[6]), 56, &GlobalVar::settingParameter.rememberLastMonitor },
+                // 原来这里还有一个「Esc关闭图片」开关，已挪到快捷键页的「关闭图片」动作
+                { toCvRect(SettingLayout::GENERAL_CHECK_BOXES[5]), 56, &GlobalVar::settingParameter.rememberLastMonitor },
             };
             generalTabRadioList = {
                 { toCvRect(SettingLayout::GENERAL_RADIOS[0]), {20, 21, 22, 23}, &GlobalVar::settingParameter.switchImageAnimationMode },
@@ -399,6 +399,7 @@ private:
             ShortcutItem{ ShortcutConfig::Action::ExportFrames, "导出全部帧", "Export all frames" },
             ShortcutItem{ ShortcutConfig::Action::CopyImage, "复制图片", "Copy image" },
             ShortcutItem{ ShortcutConfig::Action::PrintImage, "打印图片", "Print image" },
+            ShortcutItem{ ShortcutConfig::Action::CloseImage, "关闭图片", "Close image" },
             ShortcutItem{ ShortcutConfig::Action::CloseViewer, "关闭看图窗口", "Close viewer" },
             ShortcutItem{ ShortcutConfig::Action::PreviousFrame, "上一帧", "Previous frame" },
             ShortcutItem{ ShortcutConfig::Action::ToggleAnimation, "暂停/继续动图", "Pause/resume animation" },
@@ -439,6 +440,17 @@ private:
         return "";
     }
 
+    // 录制中的格子实时回显正按住的修饰键，三键、四键组合一眼看得出来是收得到的。
+    std::string capturePrompt(bool chinese) const {
+        std::string held;
+        if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) held += "Ctrl + ";
+        if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) held += "Shift + ";
+        if ((GetKeyState(VK_MENU) & 0x8000) != 0) held += "Alt + ";
+        if (!held.empty())
+            return held + (chinese ? "？" : "?");
+        return chinese ? "请按新组合…" : "Press a combination...";
+    }
+
     void refreshShortcutTab(cv::Mat& page) {
         const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
         drawCard(page, toCanvasRect(SettingLayout::SHORTCUT_CARD));
@@ -464,25 +476,34 @@ private:
         textDrawer.putAlignCenter(page, reset, chinese ? "恢复默认" : "Restore defaults", primaryText());
 
         textDrawer.putAlignLeft(page, toCanvasRect(SettingLayout::SHORTCUT_KEYBOARD_HEADER),
-            chinese ? "键盘快捷键（点击右侧按键后重新输入）" :
-                "KEYBOARD (click a key, then press a replacement)", GlobalVar::currentTheme.CHECK);
+            chinese ? "键盘快捷键（点按键后按新组合，可带 Ctrl / Shift / Alt；× 取消）" :
+                "KEYBOARD (click a key, press a new combination; x clears it)",
+            GlobalVar::currentTheme.CHECK);
         for (int index = 0; index < static_cast<int>(shortcutItems.size()); ++index) {
             const auto& item = shortcutItems[index];
             const cv::Rect row = toCanvasRect(SettingLayout::shortcutKeyboardRow(index));
             cv::line(page, { row.x, row.y }, { row.x + row.width, row.y },
                 jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
-            textDrawer.putAlignLeft(page, { row.x + 8, row.y, 290, row.height },
+            textDrawer.putAlignLeft(page,
+                { row.x + S(8), row.y, S(SettingLayout::SHORTCUT_NAME_WIDTH), row.height },
                 chinese ? item.nameZH : item.nameEN, primaryText());
-            const cv::Rect keyRect{ row.x + 312, row.y + 5, 228, row.height - 10 };
+            const cv::Rect keyRect = toCanvasRect(SettingLayout::shortcutKeyCell(index));
             const bool capturing = shortcutCapture && *shortcutCapture == item.action;
             fillRoundedRect(page, keyRect, capturing ?
                 GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_DEEP, 5);
-            const std::string keyText = capturing ?
-                (chinese ? "请按新快捷键…" : "Press a shortcut...") :
+            const std::string keyText = capturing ? capturePrompt(chinese) :
                 ShortcutConfig::keyName(ShortcutConfig::getBinding(
                     GlobalVar::settingParameter.reserve, item.action), chinese);
             textDrawer.putAlignCenter(page, keyRect, keyText.c_str(),
                 capturing ? 0xFFFFFFFFu : secondaryText());
+
+            // 取消快捷键要有个看得见的入口，只靠「录制时按退格」没人找得到
+            const cv::Rect clearRect = toCanvasRect(SettingLayout::shortcutClearButton(index));
+            const bool assigned = ShortcutConfig::getBinding(
+                GlobalVar::settingParameter.reserve, item.action) != 0;
+            fillRoundedRect(page, clearRect, GlobalVar::currentTheme.BG_TAG, 5);
+            textDrawer.putAlignCenter(page, clearRect, "x",
+                assigned ? primaryText() : secondaryText());
         }
     }
 
@@ -819,8 +840,15 @@ private:
             return;
         }
         for (int index = 0; index < static_cast<int>(shortcutItems.size()); ++index) {
-            const cv::Rect row = toCvRect(SettingLayout::shortcutKeyboardRow(index));
-            if (!isInside(x, y, row))
+            // 清空按钮在行内，先判它
+            if (isInside(x, y, toCvRect(SettingLayout::shortcutClearButton(index)))) {
+                ShortcutConfig::setBinding(GlobalVar::settingParameter.reserve,
+                    shortcutItems[index].action, 0);
+                shortcutCapture.reset();
+                isNeedRefreshUI = true;
+                return;
+            }
+            if (!isInside(x, y, toCvRect(SettingLayout::shortcutKeyboardRow(index))))
                 continue;
             shortcutCapture = shortcutItems[index].action;
             isNeedRefreshUI = true;
@@ -901,6 +929,7 @@ private:
         case SettingCommand::Kind::ShortcutWheel:
         case SettingCommand::Kind::ShortcutReset:
         case SettingCommand::Kind::ShortcutBinding:
+        case SettingCommand::Kind::ShortcutClear:
             handleShortcutTab(contentX, contentY);
             break;
         case SettingCommand::Kind::AboutProject:
@@ -935,20 +964,12 @@ private:
             }
         }
         if (curTabIdx == 2 && shortcutCapture) {
-            if (key == VK_ESCAPE) {
-                shortcutCapture.reset();
-                isNeedRefreshUI = true;
+            // Esc 和退格也要能录进去：「关闭图片」的默认键就是 Esc。
+            // 取消录制改为点别处，清空快捷键改为点行尾的 ×，都不再占用按键。
+            if (ShortcutConfig::isModifierKey(static_cast<uint32_t>(key))) {
+                isNeedRefreshUI = true;   // 把正按住的修饰键回显到格子里
                 return;
             }
-            if (key == VK_BACK) {
-                ShortcutConfig::setBinding(GlobalVar::settingParameter.reserve,
-                    *shortcutCapture, 0);
-                shortcutCapture.reset();
-                isNeedRefreshUI = true;
-                return;
-            }
-            if (ShortcutConfig::isModifierKey(static_cast<uint32_t>(key)))
-                return;
             uint32_t modifiers = 0;
             if ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
                 modifiers |= ShortcutConfig::MODIFIER_CONTROL;
@@ -974,6 +995,17 @@ private:
             shortcutCapture.reset();
             isNeedRefreshUI = true;
         }
+    }
+
+    bool onSysKeyDown(WPARAM key) override {
+        // Alt 组合键走的是 WM_SYSKEYDOWN，不收下就永远录不到带 Alt 的快捷键。
+        // 只在录制时收，且 Alt+F4 始终交还系统——录快捷键时也得能关掉窗口。
+        if (curTabIdx != 2 || !shortcutCapture)
+            return false;
+        if (key == VK_F4 && (GetKeyState(VK_MENU) & 0x8000) != 0)
+            return false;
+        onKeyDown(key);
+        return true;
     }
 
     void onChar(WPARAM character) override {
