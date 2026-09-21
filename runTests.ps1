@@ -89,12 +89,14 @@ if ($actualProductVersion -ne $expectedProductVersion) {
 }
 Write-Host "PASS viewer product version is $expectedProductVersion."
 
-$maximumViewerBytes = 92MB
+# 体积上限：去掉用不到的 HEVC 编码器后实测 83.78 MiB，上限收到 85 MiB 锁住这次减重成果。
+# 减重每推进一步就把上限往下收一档，避免又被新的第三方库悄悄顶回去。
+$maximumViewerBytes = 85MB
 $viewerBytes = (Get-Item -LiteralPath $viewer).Length
 if ($viewerBytes -gt $maximumViewerBytes) {
-    throw "Viewer is $([math]::Round($viewerBytes / 1MB, 2)) MiB; the embedded-font size regression limit is 92 MiB."
+    throw "Viewer is $([math]::Round($viewerBytes / 1MB, 2)) MiB; the size budget is 85 MiB."
 }
-Write-Host "PASS viewer stays below the 92 MiB embedded-font regression limit."
+Write-Host "PASS viewer stays within the 85 MiB size budget ($([math]::Round($viewerBytes / 1MB, 2)) MiB)."
 
 Write-Host "Checking local installer copy, shortcut, prompt, and launch contract..."
 $installerScript = Join-Path $repoRoot "installLocal.ps1"
