@@ -29,6 +29,7 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 - 项目文件是 `YeImageViewer/YeImageViewer.vcxproj`，工具集为 `v145`，语言标准为 C++23，目标平台为 x64；需要安装支持 v145 工具集的 Visual Studio/Build Tools。
 - `YeImageViewer.vcxproj` 中 `VcpkgEnabled=false`，默认使用仓库内的静态库目录：`YeImageViewer/lib*`、`YeImageViewer/libffmpeg`、`YeImageViewer/include`。
 - README 说明第三方静态库需从 release 的 `static_lib` 包准备；如果改为 vcpkg，需要在项目属性中启用并补齐依赖。
+- `avif.lib` 与 `heif.lib` 不能直接用上游 `static_lib` 包里的：本仓库去掉了它们携带的 aom / x265 编码器（看图软件只解码），主程序也不再链接 `x265-static.lib`。新环境先跑 `./scripts/build-thirdparty-slim.ps1 -Install` 重建，否则链接失败。
 - Release 输出程序位于 `x64/Release/YeImageViewer.exe`，中间文件位于 `YeImageViewer/x64/<Configuration>/YeImageViewer`。
 
 ## 高层架构

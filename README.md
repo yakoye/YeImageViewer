@@ -43,7 +43,7 @@
 
 - 静态：`apng avif avifs blp bmp dib exr gif hdr heic heif ico icon jfif jp2 jpe jpeg jpg jxl jxr livp pbm pfm pgm pic png pnm ppm psd pxm qoi ras sr svg tga tif tiff webp wp2`
 - 动态：`gif webp png apng jxl avif`
-- 实况：`livp`、`jpg/heic/heif` 中的 LivePhoto、MicroVideo 或 MotionPhoto（暂不播放声音）
+- 实况：`livp`、`jpg/heic/heif` 中的 LivePhoto、MicroVideo 或 MotionPhoto，可播放随视频录下的声音（打开时的自动播放默认静音，鼠标移到「实况」标记上即出声）
 - RAW：`3fr ari arw bay cap cr2 cr3 crw dcr dcs dng drf eip erf fff gpr iiq k25 kdc mdc mef mos mrw nef nrw orf pef ptx r3d raf raw rw2 rwl rwz sr2 srf srw x3f`
 
 ## 构建与本机安装
@@ -64,7 +64,15 @@
 git clone git@github.com:jark006/JarkViewer.git --depth=50
 ```
 
-上游静态库可从 [JarkViewer static_lib](https://github.com/jark006/JarkViewer/releases/tag/static_lib) 获取。上游实现资料可参考 [DeepWiki](https://deepwiki.com/jark006/JarkViewer) 和 [Zread](https://zread.ai/jark006/JarkViewer)。
+上游静态库可从 [JarkViewer static_lib](https://github.com/jark006/JarkViewer/releases/tag/static_lib) 获取，但其中的 `avif.lib` 与 `heif.lib` 不能直接用：
+看图软件只解码不编码，本仓库已去掉 AV1（aom）与 HEVC（x265）编码器，主程序也不再链接 `x265-static.lib`，
+直接拿上游的库会链接失败。先跑一次下面的脚本重建这两个库（约 4.9 MiB 的体积差就来自这里）：
+
+```powershell
+.\scripts\build-thirdparty-slim.ps1 -Install
+```
+
+上游实现资料可参考 [DeepWiki](https://deepwiki.com/jark006/JarkViewer) 和 [Zread](https://zread.ai/jark006/JarkViewer)。
 
 ## 系统兼容
 

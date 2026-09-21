@@ -43,7 +43,7 @@ Clicking the background outside the image or pressing `Esc` returns to a framed 
 
 - Still: `apng avif avifs blp bmp dib exr gif hdr heic heif ico icon jfif jp2 jpe jpeg jpg jxl jxr livp pbm pfm pgm pic png pnm ppm psd pxm qoi ras sr svg tga tif tiff webp wp2`
 - Animated: `gif webp png apng jxl avif`
-- Live: LivePhoto, MicroVideo, and MotionPhoto in `livp`, `jpg`, `heic`, or `heif` files (audio is not played yet)
+- Live: LivePhoto, MicroVideo, and MotionPhoto in `livp`, `jpg`, `heic`, or `heif` files, including the audio recorded with the clip (autoplay is muted by default; hover the LIVE badge to replay with sound)
 - RAW: `3fr ari arw bay cap cr2 cr3 crw dcr dcs dng drf eip erf fff gpr iiq k25 kdc mdc mef mos mrw nef nrw orf pef ptx r3d raf raw rw2 rwl rwz sr2 srf srw x3f`
 
 ## Build and local install
@@ -64,7 +64,15 @@ This repository started as a shallow clone of JarkViewer. To prepare the upstrea
 git clone git@github.com:jark006/JarkViewer.git --depth=50
 ```
 
-Upstream static libraries are available from [JarkViewer static_lib](https://github.com/jark006/JarkViewer/releases/tag/static_lib). Additional upstream implementation notes are available on [DeepWiki](https://deepwiki.com/jark006/JarkViewer) and [Zread](https://zread.ai/jark006/JarkViewer).
+Upstream static libraries are available from [JarkViewer static_lib](https://github.com/jark006/JarkViewer/releases/tag/static_lib), but its `avif.lib` and `heif.lib` cannot be used as-is:
+a viewer only decodes, so this repository drops the AV1 (aom) and HEVC (x265) encoders and no longer links `x265-static.lib`.
+Rebuild those two libraries once before building (this is where the 4.9 MiB size difference comes from):
+
+```powershell
+.\scripts\build-thirdparty-slim.ps1 -Install
+```
+
+Additional upstream implementation notes are available on [DeepWiki](https://deepwiki.com/jark006/JarkViewer) and [Zread](https://zread.ai/jark006/JarkViewer).
 
 ## Compatibility
 

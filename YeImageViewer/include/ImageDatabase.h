@@ -42,13 +42,15 @@
 #include "libheif/heif.h"
 #pragma comment(lib, "heif.lib")
 #pragma comment(lib, "libde265.lib")
-#pragma comment(lib, "x265-static.lib")
 
 // avif v1.3.0  https://github.com/AOMediaCodec/libavif
 #include "avif/avif.h"
 #pragma comment(lib, "avif.lib")
 #pragma comment(lib, "yuv.lib")
 #pragma comment(lib, "dav1d.lib")
+// libavif 与 libheif 都已改为只用 dav1d 解 AV1，不再链接 aom 的编码器。
+// 但 FFmpeg 自带 libaom 编解码器包装（avcodec 里的 libaomenc/libaomdec）仍引用它，
+// 所以 aom.lib 还不能去掉；等 FFmpeg 换成最小化构建后即可一并移除。
 #pragma comment(lib, "aom.lib")
 
 // libraw  v0.21.4  https://www.libraw.org/
