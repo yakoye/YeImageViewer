@@ -17,8 +17,9 @@
                         「HighGUI 光标从 IDC_CROSS 改成 IDC_ARROW」也随之不再需要。）
       ITT / OpenCL   —— 只在性能分析和 GPU 路径上用得到。
 
-    分辨率上限不再靠改源码：OpenCV 的 CV_IO_MAX_IMAGE_WIDTH / HEIGHT / PIXELS 本来就
-    认环境变量，主程序在 wWinMain 里设一次即可，效果一样而且不用维护补丁。
+    分辨率上限仍然要改源码（见下面的补丁段）。这三个上限虽然也认环境变量，但它们是
+    loadsave.cpp 里命名空间作用域的 static const，CRT 在进入 wWinMain 之前就初始化完了，
+    程序里再设环境变量根本来不及——试过，结果是 240MP 以上的 PNG 全被拒绝。
 
     图像编解码器全部保留（JPEG/PNG/TIFF/WEBP/OpenJPEG/OpenEXR/GIF/HDR/SUNRASTER/PXM/PFM），
     与原库一致，否则语料测试会当场报格式不支持。
@@ -77,6 +78,33 @@ if (-not (Test-Path -LiteralPath $source)) {
     Write-Host "解压 ..."
     tar -xzf $archive -C $srcDir
     if (-not (Test-Path -LiteralPath $source)) { throw "解压后没有找到 $source" }
+}
+
+# imgcodecs 默认拒收超过 2^20 边长、2^30 像素的图片，看图软件不该有这个上限。
+# 只能改源码，不能靠环境变量：这三个上限是 loadsave.cpp 里的命名空间作用域
+# static const，CRT 在进入 wWinMain 之前就把它们初始化完了，程序里再设环境变量已经晚了。
+# （动画/PNG 那条路还会把像素数乘以「帧数 + 4」，所以静态 PNG 的实际上限只有
+#  2^30 / 5 ≈ 2.15 亿像素——240MP 的图就是卡在这儿被拒的。）
+$loadsave = Join-Path $source "modules\imgcodecs\src\loadsave.cpp"
+$loadsaveText = [IO.File]::ReadAllText($loadsave)
+$limitPatches = @(
+    @{ Old = '"OPENCV_IO_MAX_IMAGE_WIDTH", 1 << 20';  New = '"OPENCV_IO_MAX_IMAGE_WIDTH", 1 << 22' },
+    @{ Old = '"OPENCV_IO_MAX_IMAGE_HEIGHT", 1 << 20'; New = '"OPENCV_IO_MAX_IMAGE_HEIGHT", 1 << 22' },
+    @{ Old = '"OPENCV_IO_MAX_IMAGE_PIXELS", 1 << 30'; New = '"OPENCV_IO_MAX_IMAGE_PIXELS", (size_t)1 << 38' }
+)
+$patched = 0
+foreach ($patch in $limitPatches) {
+    if ($loadsaveText.Contains($patch.Old)) {
+        $loadsaveText = $loadsaveText.Replace($patch.Old, $patch.New)
+        $patched++
+    }
+    elseif (-not $loadsaveText.Contains($patch.New)) {
+        throw "loadsave.cpp 里找不到待放宽的上限：$($patch.Old)。换 OpenCV 版本后要重新核对这段补丁。"
+    }
+}
+if ($patched -gt 0) {
+    [IO.File]::WriteAllText($loadsave, $loadsaveText)
+    Write-Host "已放宽 imgcodecs 的 $patched 处尺寸上限（边长 2^22，像素 2^38）"
 }
 
 $options = @(
@@ -148,8 +176,10 @@ Write-Host ""
 if ($Install) {
     $backup = Join-Path $repoRoot "lib-backup"
     New-Item -ItemType Directory -Force -Path $backup | Out-Null
-    if (Test-Path -LiteralPath $target) {
-        Copy-Item -LiteralPath $target -Destination (Join-Path $backup "opencv_world4130.lib") -Force
+    $backupFile = Join-Path $backup "opencv_world4130.lib"
+    # 只在第一次建立备份，理由同 build-thirdparty-slim.ps1
+    if ((Test-Path -LiteralPath $target) -and -not (Test-Path -LiteralPath $backupFile)) {
+        Copy-Item -LiteralPath $target -Destination $backupFile -Force
     }
     Copy-Item -LiteralPath $produced.FullName -Destination $target -Force
     Write-Host "已替换 $target，原件备份在 $backup" -ForegroundColor Yellow

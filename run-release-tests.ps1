@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     发布闸门：一条命令跑完全部测试，给出 PASS / FAIL（测试规格 Phase 7）。
 
@@ -12,7 +12,8 @@
       4. 大图渐进加载探针                                 阻断
       5. 翻页响应性探针                                   阻断
       6. 实况照片声音探针（没有音频设备时记为跳过）          阻断
-      7. 性能压测 run-performance.ps1                    阻断
+      7. 极端 PNG 测试集（素材不在本地时记为跳过）           阻断
+      8. 性能压测 run-performance.ps1                    阻断
     产出写到 artifacts/release-gate/：
       summary.md        给人看的总结
       results.json      给机器读的结果（含语料的逐用例数据）
@@ -155,7 +156,7 @@ Invoke-Stage -Name "单元测试 + 窗口行为 + 格式语料（runTests.ps1）
 Invoke-Stage -Name "图片语料全套（run-tests.ps1 -All）" -LogName "03-corpus.log" -Blocking $true `
     -Body { & (Join-Path $repoRoot "tools\image-test-runner\run-tests.ps1") -All -OutputDir $corpusReportDir }
 
-# ---------------------------------------------------------------- 4~6 专项探针
+# ---------------------------------------------------------------- 4~8 专项探针
 Invoke-Stage -Name "大图渐进加载探针" -LogName "04-progressive.log" -Blocking $true `
     -Body { & (Join-Path $repoRoot "tools\image-test-runner\probe-progressive-load.ps1") }
 
@@ -166,8 +167,14 @@ Invoke-Stage -Name "翻页响应性探针" -LogName "05-paging.log" -Blocking $t
 Invoke-Stage -Name "实况照片声音探针" -LogName "06-live-audio.log" -Blocking $true `
     -Body { & (Join-Path $repoRoot "tools\image-test-runner\probe-live-photo-audio.ps1") }
 
-# ---------------------------------------------------------------- 7 性能压测
-Invoke-Stage -Name "性能压测" -LogName "07-performance.log" -Blocking $true `
+# 极端 PNG：真实大图、100MP/200MP+、16 位、Adam7、ICC、超宽超长、损坏文件，
+# 外加混排目录的快速连切（盯的是旧解码任务会不会把画面覆盖回旧图）。
+# 素材近 1.4 GB 不进仓库，本地没有就记 SKIPPED。
+Invoke-Stage -Name "极端 PNG 测试集" -LogName "08-extreme-png.log" -Blocking $true `
+    -Body { & (Join-Path $repoRoot "tools\image-test-runner\probe-extreme-png.ps1") }
+
+# ---------------------------------------------------------------- 9 性能压测
+Invoke-Stage -Name "性能压测" -LogName "09-performance.log" -Blocking $true `
     -SkipReason $(if ($SkipPerformance) { "指定了 -SkipPerformance" } else { '' }) `
     -Body {
         & (Join-Path $repoRoot "tools\image-test-runner\run-performance.ps1") `

@@ -82,21 +82,21 @@ if ($actualFileVersion -ne $expectedFileVersion) {
 Write-Host "PASS viewer file version is $expectedFileVersion."
 
 # 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
-$expectedProductVersion = "1.37.2-rc2"
+$expectedProductVersion = "1.37.2-rc3"
 $actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
 }
 Write-Host "PASS viewer product version is $expectedProductVersion."
 
-# 体积上限：去掉用不到的编码器和 OpenCV 的 IPP/contrib 之后实测 57.6 MiB，上限收到 60 MiB。
+# 体积上限：编码器、OpenCV 的 IPP/contrib、FFmpeg 的全量编解码器都去掉后实测 26.4 MiB，上限收到 28 MiB。
 # 减重每推进一步就把上限往下收一档，避免又被新的第三方库悄悄顶回去。
-$maximumViewerBytes = 60MB
+$maximumViewerBytes = 28MB
 $viewerBytes = (Get-Item -LiteralPath $viewer).Length
 if ($viewerBytes -gt $maximumViewerBytes) {
-    throw "Viewer is $([math]::Round($viewerBytes / 1MB, 2)) MiB; the size budget is 60 MiB."
+    throw "Viewer is $([math]::Round($viewerBytes / 1MB, 2)) MiB; the size budget is 28 MiB."
 }
-Write-Host "PASS viewer stays within the 60 MiB size budget ($([math]::Round($viewerBytes / 1MB, 2)) MiB)."
+Write-Host "PASS viewer stays within the 28 MiB size budget ($([math]::Round($viewerBytes / 1MB, 2)) MiB)."
 
 Write-Host "Checking local installer copy, shortcut, prompt, and launch contract..."
 $installerScript = Join-Path $repoRoot "installLocal.ps1"

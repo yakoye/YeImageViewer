@@ -48,10 +48,7 @@
 #pragma comment(lib, "avif.lib")
 #pragma comment(lib, "yuv.lib")
 #pragma comment(lib, "dav1d.lib")
-// libavif 与 libheif 都已改为只用 dav1d 解 AV1，不再链接 aom 的编码器。
-// 但 FFmpeg 自带 libaom 编解码器包装（avcodec 里的 libaomenc/libaomdec）仍引用它，
-// 所以 aom.lib 还不能去掉；等 FFmpeg 换成最小化构建后即可一并移除。
-#pragma comment(lib, "aom.lib")
+// libavif、libheif 和 FFmpeg 都已改为只用 dav1d 解 AV1，aom 不再被任何一方引用。
 
 // libraw  v0.21.4  https://www.libraw.org/
 #include "libraw/libraw.h"
@@ -113,49 +110,13 @@
 // ffmpeg
 #pragma comment(lib, "swscale.lib")
 #pragma comment(lib, "avcodec.lib")
-#pragma comment(lib, "avdevice.lib")
-#pragma comment(lib, "avfilter.lib")
 #pragma comment(lib, "avformat.lib")
 #pragma comment(lib, "avutil.lib")
 #pragma comment(lib, "swresample.lib")
 
-// ffmpeg 相关的第三方库
-#pragma comment(lib, "snappy.lib")
-#pragma comment(lib, "speex.lib")
-#pragma comment(lib, "soxr.lib")
-#pragma comment(lib, "SDL2-static.lib")
-#pragma comment(lib, "opus.lib")
-#pragma comment(lib, "openh264.lib")
-#pragma comment(lib, "OpenCL.lib")
-#pragma comment(lib, "OpenCLExt.lib")
-#pragma comment(lib, "OpenCLUtils.lib")
-#pragma comment(lib, "OpenCLUtilsCpp.lib")
-#pragma comment(lib, "libmp3lame-static.lib")
-#pragma comment(lib, "libmpghip-static.lib")
-#pragma comment(lib, "libmfx.lib")
-#pragma comment(lib, "libxml2.lib")
-#pragma comment(lib, "vpx.lib")
-#pragma comment(lib, "theora.lib")
-#pragma comment(lib, "theoradec.lib")
-#pragma comment(lib, "theoraenc.lib")
-#pragma comment(lib, "ssh.lib")
-#pragma comment(lib, "srt.lib")
-#pragma comment(lib, "libcrypto.lib")
-#pragma comment(lib, "libssl.lib")
-#pragma comment(lib, "openmpt.lib")
-#pragma comment(lib, "mpg123.lib")
-#pragma comment(lib, "out123.lib")
-#pragma comment(lib, "syn123.lib")
-#pragma comment(lib, "yasm.lib")
-#pragma comment(lib, "vorbis.lib")
-#pragma comment(lib, "vorbisenc.lib")
-#pragma comment(lib, "vorbisfile.lib")
-#pragma comment(lib, "ogg.lib")
-#pragma comment(lib, "modplug.lib")
-#pragma comment(lib, "lzma.lib")
-#pragma comment(lib, "ilbc.lib")
-#pragma comment(lib, "ass.lib")
-#pragma comment(lib, "fribidi.lib")
+// FFmpeg 改为最小化构建（见 scripts/build-ffmpeg-slim.ps1），--disable-autodetect
+// 之后不再外挂任何第三方库，原先这里的 SDL2 / OpenCL / libmfx / vpx / theora /
+// openssl / mpg123 / libass 等一长串 pragma 全部删除。
 
 #pragma comment(lib, "absl_random_seed_sequences.lib")
 #pragma comment(lib, "absl_raw_hash_set.lib")
