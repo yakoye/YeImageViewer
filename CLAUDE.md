@@ -34,6 +34,13 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 # 单独跑某一环
 ./runTests.ps1                                    # 单元测试 + 窗口行为 + 格式语料
 ./tools/image-test-runner/run-tests.ps1 -All      # 图片语料 145 例
+./tools/image-test-runner/probe-extreme-png.ps1   # 极端 PNG：大图/200MP/损坏/快速连切
+```
+
+和其他看图软件横向对比打开与切换速度（不属于发布闸门，按需跑）：
+
+```powershell
+./tools/image-test-runner/compare-viewers.ps1 -ImageDir "D:\photos"
 ```
 
 报告在 `artifacts/release-gate/`：`summary.md` 给人看，`results.json` 给机器读，
