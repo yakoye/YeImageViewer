@@ -22,6 +22,7 @@
 #include "ImageHistogram.h"
 #include "LiveAudioPlayer.h"
 #include "LivePhotoBadge.h"
+#include "FullscreenInfoBar.h"
 #include "MotionTiming.h"
 #include "ZoomPolicy.h"
 #include "ZoomEditPolicy.h"
@@ -287,6 +288,9 @@ struct CurImageParameter {
     int zoomIndex = 0;
     int zoomIndexFix = 0;
     int zoomIndex100percent = 0;
+    // 用户是否手动调过缩放。调过之后拖拽一律作用在图片上，不再改成拖窗口——
+    // 「没有可平移余量就拖窗口」那个便利只适用于用户还没接管缩放的时候。
+    bool zoomUserAdjusted = false;
     bool isAnimationPause = false;
     bool flipHorizontal = false;
     bool flipVertical = false;
@@ -303,6 +307,8 @@ struct CurImageParameter {
     // 画面会突然铺开。强制按窗口适配后，预览与真图的取景一致，只是清晰度不同。
     void Init(int winWidth = 0, int winHeight = 0, int initialRotation = 0,
         bool preventUpscale = false, bool forceFitWindow = false) {
+        // 换图就重新开始：上一张图上手动调过缩放，不该影响下一张的拖拽行为
+        zoomUserAdjusted = false;
 
         curFrameIdx = 0;
         curFrameDelay = 0;
@@ -427,6 +433,22 @@ struct CurImageParameter {
             static_cast<int>(std::distance(zoomList.begin(), it)) : zoomIndex;
     }
 
+    // 「适合窗口」的缩放比例：按当前窗口和当前旋转当场算出来。
+    // 以前是记一个 zoomIndexFix 索引，但 zoomList 会在别处被重建（setZoom、
+    // updateZoomList 都会重建并重新排序），索引跟着指偏；而 setZoom 里还有一句
+    // zoomIndexFix = zoomIndex，等于把「适合窗口」的目标改成了当前缩放。
+    // 实测把窗口拉扁后点「适合窗口」，19% 跳成 100%，整张图反而被切掉。
+    int64_t fitWindowZoom(int windowWidth, int windowHeight) const {
+        const bool upright = (rotation == 0 || rotation == 2);
+        const int sourceWidth = upright ? width : height;
+        const int sourceHeight = upright ? height : width;
+        if (sourceWidth <= 0 || sourceHeight <= 0 || windowWidth <= 0 || windowHeight <= 0)
+            return ZOOM_BASE;
+        return std::max<int64_t>(1, std::min(
+            static_cast<int64_t>(windowWidth) * ZOOM_BASE / sourceWidth,
+            static_cast<int64_t>(windowHeight) * ZOOM_BASE / sourceHeight));
+    }
+
     void slideTargetRotateLeft() {
         slideTarget = { slideTarget.y, -slideTarget.x };
         slideCur = slideTarget;
@@ -521,6 +543,13 @@ public:
     bool zoomTextEditing = false;
     bool zoomEditReplaceSelection = false;
     std::string zoomEditText;
+    // 缩放动作的第一个参数：1 表示以光标为锚点（滚轮），0 表示以窗口中心为锚点
+    // （工具栏按钮、快捷键）。工具栏浮在图片上，用光标当锚点会变成绕按钮缩放。
+    static constexpr int ZOOM_ANCHOR_CURSOR = 1;
+
+    // 当前标题栏文字，全屏信息条直接显示它
+    std::wstring currentTitleText;
+
     Cood mousePos, mousePressPos;
     ImageDatabase imgDB;
     RotationStore rotationStore;
@@ -829,6 +858,15 @@ public:
         if (mode == ViewerOptions::OpenMode::FitImage)
             applyImageFittedWindowSize();
         // RememberLastSize 不用做任何事：窗口创建时已经用了上次保存的 rect。
+
+        // 图片适应窗口：窗口不动，把图片整张缩进去，一眼看完，不用拖。
+        // 这一种不能锚定窗口——锚定那条路径会按工作区重算缩放，把这里算好的覆盖掉。
+        if (mode == ViewerOptions::OpenMode::FitImageInWindow) {
+            operateQueue.push({ ActionENUM::zoomFit });
+            framedWindowAnchored = false;
+            operateQueue.push({ ActionENUM::refresh });
+            return;
+        }
 
         framedWindowAnchored = true;
         operateQueue.push({ ActionENUM::refresh });
@@ -1513,7 +1551,10 @@ public:
                 }
                 else if (ViewerOptions::dragShouldMoveWindow(
                     ViewerOptions::dragMovesWindow(GlobalVar::settingParameter.reserve),
-                    presentationMode, imageHasPanRoom()) &&
+                    presentationMode,
+                    // 用户手动缩放过之后，拖拽一律作用在图片上：他这时候是在看图的
+                    // 细节，把窗口拖走完全不是他要的。
+                    imageHasPanRoom() || curPar.zoomUserAdjusted) &&
                     // 最大化和全屏的窗口没法拖着走，这两种状态下保持原来的平移。
                     !IsZoomed(m_hWnd) && !jarkUtils::IsFullScreen(m_hWnd)) {
                     beginWindowDrag();
@@ -1849,7 +1890,8 @@ public:
         switch (cursorPos)
         {
         case CursorPos::centerArea:
-            operateQueue.push({ zDelta < 0 ? ActionENUM::zoomOut : ActionENUM::zoomIn });
+            operateQueue.push({ zDelta < 0 ? ActionENUM::zoomOut : ActionENUM::zoomIn,
+                ZOOM_ANCHOR_CURSOR });
             break;
 
         case CursorPos::leftEdge:
@@ -2042,7 +2084,10 @@ public:
             operateQueue.push({ ActionENUM::zoomOut });
             break;
         case ShortcutConfig::Action::ZoomFit:
-            operateQueue.push({ ActionENUM::zoomFix });
+            // 派发 zoomFit 而不是 zoomFix：后者是「适合窗口 ←→ 100%」来回切，
+            // 图片不在 100% 时按一下会跳到 100%，整张图反而被切掉，
+            // 和工具栏上同名按钮的行为也对不上。
+            operateQueue.push({ ActionENUM::zoomFit });
             break;
         case ShortcutConfig::Action::ZoomActual:
             operateQueue.push({ ActionENUM::zoomActual });
@@ -2336,7 +2381,7 @@ public:
 
             case '5':
             case VK_NUMPAD5: {
-                operateQueue.push({ ActionENUM::zoomFix });
+                operateQueue.push({ ActionENUM::zoomFit });
             }break;
 
             case VK_NUMPAD1: {
@@ -2605,6 +2650,9 @@ public:
                 exitPresentationMode();
             else
                 enterPresentationMode();
+            break;
+        case ViewerOptions::DoubleClickAction::NextImage:
+            operateQueue.push({ ActionENUM::nextImg });
             break;
         case ViewerOptions::DoubleClickAction::ToggleMaximize:
             // 全屏和沉浸预览都没有“最大化”可言，这两种状态下双击一律理解为还原。
@@ -4120,6 +4168,38 @@ public:
 
     // 实况照片左上角的「实况」标记：仿 macOS 的同心圆图标加文字，半透明胶囊底。
     // 位置记进 liveBadgeRect，鼠标移入即连同声音播放。
+    // 全屏和沉浸预览没有标题栏，把标题那一行画在画面左上角。
+    // 普通窗口有标题栏，不重复显示。
+    bool fullscreenInfoBarVisible() const {
+        return ViewerOptions::fullscreenInfoBar(GlobalVar::settingParameter.reserve) &&
+            (presentationMode || jarkUtils::IsFullScreen(m_hWnd));
+    }
+
+    void drawFullscreenInfoBar(cv::Mat& canvas) {
+        if (!fullscreenInfoBarVisible() || currentTitleText.empty())
+            return;
+
+        const int dpi = overlayDpi();
+        textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
+            TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
+        const auto utf8Title = jarkUtils::wstringToUtf8(currentTitleText);
+        const int measured = textDrawer.measureWidth(utf8Title.c_str());
+        const int textWidth = measured > 0 ?
+            MulDiv(measured, USER_DEFAULT_SCREEN_DPI, dpi) + 2 :
+            static_cast<int>(currentTitleText.size()) * 8;
+        const auto rect = FullscreenInfoBar::place(canvas.cols, canvas.rows, dpi, textWidth);
+        if (rect.empty())
+            return;
+
+        auto surface = roundedSurface(rect.width, rect.height, rect.height / 3,
+            0x8C000000u, 0x33FFFFFFu);
+        jarkUtils::overlayImg(canvas, surface, rect.x, rect.y);
+        const int padding = FullscreenInfoBar::scaled(FullscreenInfoBar::LOGICAL_PADDING_X, dpi);
+        textDrawer.putAlignLeft(canvas,
+            { rect.x + padding, rect.y, rect.width - padding * 2, rect.height },
+            utf8Title.c_str(), 0xFFFFFFFFu);
+    }
+
     void drawLivePhotoBadge(cv::Mat& canvas) {
         liveBadgeRect = {};
         if (!currentIsLivePhoto())
@@ -4135,7 +4215,10 @@ public:
         const int labelWidth = measuredWidth > 0 ?
             MulDiv(measuredWidth, USER_DEFAULT_SCREEN_DPI, dpi) + 2 :
             LivePhotoBadge::logicalTextWidth(jarkUtils::utf8ToWstring(label));
-        const auto rect = LivePhotoBadge::place(currentImageRectOnCanvas(canvas), canvas.cols, canvas.rows,
+        // 信息条也在左上角，两个叠一起谁都看不清：标记整体往下让一行。
+        auto imageRect = currentImageRectOnCanvas(canvas);
+        imageRect.y += FullscreenInfoBar::badgeTopOffset(fullscreenInfoBarVisible(), dpi);
+        const auto rect = LivePhotoBadge::place(imageRect, canvas.cols, canvas.rows,
             dpi, labelWidth);
         if (rect.empty())
             return;
@@ -4413,6 +4496,11 @@ public:
             return slide;
         };
 
+        // 缩放锚点：滚轮以光标为锚点（手感自然），工具栏按钮和快捷键以窗口中心为锚点。
+        // 工具栏是浮在图片上的，一律用光标当锚点的话，点「+」就成了绕着按钮缩放，
+        // 图片会一路往右下角的按钮跑。
+        const Cood zoomAnchor = (operateAction.value1 == ZOOM_ANCHOR_CURSOR) ?
+            mousePos : Cood{ winWidth / 2, winHeight / 2 };
         auto computeZoomSlide = [&](int64_t zoomNext) {
             const int srcW = (curPar.rotation == 0 || curPar.rotation == 2) ? curPar.width : curPar.height;
             const int srcH = (curPar.rotation == 0 || curPar.rotation == 2) ? curPar.height : curPar.width;
@@ -4425,13 +4513,14 @@ public:
             const int imgBottom = (int)std::round(imgTop + (double)srcH * curPar.zoomCur / curPar.ZOOM_BASE);
 
             Cood slideNext = curPar.slideCur;
-            if (mousePos.x >= imgLeft && mousePos.x < imgRight && mousePos.y >= imgTop && mousePos.y < imgBottom) {
+            if (zoomAnchor.x >= imgLeft && zoomAnchor.x < imgRight &&
+                zoomAnchor.y >= imgTop && zoomAnchor.y < imgBottom) {
                 const double halfDiffW_new = (winWidth - (double)srcW * zoomNext / curPar.ZOOM_BASE) / 2.0;
                 const double halfDiffH_new = (winHeight - (double)srcH * zoomNext / curPar.ZOOM_BASE) / 2.0;
-                const double srcX = ((double)mousePos.x - curPar.slideCur.x - halfDiffW_old) * curPar.ZOOM_BASE / curPar.zoomCur;
-                const double srcY = ((double)mousePos.y - curPar.slideCur.y - halfDiffH_old) * curPar.ZOOM_BASE / curPar.zoomCur;
-                slideNext.x = (int)std::round(mousePos.x - halfDiffW_new - srcX * zoomNext / curPar.ZOOM_BASE);
-                slideNext.y = (int)std::round(mousePos.y - halfDiffH_new - srcY * zoomNext / curPar.ZOOM_BASE);
+                const double srcX = ((double)zoomAnchor.x - curPar.slideCur.x - halfDiffW_old) * curPar.ZOOM_BASE / curPar.zoomCur;
+                const double srcY = ((double)zoomAnchor.y - curPar.slideCur.y - halfDiffH_old) * curPar.ZOOM_BASE / curPar.zoomCur;
+                slideNext.x = (int)std::round(zoomAnchor.x - halfDiffW_new - srcX * zoomNext / curPar.ZOOM_BASE);
+                slideNext.y = (int)std::round(zoomAnchor.y - halfDiffH_new - srcY * zoomNext / curPar.ZOOM_BASE);
             }
             curPar.slideTarget = clampSlideForZoom(slideNext, zoomNext);
         };
@@ -4581,6 +4670,7 @@ public:
                     computeZoomSlide(zoomNext);
                 }
                 curPar.zoomTarget = zoomNext;
+                curPar.zoomUserAdjusted = true;
                 smoothShift = true;
                 showZoomIndicator();
             }
@@ -4595,6 +4685,7 @@ public:
                     computeZoomSlide(zoomNext);
                 }
                 curPar.zoomTarget = zoomNext;
+                curPar.zoomUserAdjusted = true;
                 smoothShift = true;
                 showZoomIndicator();
             }
@@ -4614,36 +4705,40 @@ public:
             showZoomIndicator();
         } break;
 
+        // 这三个都改成当场按窗口算，不再读缓存的 zoomIndexFix / zoomIndex100percent：
+        // 那两个索引指向的是随时会被重建的 zoomList，重建后就指到别的档位上了。
         case ActionENUM::zoomFix: {
-            if (curPar.zoomIndex == curPar.zoomIndex100percent)
-                curPar.zoomIndex = curPar.zoomIndexFix;
-            else
-                curPar.zoomIndex = curPar.zoomIndex100percent;
-
-            auto zoomNext = curPar.zoomList[curPar.zoomIndex];
-            if (curPar.zoomTarget && zoomNext != curPar.zoomTarget) {
+            const auto fitZoom = curPar.fitWindowZoom(winWidth, winHeight);
+            const auto zoomNext = (curPar.zoomTarget == curPar.ZOOM_BASE) ?
+                fitZoom : curPar.ZOOM_BASE;
+            if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
                 computeZoomSlide(zoomNext);
-            }
-            curPar.zoomTarget = zoomNext;
+            curPar.selectZoomTarget(zoomNext);
+            curPar.zoomUserAdjusted = true;
             smoothShift = true;
         } break;
 
         case ActionENUM::zoomFit: {
-            curPar.zoomIndex = curPar.zoomIndexFix;
-            const auto zoomNext = curPar.zoomList[curPar.zoomIndex];
+            const auto zoomNext = curPar.fitWindowZoom(winWidth, winHeight);
             if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
                 computeZoomSlide(zoomNext);
-            curPar.zoomTarget = zoomNext;
+            curPar.selectZoomTarget(zoomNext);
+            curPar.zoomUserAdjusted = true;
+            // 完整显示就该居中，不留偏移（Cood 的赋值返回 void，不能连等）
+            curPar.slideTarget = Cood{};
+            curPar.slideCur = Cood{};
             smoothShift = true;
+            showZoomIndicator();
         } break;
 
         case ActionENUM::zoomActual: {
-            curPar.zoomIndex = curPar.zoomIndex100percent;
-            const auto zoomNext = curPar.zoomList[curPar.zoomIndex];
+            const auto zoomNext = curPar.ZOOM_BASE;
             if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
                 computeZoomSlide(zoomNext);
-            curPar.zoomTarget = zoomNext;
+            curPar.selectZoomTarget(zoomNext);
+            curPar.zoomUserAdjusted = true;
             smoothShift = true;
+            showZoomIndicator();
         } break;
 
         case ActionENUM::rotateLeft: {
@@ -4807,11 +4902,6 @@ public:
             curPar.curFrameDelay = curPar.imageAssetPtr->frameDurations[curPar.curFrameIdx];
         }
 
-        drawCanvas(srcImg, mainCanvas);
-        drawExifInfo(mainCanvas);
-        drawExtraUI(mainCanvas);
-        drawZoomIndicator(mainCanvas);
-
         const bool pausedAnimation = curPar.imageAssetPtr->format == ImageFormat::Animated &&
             curPar.isAnimationPause;
         std::wstring fileSize;
@@ -4836,6 +4926,15 @@ public:
         };
         const auto title = WindowTitlePresentation::build(titleModel);
         SetWindowTextW(m_hWnd, title.c_str());
+
+        // 画面要在标题算完之后再画：全屏信息条显示的就是这一行标题，
+        // 内容由同一个 build() 生成，两处永远不会写成两种格式。
+        currentTitleText = title;
+        drawCanvas(srcImg, mainCanvas);
+        drawExifInfo(mainCanvas);
+        drawExtraUI(mainCanvas);
+        drawFullscreenInfoBar(mainCanvas);
+        drawZoomIndicator(mainCanvas);
 
         updateMainCanvas();
 

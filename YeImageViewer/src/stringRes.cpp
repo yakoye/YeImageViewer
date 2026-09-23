@@ -90,6 +90,9 @@ std::string_view UIStringTable[STRING_MAX_NUM][2] = {
     {"静音", "Muted"},
     {"有声", "With Sound"},
     {"实况", "LIVE"},   // 实况照片左上角的标记
+    {"图片适应窗口", "Fit in Window"},      // 打开方式第四项：图片缩进窗口，一眼看完
+    {"下一张", "Next Image"},               // 双击动作第四项
+    {"全屏信息条", "Fullscreen Info Bar"},  // 全屏时左上角显示标题那一行
 };
 
 

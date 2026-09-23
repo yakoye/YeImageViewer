@@ -150,9 +150,9 @@ private:
                 { toCvRect(SettingLayout::GENERAL_RADIOS[3]), {36, 37, 38}, &GlobalVar::settingParameter.rightClickAction },
                 // 这四组存在 reserve 里（设置结构固定 4096 字节，加不了新成员），
                 // 正好都是 uint32_t，可以直接交给单选组按值编辑。
-                { toCvRect(SettingLayout::GENERAL_RADIOS[4]), {57, 58, 59, 60},
+                { toCvRect(SettingLayout::GENERAL_RADIOS[4]), {57, 58, 59, 60, 83},
                     &GlobalVar::settingParameter.reserve[ViewerOptions::OPEN_MODE_INDEX] },
-                { toCvRect(SettingLayout::GENERAL_RADIOS[5]), {61, 62, 63, 64},
+                { toCvRect(SettingLayout::GENERAL_RADIOS[5]), {61, 62, 63, 64, 84},
                     &GlobalVar::settingParameter.reserve[ViewerOptions::DOUBLE_CLICK_INDEX] },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[6]), {65, 66, 67},
                     &GlobalVar::settingParameter.reserve[ViewerOptions::EDGE_ARROWS_INDEX] },
@@ -166,6 +166,9 @@ private:
                 // 实况照片打开时自动播放那一遍是否出声；悬停「实况」标记的主动播放总是出声
                 { toCvRect(SettingLayout::GENERAL_RADIOS[10]), {79, 80, 81},
                     &GlobalVar::settingParameter.reserve[ViewerOptions::LIVE_PHOTO_SOUND_INDEX] },
+                // 全屏和沉浸预览没有标题栏，那一行信息改在画面左上角显示
+                { toCvRect(SettingLayout::GENERAL_RADIOS[11]), {85, 66, 67},
+                    &GlobalVar::settingParameter.reserve[ViewerOptions::FULLSCREEN_INFO_INDEX] },
             };
         }
 
