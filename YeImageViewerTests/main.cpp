@@ -14,6 +14,7 @@
 #include "OverlayLayout.h"
 #include "LoadingBadge.h"
 #include "LivePhotoBadge.h"
+#include "FullscreenInfoBar.h"
 #include "MotionTiming.h"
 #include "AudioClip.h"
 #include "JpegQuality.h"
@@ -907,12 +908,38 @@ void expectLivePhotoOptions() {
     upgraded[VERSION_INDEX] = 2u;
     upgraded[LIVE_PHOTO_SOUND_INDEX] = 1u;
     initialize(upgraded.data(), upgraded.size());
-    passOrFail("live photo sound is seeded incrementally without wiping version 2 settings",
-        upgraded[VERSION_INDEX] == STORAGE_VERSION && STORAGE_VERSION == 3u &&
+    passOrFail("version 2 settings survive while new fields are seeded",
+        upgraded[VERSION_INDEX] == STORAGE_VERSION && STORAGE_VERSION == 4u &&
         livePhotoAutoSound(upgraded.data()) == DEFAULT_LIVE_PHOTO_SOUND &&
+        fullscreenInfoBar(upgraded.data()) == DEFAULT_FULLSCREEN_INFO &&
         openMode(upgraded.data()) == OpenMode::FitImage &&
         infoPanelOpacity(upgraded.data()) == InfoPanelOpacity::Light &&
         !infoHistogramEnabled(upgraded.data()));
+
+    // 版本 3 升级到 4：只补全屏信息条这一格，版本 3 之前的配置一律不动。
+    // 这一格故意先填 1，证明迁移确实写了默认值，而不是碰巧原本就是 0。
+    std::array<uint32_t, 1024> fromVersion3{};
+    reset(fromVersion3.data(), fromVersion3.size());
+    setLivePhotoAutoSound(fromVersion3.data(), true);
+    setDoubleClickAction(fromVersion3.data(), DoubleClickAction::None);
+    fromVersion3[VERSION_INDEX] = 3u;
+    fromVersion3[FULLSCREEN_INFO_INDEX] = 7u;
+    initialize(fromVersion3.data(), fromVersion3.size());
+    passOrFail("the fullscreen info bar is seeded without wiping version 3 settings",
+        fullscreenInfoBar(fromVersion3.data()) == DEFAULT_FULLSCREEN_INFO &&
+        livePhotoAutoSound(fromVersion3.data()) &&
+        doubleClickAction(fromVersion3.data()) == DoubleClickAction::None);
+
+    // 新增的两个枚举值必须能存下来：双击「下一张」、打开方式「图片适应窗口」
+    std::array<uint32_t, 1024> added{};
+    reset(added.data(), added.size());
+    setDoubleClickAction(added.data(), DoubleClickAction::NextImage);
+    setOpenMode(added.data(), OpenMode::FitImageInWindow);
+    initialize(added.data(), added.size());
+    passOrFail("double-click next image and fit-in-window open mode round-trip",
+        doubleClickAction(added.data()) == DoubleClickAction::NextImage &&
+        openMode(added.data()) == OpenMode::FitImageInWindow &&
+        !opensImmersive(OpenMode::FitImageInWindow));
 
     // 已经是版本 3 的文件：用户打开的声音不能被迁移逻辑冲掉
     std::array<uint32_t, 1024> current{};
@@ -1533,7 +1560,7 @@ void expectSettingLayout() {
     }
     // 必须与 SettingCommand::resolve 里的 optionCounts 逐项一致，否则命中判定会用错
     // 分段宽度。数量与 GENERAL_RADIOS 对齐由下面的静态断言兜住。
-    constexpr std::array<int, 11> radioOptions{ 3, 3, 2, 2, 3, 3, 2, 2, 2, 4, 2 };
+    constexpr std::array<int, 12> radioOptions{ 3, 3, 2, 2, 4, 4, 2, 2, 2, 4, 2, 2 };
     static_assert(radioOptions.size() == SettingLayout::GENERAL_RADIOS.size());
     for (int rowIndex = 0; rowIndex < static_cast<int>(SettingLayout::GENERAL_RADIOS.size()); ++rowIndex) {
         const auto row = SettingLayout::GENERAL_RADIOS[rowIndex];
@@ -1849,10 +1876,53 @@ void expectWindowTitlePresentation() {
         .pixelHeight = 857,
         .fileSize = L"1.6 MiB",
         .fileName = L"gpu心智图.png",
+        });
+    passOrFail("window title reads position, name, pixels with size, then zoom",
+        title == L"[03/16] gpu心智图.png 1514x857(1.6MB) 125%");
+
+    // 序号补零对齐：标题栏是比例字体，补空格照样跳，只有补零宽度才固定。
+    const auto padded = WindowTitlePresentation::build({
+        .current = 8, .total = 22, .zoomPercent = 110,
+        .pixelWidth = 671, .pixelHeight = 477,
+        .fileSize = L"108.0 KiB",
+        .fileName = L"PixPin_2026-07-14_17-12-54.png",
+        });
+    passOrFail("single-digit position is zero padded to the width of the total",
+        padded == L"[08/22] PixPin_2026-07-14_17-12-54.png 671x477(108.0KB) 110%");
+
+    // 状态和旋转排在最后：它们时有时无，夹在中间会把后面的字段整体推走。
+    const auto decorated = WindowTitlePresentation::build({
+        .state = L"暂停",
+        .current = 3, .total = 4, .zoomPercent = 100,
+        .pixelWidth = 64, .pixelHeight = 64,
+        .fileSize = L"2.3 KiB",
+        .fileName = L"a.gif",
         .rotation = L"右转 90°",
         });
-    passOrFail("window title leads with the filename before position zoom dimensions size and rotation",
-        title == L"gpu心智图.png | [3/16] | 125% | 1514 × 857 px | 1.6 MiB | 右转 90°");
+    passOrFail("optional state and rotation trail the fixed fields",
+        decorated == L"[3/4] a.gif 64x64(2.3KB) 100% 暂停 右转 90°");
+
+    passOrFail("file size drops the space and the IEC i",
+        WindowTitlePresentation::compactSize(L"1.6 MiB") == L"1.6MB" &&
+        WindowTitlePresentation::compactSize(L"980 KiB") == L"980KB" &&
+        WindowTitlePresentation::compactSize(L"12 Bytes") == L"12Bytes");
+}
+
+void expectFullscreenInfoBar() {
+    // 信息条贴左上角，宽度跟着文字走，但最宽不超过画布一半——再长就横穿整个画面。
+    const auto narrow = FullscreenInfoBar::place(1920, 1080, 96, 300);
+    passOrFail("fullscreen info bar hugs the top-left corner",
+        narrow.x == 12 && narrow.y == 12 && narrow.width == 320 && narrow.height == 26);
+    const auto clamped = FullscreenInfoBar::place(1920, 1080, 96, 4000);
+    passOrFail("a very long title is capped at half the canvas width",
+        clamped.width == 960);
+    passOrFail("the bar disappears in a window too small to hold it",
+        FullscreenInfoBar::place(40, 40, 96, 300).empty());
+    // 「实况」标记同在左上角，显示信息条时要整体让开一行，否则两者叠在一起。
+    passOrFail("the live badge steps down only while the info bar shows",
+        FullscreenInfoBar::badgeTopOffset(true, 96) == 32 &&
+        FullscreenInfoBar::badgeTopOffset(false, 96) == 0 &&
+        FullscreenInfoBar::badgeTopOffset(true, 192) == 64);
 }
 
 void expectWheelInput() {
@@ -2116,6 +2186,7 @@ int main(int argc, char* argv[]) {
     expectTextRendering();
     expectImageInfoPresentation();
     expectWindowTitlePresentation();
+    expectFullscreenInfoBar();
     expectWheelInput();
     expectShortcutConfig();
     expectLivePhotoOptions();

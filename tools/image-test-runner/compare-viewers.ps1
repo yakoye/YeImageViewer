@@ -9,7 +9,7 @@
       切换速度  按一次「→」，到画面首次变化、再到画面稳定各用了多久。
 
     为什么靠读屏幕像素而不是读窗口标题：只有一部分软件把文件名写在标题里
-    （JarkViewer、GuoheView、YeImageViewer 写了，ImageGlass 10 和 2345看图王 没写），
+    （JarkViewer、GuoheView、YeImageViewer 写了，ImageGlass 和 2345看图王 没写），
     靠标题就没法把五个软件放在同一把尺子上量。像素判定对所有软件一视同仁，
     量到的也正是用户真正看到画面的那一刻。
 
@@ -34,7 +34,7 @@ param(
         (Join-Path $PSScriptRoot "..\..\x64\Release\YeImageViewer.exe"),
         "D:\software\JarkViewer.exe",
         "C:\Program Files\GuoheView\GuoheView.exe",
-        "C:\Users\color\AppData\Local\Programs\ImageGlass\ImageGlass.exe",
+        "C:\Program Files\ImageGlass\ImageGlass.exe",
         "C:\Program Files\2345Soft\2345Pic\2345Pic.exe"
     ),
     [string]$OutputCsv = (Join-Path $PSScriptRoot "..\..\artifacts\release-gate\viewer-comparison.csv"),
@@ -556,9 +556,19 @@ foreach ($exe in $Viewer) {
     Close-ViewerProcesses $resolved
 
     $exeSizeMb = [math]::Round((Get-Item -LiteralPath $resolved).Length / 1MB, 1)
+    # 只看 exe 会失真：.NET 或壳程序的 exe 才几百 KB，代码都在同目录的 DLL 里。
+    # 目录名带程序名时统计整个安装目录；绿色单文件（如放在公共目录里的 JarkViewer）
+    # 只报 exe 自身，免得把目录里别人的文件也算进去。
+    $installDirectory = Split-Path -Parent $resolved
+    $installSizeMb = $null
+    if ((Split-Path -Leaf $installDirectory) -like "*$label*") {
+        $installSizeMb = [math]::Round(((Get-ChildItem -LiteralPath $installDirectory -Recurse -File `
+            -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum) / 1MB, 1)
+    }
     $row = [pscustomobject]@{
         软件          = $label
         程序体积MB    = $exeSizeMb
+        安装目录MB    = $installSizeMb
         窗口出现ms    = Get-Median $windowTimes
         画面稳定ms    = Get-Median $settleTimes
         切换首帧ms    = if ($switchResult -and $switchResult.Foreground) { Get-Median $switchResult.FirstChange } else { $null }
