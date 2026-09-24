@@ -90,7 +90,8 @@ RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 3
 
 ## 修改注意事项
 
-- `SettingParameter` 按固定 4096 字节设置文件持久化；不要随意调整成员顺序、大小或删除保留字段，否则会破坏旧设置兼容性。
+- `SettingParameter` 按固定 4096 字节持久化在 `YeImageViewer.db` 开头；不要随意调整成员顺序、大小或删除保留字段，否则会破坏旧设置兼容性。
+- 那 4096 字节之后是 UTF-8 文本区（`ConfigFile.h`），外部编辑器、复制/移动目标、图片旋转记录都写在那里，落地文件只有本体、缩略图 DLL 和这一个配置。写设置必须用 `r+b` 就地改写，用 `wb` 会截断文件、把文本区连同三样配置一起抹掉。三块数据各认自己的键前缀，保存时要把别人的行原样带回去（`ConfigFile::foreignLines`）。
 - 新增图片格式时，同时检查 `ImageDatabase::supportExt` / `supportRaw`、加载分派逻辑、EXIF/方向处理、设置页文件关联列表和 README 格式列表。
 - UI 文本来自 `stringRes`（三列：0 简体中文 / 1 English / 2 繁體中文，表在 `stringRes.cpp`，三选一工具在 `UiLanguage.h`）。加语言要同时改两张表、`Setting.h` 的语言单选和 `ShortcutItem` 的名字列。
   界面里凡是「中文一套、英文一套」的判断一律走 `isChineseUI()` / `tr()` / `UiLanguage::pick()`，写成 `UI_LANG == 0` 会让繁體界面掉进英文分支。
