@@ -35,7 +35,7 @@ param(
         "D:\software\JarkViewer.exe",
         "C:\Program Files\GuoheView\GuoheView.exe",
         "C:\Program Files\ImageGlass\ImageGlass.exe",
-        "C:\Program Files\2345Soft\2345Pic\2345Pic.exe"
+        "C:\Program Files\2345Soft\2345Pic\2345PicViewer.exe"
     ),
     [string]$OutputCsv = (Join-Path $PSScriptRoot "..\..\artifacts\release-gate\viewer-comparison.csv"),
     [double]$OpenTimeoutSeconds = 20.0,
