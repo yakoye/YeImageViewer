@@ -393,7 +393,7 @@ enum class ActionENUM:int64_t {
     zoomIn, zoomOut, zoomFix, zoomFit, zoomActual, zoomPercent,
     toggleExif, toggleFullScreen, toggleSlideshow, toggleFavorite, copyImage,
     requestExit, refresh, rotateLeft, rotateRight, flipHorizontal, flipVertical,
-    printImage, deleteImg, setting
+    printImage, deleteImg, dropImgFromList, setting
 };
 
 enum class CursorPos :int {

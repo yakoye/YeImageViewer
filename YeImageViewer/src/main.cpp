@@ -47,7 +47,7 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.37.2-rc4";
+std::wstring_view appVersion = L"v1.37.2-rc6";
 constinit int appVersionCode = 13630; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
@@ -560,6 +560,8 @@ public:
     bool presentationClickCandidate = false;
     // 真图仍在后台解码时，这里记着它的路径，主循环据此轮询接手。
     wstring pendingImagePath;
+    wstring transientNotice;
+    std::chrono::steady_clock::time_point transientNoticeUntil{};
     std::chrono::steady_clock::time_point loadingStartedAt{};
     // 模糊预览是否已经顶上去了，避免每帧重复替换
     bool pendingPreviewShown = false;
@@ -822,9 +824,15 @@ public:
             return;
         }
 
-        // 移动之后当前文件已经不在了，按删除同一条路径收尾：从列表里去掉并显示下一张
+        const std::wstring folder = FileTargetConfig::displayName(target);
+        showNotice((chinese ? (move ? L"已移动到 " : L"已复制到 ")
+                            : (move ? L"Moved to " : L"Copied to ")) + folder);
+
+        // 移动之后源文件已经不在了，把它从浏览列表里摘掉并显示下一张。
+        // 这里不能复用 deleteImg：那条路径开头就要求文件还在，移动完正好不在，
+        // 于是磁盘上文件搬走了、界面却毫无反应。
         if (move)
-            operateQueue.push({ ActionENUM::deleteImg, 1 });
+            operateQueue.push({ ActionENUM::dropImgFromList });
     }
 
     // 目标为空时先问一次位置；问到了就记下来当当前目标。
@@ -846,6 +854,48 @@ public:
         FileTargetConfig::addTarget(GlobalVar::fileTargets, picked);
         saveFileTargets();
         copyOrMoveCurrentImage(picked, move);
+    }
+
+    // 当前文件已经不在原来的位置了——删掉了，或者被「移动到指定位置」搬走了。
+    // 把它从浏览列表里摘掉，清掉缓存和旋转记录，再显示下一张。
+    // 抽出来是因为「移动」这条路径不能走 deleteImg：那边开头就有
+    // 「文件不存在则直接返回」的判断，而移动完成后源文件正好已经不存在了，
+    // 结果就是文件在磁盘上搬走了、界面上却一点反应都没有。
+    void removeCurrentImageEntry() {
+        if (imgFileList.empty() || curFileIdx < 0 || curFileIdx >= (int)imgFileList.size())
+            return;
+
+        const std::wstring gone = imgFileList[curFileIdx];
+        rotationStore.erase(gone);
+        rotationStore.save();
+
+        // 缓存必须同步失效，否则之后出现的同名文件会显示旧内容
+        imgDB.erase(gone);
+        imgDB.erasePreview(gone);
+
+        imgFileList.erase(imgFileList.begin() + curFileIdx);
+
+        if (imgFileList.empty()) {
+            imgFileList.emplace_back(m_wndCaption);
+            curFileIdx = 0;
+            imgDB.put(m_wndCaption, { ImageFormat::Still,
+                imgDB.getHomeMat(GetDpiForWindow(m_hWnd)), {}, {}, getUIString(32) });
+        }
+        else if (curFileIdx >= (int)imgFileList.size()) {
+            curFileIdx = (int)imgFileList.size() - 1;
+        }
+
+        switchToImage(curFileIdx, neighborIndexAfter(curFileIdx));
+        if (!hasCurrentImagePath())
+            applyHomeWindowSize();
+    }
+
+    // 画面顶部一闪而过的一行字。复制文件成功时界面上不会有任何变化，
+    // 没有这行字，用户按完键只能去资源管理器里翻，才知道到底有没有复制成功。
+    void showNotice(std::wstring text, int milliseconds = 2200) {
+        transientNotice = std::move(text);
+        transientNoticeUntil = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(milliseconds);
     }
 
     void renameCurrentImage() {
@@ -1683,6 +1733,11 @@ public:
             case ToolbarCommand::Command::ZoomFit: operateQueue.push({ ActionENUM::zoomFit }); break;
             case ToolbarCommand::Command::FitImage:
                 // 和「适应窗口」相反：这次是窗口去贴合图片，让原图一次看完。
+                // 沉浸预览是铺满工作区的无边框半透明窗口，在那里改窗口尺寸没有意义，
+                // 看到的只会是「全屏透明状态下图片被缩小」。所以先退回带边框窗口，
+                // 再把窗口撑成图片的大小。
+                if (presentationMode)
+                    exitPresentationMode();
                 applyImageFittedWindowSize();
                 framedWindowAnchored = true;
                 operateQueue.push({ ActionENUM::refresh });
@@ -2604,6 +2659,27 @@ public:
                 launchCurrentImageInExternalEditor(GlobalVar::externalEditors[index]);
             return;
         }
+
+        // 「复制到 / 移动到」子菜单里每个已记住的目标各占一个命令号，
+        // 和外部编辑器一样是一段连续区间，switch 接不住，要单独拦一次。
+        // 选中的目标同时成为当前目标，快捷键下次直接用它。
+        const auto runOnTargetRange = [&](ContextMenu first, ContextMenu last, bool move) {
+            const int begin = static_cast<int>(first);
+            if (commandId < begin || commandId > static_cast<int>(last))
+                return false;
+            const std::size_t index = static_cast<std::size_t>(commandId - begin);
+            if (index >= GlobalVar::fileTargets.targets.size())
+                return true;
+            FileTargetConfig::setActive(GlobalVar::fileTargets, index);
+            saveFileTargets();
+            copyOrMoveCurrentImage(GlobalVar::fileTargets.targets[index], move);
+            return true;
+        };
+        if (runOnTargetRange(ContextMenu::copyToTargetFirst, ContextMenu::copyToTargetLast, false))
+            return;
+        if (runOnTargetRange(ContextMenu::moveToTargetFirst, ContextMenu::moveToTargetLast, true))
+            return;
+
         switch ((ContextMenu)wParam) {
         case ContextMenu::openNewImage: {
             openImageFromDialog();
@@ -4217,6 +4293,7 @@ public:
             case CursorPos::toolbarFlipHorizontal: hovered = OverlayLayout::flipHorizontalRect(canvas.cols, canvas.rows, overlayDpi()); break;
             case CursorPos::toolbarFlipVertical: hovered = OverlayLayout::flipVerticalRect(canvas.cols, canvas.rows, overlayDpi()); break;
             case CursorPos::toolbarZoomFit: hovered = OverlayLayout::zoomFitRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarFitImage: hovered = OverlayLayout::fitImageRect(canvas.cols, canvas.rows, overlayDpi()); break;
             case CursorPos::toolbarZoomActual: hovered = OverlayLayout::zoomActualRect(canvas.cols, canvas.rows, overlayDpi()); break;
             case CursorPos::toolbarFullscreen: hovered = OverlayLayout::fullscreenRect(canvas.cols, canvas.rows, overlayDpi()); break;
             case CursorPos::toolbarSetting: hovered = OverlayLayout::settingsRect(canvas.cols, canvas.rows, overlayDpi()); break;
@@ -4280,6 +4357,39 @@ public:
         textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
             TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
         textDrawer.putAlignCenter(canvas, { x, y, width, height }, text, 0xFFE8EAF0u);
+    }
+
+    // 复制 / 移动成功后顶部一闪而过的一行字。样式与「正在加载」标记一致；
+    // 两个同时出现时让到下面一行，不互相压住。
+    void drawTransientNotice(cv::Mat& canvas) {
+        if (transientNotice.empty())
+            return;
+        if (std::chrono::steady_clock::now() >= transientNoticeUntil) {
+            transientNotice.clear();
+            return;
+        }
+
+        const int dpi = overlayDpi();
+        const auto scale = [dpi](int value) { return MulDiv(value, dpi, USER_DEFAULT_SCREEN_DPI); };
+
+        const std::string text = jarkUtils::wstringToUtf8(transientNotice);
+        int textWidth = 0;
+        for (const wchar_t character : transientNotice)
+            textWidth += character > 0xFF ? 14 : 7;
+
+        const int width = scale(std::max(120, textWidth + 26));
+        const int height = scale(28);
+        if (canvas.cols < width + scale(16) || canvas.rows < height * 3)
+            return;
+
+        const int x = (canvas.cols - width) / 2;
+        const int y = scale(14) + (pendingImagePath.empty() ? 0 : height + scale(8));
+        auto surface = roundedSurface(width, height, scale(7), 0xE6103A1Fu, 0x3F4ADE80u);
+        jarkUtils::overlayImg(canvas, surface, x, y);
+
+        textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
+            TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
+        textDrawer.putAlignCenter(canvas, { x, y, width, height }, text.c_str(), 0xFFE8F7EDu);
     }
 
     // 当前图片在画布上的显示区域，与 drawCanvas 的定位算法一致
@@ -4406,6 +4516,7 @@ public:
             return;
 
         drawLoadingBadge(canvas);
+        drawTransientNotice(canvas);
         drawLivePhotoBadge(canvas);
 
         // 空占位图只有 1×1，工具栏、翻页箭头这些都无从谈起。
@@ -4968,28 +5079,11 @@ public:
                 break;
             }
 
-            rotationStore.erase(target);
-            rotationStore.save();
+            removeCurrentImageEntry();
+        } break;
 
-            // 文件已删除，缓存必须同步失效，否则之后出现的同名文件会显示旧内容
-            imgDB.erase(std::wstring(target));
-            imgDB.erasePreview(std::wstring(target));
-
-            imgFileList.erase(imgFileList.begin() + curFileIdx);
-
-            if (imgFileList.empty()) {
-                imgFileList.emplace_back(m_wndCaption);
-                curFileIdx = 0;
-                imgDB.put(m_wndCaption, { ImageFormat::Still,
-                    imgDB.getHomeMat(GetDpiForWindow(m_hWnd)), {}, {}, getUIString(32) });
-            }
-            else if (curFileIdx >= (int)imgFileList.size()) {
-                curFileIdx = (int)imgFileList.size() - 1;
-            }
-
-            switchToImage(curFileIdx, neighborIndexAfter(curFileIdx));
-            if (!hasCurrentImagePath())
-                applyHomeWindowSize();
+        case ActionENUM::dropImgFromList: {
+            removeCurrentImageEntry();
         } break;
 
         case ActionENUM::requestExit: {
