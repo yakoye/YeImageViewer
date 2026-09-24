@@ -5,7 +5,13 @@
 
 namespace OverlayLayout {
 
-inline constexpr int BASE_TOOLBAR_WIDTH = 580;
+// 插入「适应图片」按钮后加宽一个按钮位：580 -> 615。
+// 左侧与中间那组的偏移、以及三条分隔线的位置全部保持不变，只有新按钮右边的
+// 按钮整体让出一格——这样分组间距和左右边距都和改动前一模一样。
+//
+// 代价：播放键相对窗口中心偏左 17 像素。右侧比左侧多出一个按钮，想让播放键严格
+// 居中就得在左边空出 35 像素，那块空白一眼就看得出来，偏 17 像素看不出来。
+inline constexpr int BASE_TOOLBAR_WIDTH = 615;
 inline constexpr int BASE_TOOLBAR_HEIGHT = 50;
 inline constexpr int BASE_TOOLBAR_BOTTOM_MARGIN = 20;
 inline constexpr int BASE_TOOLBAR_REVEAL_SIDE_PADDING = 48;
@@ -68,6 +74,7 @@ enum class Hit {
     CopyImage,
     DeleteImage,
     Settings,
+    FitImage,
     ZoomOut,
     ZoomText,
     ZoomIn,
@@ -161,21 +168,23 @@ constexpr Rect toolbarPreviousRect(int width, int height, int dpi = BASE_DPI) { 
 constexpr Rect toolbarPlayPauseRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 265, BASE_BUTTON_SIZE, dpi); }
 constexpr Rect toolbarNextRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 300, BASE_BUTTON_SIZE, dpi); }
 constexpr Rect zoomFitRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 350, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect zoomActualRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 385, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect fullscreenRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 420, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect zoomOutRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 467, BASE_SMALL_BUTTON_SIZE, dpi); }
+// 「适应图片」紧挨在「适应窗口」右边：一个是图片去迁就窗口，一个是窗口去迁就图片。
+constexpr Rect fitImageRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 385, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect zoomActualRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 420, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect fullscreenRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 455, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect zoomOutRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 502, BASE_SMALL_BUTTON_SIZE, dpi); }
 constexpr Rect zoomTextRect(int width, int height, int dpi = BASE_DPI) {
     const int scale = toolbarScale(width, dpi);
     const auto toolbar = toolbarRect(width, height, dpi);
     const int rectHeight = scaled(BASE_SMALL_BUTTON_SIZE, scale);
     return {
-        toolbar.x + scaled(BASE_TOOLBAR_PADDING + 491, scale),
+        toolbar.x + scaled(BASE_TOOLBAR_PADDING + 526, scale),
         toolbar.y + (toolbar.height - rectHeight) / 2,
         scaled(50, scale),
         rectHeight,
     };
 }
-constexpr Rect zoomInRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 545, BASE_SMALL_BUTTON_SIZE, dpi); }
+constexpr Rect zoomInRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 580, BASE_SMALL_BUTTON_SIZE, dpi); }
 
 // 左右两侧的翻页按钮。默认关闭，由设置里的开关决定是否参与命中与绘制。
 constexpr Rect edgePreviousRect(int, int canvasHeight, int dpi = BASE_DPI) {
@@ -248,6 +257,7 @@ constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y, int dpi =
     if (zoomActualRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomActual;
     if (fullscreenRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::Fullscreen;
     if (settingsRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::Settings;
+    if (fitImageRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::FitImage;
     if (zoomOutRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomOut;
     if (zoomTextRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomText;
     if (zoomInRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomIn;

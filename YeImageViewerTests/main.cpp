@@ -15,6 +15,7 @@
 #include "LoadingBadge.h"
 #include "LivePhotoBadge.h"
 #include "FullscreenInfoBar.h"
+#include "FileTargetConfig.h"
 #include "MotionTiming.h"
 #include "AudioClip.h"
 #include "JpegQuality.h"
@@ -327,9 +328,22 @@ void expectOverlayLayout() {
         toolbar.y + toolbar.height == height - OverlayLayout::BASE_TOOLBAR_BOTTOM_MARGIN &&
         toolbarPrevious.width == OverlayLayout::BASE_BUTTON_SIZE &&
         toolbarNext.width == OverlayLayout::BASE_BUTTON_SIZE);
+    // 播放键在工具栏里大致居中即可，不再要求严格对齐窗口中心：右侧比左侧多一个
+    // 按钮，想严格居中就得在左边留一块空白，那比偏十几像素难看得多。
+    constexpr int playCenterOffset = 265 + OverlayLayout::BASE_BUTTON_SIZE / 2 +
+        OverlayLayout::BASE_TOOLBAR_PADDING;
     passOrFail("previous, slideshow, and next form the centered primary toolbar group",
-        toolbarPlayPause.x + toolbarPlayPause.width / 2 == width / 2 &&
+        std::abs(playCenterOffset - OverlayLayout::BASE_TOOLBAR_WIDTH / 2) <= 24 &&
+        toolbarPlayPause.x + toolbarPlayPause.width / 2 > toolbar.x + toolbar.width / 3 &&
+        toolbarPlayPause.x + toolbarPlayPause.width / 2 < toolbar.x + toolbar.width * 2 / 3 &&
         toolbarPrevious.x < toolbarPlayPause.x && toolbarPlayPause.x < toolbarNext.x);
+    // 新按钮插在「适应窗口」和「实际大小」中间，三者依次排开且不重叠
+    constexpr auto fitWindowButton = OverlayLayout::zoomFitRect(width, height);
+    constexpr auto fitImageButton = OverlayLayout::fitImageRect(width, height);
+    constexpr auto actualSizeButton = OverlayLayout::zoomActualRect(width, height);
+    passOrFail("the fit-window, fit-image, and actual-size buttons sit side by side",
+        fitWindowButton.x + fitWindowButton.width <= fitImageButton.x &&
+        fitImageButton.x + fitImageButton.width <= actualSizeButton.x);
 
     // 进程是 PerMonitorHighDPIAware，Windows 不做拉伸，所以浮动控件必须自己按 DPI
     // 放大才能保持同样的观感尺寸。此前 scale 只看窗口宽度且封顶 100%。
@@ -414,6 +428,7 @@ void expectOverlayLayout() {
         hitCenter(OverlayLayout::flipHorizontalRect(width, height)) == OverlayLayout::Hit::FlipHorizontal &&
         hitCenter(OverlayLayout::flipVerticalRect(width, height)) == OverlayLayout::Hit::FlipVertical &&
         hitCenter(OverlayLayout::zoomFitRect(width, height)) == OverlayLayout::Hit::ZoomFit &&
+        hitCenter(OverlayLayout::fitImageRect(width, height)) == OverlayLayout::Hit::FitImage &&
         hitCenter(OverlayLayout::zoomActualRect(width, height)) == OverlayLayout::Hit::ZoomActual &&
         hitCenter(OverlayLayout::fullscreenRect(width, height)) == OverlayLayout::Hit::Fullscreen &&
         hitCenter(OverlayLayout::settingsRect(width, height)) == OverlayLayout::Hit::Settings &&
@@ -429,6 +444,7 @@ void expectOverlayLayout() {
         ToolbarCommand::resolve(OverlayLayout::Hit::FlipHorizontal) == ToolbarCommand::Command::FlipHorizontal &&
         ToolbarCommand::resolve(OverlayLayout::Hit::FlipVertical) == ToolbarCommand::Command::FlipVertical &&
         ToolbarCommand::resolve(OverlayLayout::Hit::ZoomFit) == ToolbarCommand::Command::ZoomFit &&
+        ToolbarCommand::resolve(OverlayLayout::Hit::FitImage) == ToolbarCommand::Command::FitImage &&
         ToolbarCommand::resolve(OverlayLayout::Hit::ZoomActual) == ToolbarCommand::Command::ZoomActual &&
         ToolbarCommand::resolve(OverlayLayout::Hit::Fullscreen) == ToolbarCommand::Command::Fullscreen &&
         ToolbarCommand::resolve(OverlayLayout::Hit::Settings) == ToolbarCommand::Command::Settings &&
@@ -1340,7 +1356,7 @@ void expectMonitorPlacement() {
 }
 
 void expectToolbarIcons(const std::vector<std::string>& paths) {
-    bool allValid = paths.size() == 18;
+    bool allValid = paths.size() == 19;   // 新增「适应图片」
     for (const auto& path : paths) {
         const auto source = readFile(path);
         const auto renderer = SvgRenderer::create(source);
@@ -1908,6 +1924,64 @@ void expectWindowTitlePresentation() {
         WindowTitlePresentation::compactSize(L"12 Bytes") == L"12Bytes");
 }
 
+void expectFileTargetConfig() {
+    using namespace FileTargetConfig;
+
+    Model model;
+    addTarget(model, LR"(D:\photos\精选)");
+    addTarget(model, LR"(D:\photos\废片)");
+    passOrFail("adding a target makes it the current one",
+        model.targets.size() == 2 && model.active == 1 &&
+        activeTarget(model) == LR"(D:\photos\废片)");
+
+    // 同一个位置再加一次不该多出一条，只是把它切回当前
+    addTarget(model, LR"(d:/photos/精选)");
+    passOrFail("re-adding an existing target just switches to it",
+        model.targets.size() == 2 && model.active == 0);
+
+    for (int index = 0; index < 4; ++index)
+        addTarget(model, L"D:\\photos\\第" + std::to_wstring(index));
+    passOrFail("the target list is capped at five and drops the oldest",
+        model.targets.size() == MAX_TARGETS &&
+        model.targets.front() != LR"(D:\photos\精选)");
+
+    // 删掉当前之前的一项，当前指向的那个位置要跟着往前挪，不能指到别人身上
+    Model shifting;
+    addTarget(shifting, L"A");
+    addTarget(shifting, L"B");
+    addTarget(shifting, L"C");
+    setActive(shifting, 2);
+    removeTarget(shifting, 0);
+    passOrFail("removing an earlier target keeps the current one selected",
+        shifting.targets.size() == 2 && activeTarget(shifting) == L"C");
+    removeTarget(shifting, 1);
+    passOrFail("removing the current target falls back to the last one",
+        shifting.targets.size() == 1 && activeTarget(shifting) == L"B");
+    removeTarget(shifting, 0);
+    passOrFail("an empty list reports no target instead of an out-of-range index",
+        !hasTarget(shifting) && activeTarget(shifting).empty());
+
+    passOrFail("the menu shows the folder name, not the whole path",
+        displayName(LR"(D:\photos\精选)") == L"精选" &&
+        displayName(LR"(D:\photos\精选\)") == L"精选");
+
+    // 目标里已有同名文件时让路，绝不覆盖
+    const std::vector<std::wstring> existing{ L"a.png", L"a (2).png" };
+    const auto exists = [&](const std::wstring& name) {
+        return std::find(existing.begin(), existing.end(), name) != existing.end();
+    };
+    passOrFail("a colliding name steps aside instead of overwriting",
+        uniqueFileName(L"a.png", exists) == L"a (3).png" &&
+        uniqueFileName(L"b.png", exists) == L"b.png");
+    passOrFail("a name without an extension still gets a numbered suffix",
+        uniqueFileName(L"README", exists) == L"README" &&
+        uniqueFileName(L"a", [](const std::wstring& name) { return name == L"a"; }) == L"a (2)");
+    // 一万个候选名全被占（几乎不可能，但不能因此死循环）：放弃并退回原名，
+    // 交给上层的复制调用去报错，而不是在这里转到天荒地老。
+    passOrFail("an impossible collision gives up instead of looping forever",
+        uniqueFileName(L"a.png", [](const std::wstring&) { return true; }) == L"a.png");
+}
+
 void expectFullscreenInfoBar() {
     // 信息条贴左上角，宽度跟着文字走，但最宽不超过画布一半——再长就横穿整个画面。
     const auto narrow = FullscreenInfoBar::place(1920, 1080, 96, 300);
@@ -2186,6 +2260,7 @@ int main(int argc, char* argv[]) {
     expectTextRendering();
     expectImageInfoPresentation();
     expectWindowTitlePresentation();
+    expectFileTargetConfig();
     expectFullscreenInfoBar();
     expectWheelInput();
     expectShortcutConfig();
@@ -2210,17 +2285,17 @@ int main(int argc, char* argv[]) {
         failedTests += 4;
         std::cerr << "FAIL SVG regression fixture paths were not provided\n";
     }
-    if (argc >= 22) {
+    if (argc >= 23) {
         expectToolbarIcons({ argv[4], argv[5], argv[6], argv[7], argv[8], argv[9],
             argv[10], argv[11], argv[12], argv[13], argv[14], argv[15], argv[16],
-            argv[17], argv[18], argv[19], argv[20], argv[21] });
+            argv[17], argv[18], argv[19], argv[20], argv[21], argv[22] });
     }
     else {
         ++failedTests;
         std::cerr << "FAIL toolbar icon paths were not provided\n";
     }
-    if (argc >= 25) {
-        expectApplicationIcons({ argv[22], argv[23], argv[24] });
+    if (argc >= 26) {
+        expectApplicationIcons({ argv[23], argv[24], argv[25] });
     }
     else {
         ++failedTests;

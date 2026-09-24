@@ -20,6 +20,7 @@
 #define IDR_SVG_FLIP_VERTICAL_ICON      149
 #define IDR_SVG_FIT_WINDOW_ICON         150
 #define IDR_SVG_ACTUAL_SIZE_ICON        151
+#define IDR_SVG_FIT_IMAGE_ICON          168
 #define IDR_SVG_FULLSCREEN_ICON         152
 #define IDR_SVG_FAVORITE_ICON           153
 #define IDR_SVG_COPY_ICON               154

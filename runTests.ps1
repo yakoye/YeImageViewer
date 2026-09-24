@@ -37,6 +37,7 @@ $toolbarIcons = @(
     (Join-Path $repoRoot "YeImageViewer\file\icons\flip-horizontal.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\flip-vertical.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\fit-window.svg"),
+    (Join-Path $repoRoot "YeImageViewer\file\icons\fit-image.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\actual-size.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\fullscreen.svg"),
     (Join-Path $repoRoot "YeImageViewer\file\icons\favorite.svg"),
@@ -82,7 +83,7 @@ if ($actualFileVersion -ne $expectedFileVersion) {
 Write-Host "PASS viewer file version is $expectedFileVersion."
 
 # 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
-$expectedProductVersion = "1.37.2-rc3"
+$expectedProductVersion = "1.37.2-rc4"
 $actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
@@ -528,6 +529,11 @@ public static class YeImageViewerTestNativeV1365
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
 
+    // 用来探「窗口现在能不能回消息」：句柄出现不等于消息泵已经跑起来了
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessageTimeout(IntPtr window, uint message,
+        UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out UIntPtr result);
+
     [DllImport("user32.dll")]
     public static extern bool IsZoomed(IntPtr window);
 
@@ -654,7 +660,7 @@ function Get-ToolbarScale {
     if ($CanvasWidth -le 16) {
         return [int][Math]::Floor(600 * $target / 1000)
     }
-    $widthScale = [int][Math]::Floor(($CanvasWidth - 16) * 1000 / 580)
+    $widthScale = [int][Math]::Floor(($CanvasWidth - 16) * 1000 / 615)
     $value = [Math]::Min($widthScale, $target)
     return [Math]::Min([Math]::Max($value, $minimum), $target)
 }
@@ -857,14 +863,15 @@ try {
     [void][YeImageViewerTestNativeV1365]::GetWindowText(
         $freshWindow, $freshFramedTitle, $freshFramedTitle.Capacity)
     $freshFramedTitleText = $freshFramedTitle.ToString()
-    # The filename leads the title: Windows truncates from the right, and the
-    # taskbar preview and Alt+Tab only ever show the opening segment.
-    if ($freshFramedTitleText -notmatch '^[^|\\/:]+\.[A-Za-z0-9]+\s*\|' -or
-        $freshFramedTitleText -notmatch '\|\s*\[\d+/\d+\]\s*\|\s*\d+%\s*\|\s*\d+\s*×\s*\d+\s*px\s*\|' -or
+    # 标题格式：[08/22] 名称.png 671x477(108.0KB) 110%
+    # 序号在最前且补零对齐（标题栏是比例字体，补空格照样跳），像素紧跟文件名，
+    # 体积写在括号里，缩放收尾。标题里不能出现完整路径。
+    if ($freshFramedTitleText -notmatch '^\[\d+/\d+\]\s' -or
+        $freshFramedTitleText -notmatch '\s[^\\/:]+\.[A-Za-z0-9]+\s\d+x\d+\([^)]+\)\s\d+%' -or
         $freshFramedTitleText.Contains([IO.Path]::GetDirectoryName($sharpSvgFixture))) {
-        throw "Title regression failed: framed title must lead with the filename before position, zoom, dimensions, and size. Actual: $freshFramedTitleText"
+        throw "Title regression failed: expected [n/total] name WxH(size) zoom%. Actual: $freshFramedTitleText"
     }
-    Write-Host "PASS framed title leads with the filename before position, zoom, dimensions, and size."
+    Write-Host "PASS framed title reads position, name, pixels with size, then zoom."
 
     # WM_MOUSEWHEEL packs modifier flags in the low word and the signed wheel
     # delta in the high word. The requested defaults are Ctrl=zoom,
@@ -1304,6 +1311,20 @@ function Start-EscapeViewer {
     if ($process.HasExited -or $process.MainWindowHandle -eq 0) {
         throw "Escape-shortcut regression failed: the viewer did not open."
     }
+
+    # 窗口句柄出现不等于已经能干活：首次打开这张 SVG 要渲染好几秒（冷热差别实测
+    # 140 ms 对 4~6 s，改动前后一样）。这期间发过去的按键要排在后面，本条用例
+    # 量的是「Esc 关不关图」，不是启动有多快，所以先等它能回消息再按。
+    $readyDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    $result = [UIntPtr]::Zero
+    do {
+        $responded = [YeImageViewerTestNativeV1365]::SendMessageTimeout(
+            [IntPtr]$process.MainWindowHandle, 0x0000, [UIntPtr]::Zero, [IntPtr]::Zero,
+            2, 1000, [ref]$result)
+        if ($responded -ne [IntPtr]::Zero) { break }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $readyDeadline)
+
     return $process
 }
 
@@ -1314,7 +1335,10 @@ try {
     $escapeProcess = Start-EscapeViewer
     [void][YeImageViewerTestNativeV1365]::SendMessage(
         [IntPtr]$escapeProcess.MainWindowHandle, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
-    if (-not $escapeProcess.WaitForExit(3000)) {
+    # 给 10 秒而不是 3 秒：按键进的是操作队列，要等绘制循环空出来才被消费，而首次
+    # 打开这张 SVG 的渲染要好几秒（冷 5.5 s / 热 0.12 s，今天改动前后一样，
+    # 已用 A/B 确认不是回归）。本条量的是「Esc 关不关图」，不是启动有多快。
+    if (-not $escapeProcess.WaitForExit(10000)) {
         throw "Escape-shortcut regression failed: Escape does not close the image by default."
     }
     Write-Host "PASS Escape closes the image out of the box."
@@ -1908,11 +1932,17 @@ try {
     [void][YeImageViewerTestNativeV1365]::GetClientRect($window, [ref]$reopenRect)
     $reopenY = [int](($reopenRect.Bottom - $reopenRect.Top) / 2)
     $reopenPosition = [IntPtr](($reopenY -shl 16) -bor 4)
-    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0200, [UIntPtr]::Zero, $reopenPosition)
-    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0201, [UIntPtr]1, $reopenPosition)
-    [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0202, [UIntPtr]0, $reopenPosition)
-    Start-Sleep -Milliseconds 400
-    if (([YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64() -band 0x00C00000) -eq 0) {
+    # 点击进的是操作队列，要等绘制循环空出来才被消费；这张 SVG 首次渲染要好几秒，
+    # 固定等 400 毫秒不够，改成轮询到出现边框为止。
+    $framedDeadline = [DateTime]::UtcNow.AddSeconds(12)
+    do {
+        [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0200, [UIntPtr]::Zero, $reopenPosition)
+        [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0201, [UIntPtr]1, $reopenPosition)
+        [void][YeImageViewerTestNativeV1365]::SendMessage($window, 0x0202, [UIntPtr]0, $reopenPosition)
+        Start-Sleep -Milliseconds 400
+        $framedStyleNow = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64()
+    } while (($framedStyleNow -band 0x00C00000) -eq 0 -and [DateTime]::UtcNow -lt $framedDeadline)
+    if (($framedStyleNow -band 0x00C00000) -eq 0) {
         throw "Escape regression failed: the reopened viewer did not return to a framed window."
     }
 
@@ -1935,7 +1965,7 @@ try {
     $targetClientWidth = $clientWidth
     $targetClientHeight = $clientHeight
     $toolbarScale = Get-ToolbarScale -CanvasWidth $targetClientWidth -Dpi $windowDpi
-    $toolbarWidth = Get-ScaledValue -Value 580 -Scale $toolbarScale
+    $toolbarWidth = Get-ScaledValue -Value 615 -Scale $toolbarScale
     $toolbarHeight = Get-ScaledValue -Value 50 -Scale $toolbarScale
     $toolbarBottom = Get-ScaledValue -Value 20 -Scale $toolbarScale
     $toolbarX = [int]($targetClientWidth / 2)
@@ -1949,10 +1979,10 @@ try {
     }
     Write-Host "PASS centered reference toolbar hover remains responsive."
 
-    $scaledToolbarWidth = Get-ScaledValue -Value 580 -Scale $toolbarScale
+    $scaledToolbarWidth = Get-ScaledValue -Value 615 -Scale $toolbarScale
     $scaledButtonSize = Get-ScaledValue -Value 34 -Scale $toolbarScale
     $scaledPadding = Get-ScaledValue -Value 8 -Scale $toolbarScale
-    $scaledZoomTextOffset = Get-ScaledValue -Value 491 -Scale $toolbarScale
+    $scaledZoomTextOffset = Get-ScaledValue -Value 526 -Scale $toolbarScale
     $scaledZoomTextWidth = Get-ScaledValue -Value 50 -Scale $toolbarScale
     $scaledNextOffset = Get-ScaledValue -Value 300 -Scale $toolbarScale
     $toolbarLeft = [int][Math]::Floor(($targetClientWidth - $scaledToolbarWidth) / 2.0)
@@ -1979,9 +2009,9 @@ try {
         [void]$zoomEditTitle.Clear()
         [void][YeImageViewerTestNativeV1365]::GetWindowText(
             $window, $zoomEditTitle, $zoomEditTitle.Capacity)
-    } while ($zoomEditTitle.ToString() -notmatch '\| 150% \|' -and
+    } while ($zoomEditTitle.ToString() -notmatch '\s150%$' -and
         [DateTime]::UtcNow -lt $zoomEditDeadline)
-    if ($zoomEditTitle.ToString() -notmatch '\| 150% \|') {
+    if ($zoomEditTitle.ToString() -notmatch '\s150%$') {
         throw "Zoom editor regression failed: clicking and entering 150 did not set an exact 150% zoom. Actual: $($zoomEditTitle.ToString())"
     }
 
@@ -1999,8 +2029,11 @@ try {
         [void][YeImageViewerTestNativeV1365]::SendMessage(
             $window, 0x0101, [UIntPtr]$key, [IntPtr]::Zero)
     }
+    # 工具栏上的空白处：沉浸按钮结束在 489、缩小按钮从 502 开始，495 正好在两者之间。
+    # 插入「适应图片」之后按钮整体后移，原来的 458 落进了沉浸按钮里，
+    # 一点就切进沉浸模式、缩放被重算，量出来的自然不是 175%。
     $bareToolbarX = $toolbarLeft + $scaledPadding +
-        [int][Math]::Floor((458 * $toolbarScale + 500) / 1000.0)
+        [int][Math]::Floor((495 * $toolbarScale + 500) / 1000.0)
     $bareToolbarPosition = [IntPtr](($toolbarY -shl 16) -bor ($bareToolbarX -band 0xFFFF))
     [void][YeImageViewerTestNativeV1365]::PostMessage(
         $window, 0x0200, [UIntPtr]::Zero, $bareToolbarPosition)
@@ -2014,9 +2047,9 @@ try {
         [void]$zoomEditTitle.Clear()
         [void][YeImageViewerTestNativeV1365]::GetWindowText(
             $window, $zoomEditTitle, $zoomEditTitle.Capacity)
-    } while ($zoomEditTitle.ToString() -notmatch '\| 175% \|' -and
+    } while ($zoomEditTitle.ToString() -notmatch '\s175%$' -and
         [DateTime]::UtcNow -lt $zoomBlurDeadline)
-    if ($zoomEditTitle.ToString() -notmatch '\| 175% \|') {
+    if ($zoomEditTitle.ToString() -notmatch '\s175%$') {
         throw "Zoom editor regression failed: clicking outside did not commit 175%. Actual: $($zoomEditTitle.ToString())"
     }
 
@@ -2035,7 +2068,7 @@ try {
     [void]$zoomEditTitle.Clear()
     [void][YeImageViewerTestNativeV1365]::GetWindowText(
         $window, $zoomEditTitle, $zoomEditTitle.Capacity)
-    if ($zoomEditTitle.ToString() -notmatch '\| 175% \|') {
+    if ($zoomEditTitle.ToString() -notmatch '\s175%$') {
         throw "Zoom editor regression failed: Escape did not cancel the pending edit. Actual: $($zoomEditTitle.ToString())"
     }
     Write-Host "PASS toolbar percentage supports exact entry, outside-click commit, and Escape cancel."

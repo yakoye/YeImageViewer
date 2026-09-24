@@ -47,7 +47,7 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.37.2-rc3";
+std::wstring_view appVersion = L"v1.37.2-rc4";
 constinit int appVersionCode = 13630; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
@@ -464,7 +464,7 @@ struct CurImageParameter {
 class ExtraUIRes {
 public:
     cv::Mat mainRes, leftArrow, rightArrow, leftRotate, rightRotate,
-        flipHorizontal, flipVertical, fitWindow, actualSize, fullscreen,
+        flipHorizontal, flipVertical, fitWindow, fitImage, actualSize, fullscreen,
         favorite, copy, deleteImage, setting, zoomOut, zoomIn,
         play, pause,
         presentationClose, animationBarPlaying, animationBarPausing;
@@ -500,6 +500,7 @@ public:
         flipVertical = loadSvgIcon(IDR_SVG_FLIP_VERTICAL_ICON, OverlayLayout::BASE_ICON_SIZE);
         fitWindow = loadSvgIcon(IDR_SVG_FIT_WINDOW_ICON, OverlayLayout::BASE_ICON_SIZE);
         actualSize = loadSvgIcon(IDR_SVG_ACTUAL_SIZE_ICON, OverlayLayout::BASE_ICON_SIZE);
+        fitImage = loadSvgIcon(IDR_SVG_FIT_IMAGE_ICON, OverlayLayout::BASE_ICON_SIZE);
         fullscreen = loadSvgIcon(IDR_SVG_FULLSCREEN_ICON, OverlayLayout::BASE_ICON_SIZE);
         favorite = loadSvgIcon(IDR_SVG_FAVORITE_ICON, OverlayLayout::BASE_ICON_SIZE);
         copy = loadSvgIcon(IDR_SVG_COPY_ICON, OverlayLayout::BASE_ICON_SIZE);
@@ -743,6 +744,108 @@ public:
         case RenamePolicy::ValidationError::TooLong: return getUIStringW(54);
         default: return getUIStringW(14);
         }
+    }
+
+    // 弹文件夹选择框。第一次按「复制到 / 移动到」时用它问一次位置，
+    // 之后就记住了，不再打扰；想换位置走右键菜单。
+    std::wstring pickTargetFolder() {
+        IFileOpenDialog* dialog = nullptr;
+        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&dialog))) || !dialog)
+            return {};
+
+        std::wstring result;
+        DWORD options = 0;
+        if (SUCCEEDED(dialog->GetOptions(&options)))
+            dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM);
+        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        dialog->SetTitle(chinese ? L"选择目标文件夹" : L"Choose target folder");
+        if (SUCCEEDED(dialog->Show(m_hWnd))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+                PWSTR rawPath = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
+                    result.assign(rawPath);
+                    CoTaskMemFree(rawPath);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+        return result;
+    }
+
+    void saveFileTargets() {
+        FileTargetConfig::save(GlobalVar::externalEditorsPath, GlobalVar::fileTargets);
+    }
+
+    // 把当前图片复制或移动到指定目标。
+    // 目标不存在就建（含中间层级）；重名不覆盖，按资源管理器的习惯让到 a (2).png。
+    void copyOrMoveCurrentImage(const std::wstring& target, bool move) {
+        if (target.empty() || !hasCurrentImagePath())
+            return;
+        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        const std::filesystem::path source(imgFileList[curFileIdx]);
+
+        std::error_code error;
+        std::filesystem::create_directories(target, error);
+        if (!std::filesystem::is_directory(target, error)) {
+            const std::wstring message =
+                (chinese ? L"无法创建目标文件夹：\n" : L"Cannot create the target folder:\n") + target;
+            MessageBoxW(m_hWnd, message.c_str(), getUIStringW(14), MB_OK | MB_ICONWARNING);
+            return;
+        }
+
+        const std::filesystem::path targetDirectory(target);
+        const std::wstring fileName = FileTargetConfig::uniqueFileName(
+            source.filename().wstring(),
+            [&](const std::wstring& candidate) {
+                std::error_code probe;
+                return std::filesystem::exists(targetDirectory / candidate, probe);
+            });
+        const std::filesystem::path destination = targetDirectory / fileName;
+
+        // 同一个文件复制到自己头上没有意义，直接挡掉
+        if (std::filesystem::equivalent(source, destination, error))
+            return;
+
+        const BOOL ok = move ?
+            MoveFileExW(source.c_str(), destination.c_str(), MOVEFILE_COPY_ALLOWED) :
+            CopyFileW(source.c_str(), destination.c_str(), TRUE);
+        if (!ok) {
+            const auto code = GetLastError();
+            MessageBoxW(m_hWnd,
+                std::format(L"{} 0x{:08X}",
+                    chinese ? (move ? L"移动失败" : L"复制失败")
+                            : (move ? L"Move failed" : L"Copy failed"), code).c_str(),
+                getUIStringW(14), MB_OK | MB_ICONWARNING);
+            return;
+        }
+
+        // 移动之后当前文件已经不在了，按删除同一条路径收尾：从列表里去掉并显示下一张
+        if (move)
+            operateQueue.push({ ActionENUM::deleteImg, 1 });
+    }
+
+    // 目标为空时先问一次位置；问到了就记下来当当前目标。
+    void copyOrMoveToCurrentTarget(bool move) {
+        if (!FileTargetConfig::hasTarget(GlobalVar::fileTargets)) {
+            const auto picked = pickTargetFolder();
+            if (picked.empty())
+                return;
+            FileTargetConfig::addTarget(GlobalVar::fileTargets, picked);
+            saveFileTargets();
+        }
+        copyOrMoveCurrentImage(FileTargetConfig::activeTarget(GlobalVar::fileTargets), move);
+    }
+
+    void chooseTargetAndRun(bool move) {
+        const auto picked = pickTargetFolder();
+        if (picked.empty())
+            return;
+        FileTargetConfig::addTarget(GlobalVar::fileTargets, picked);
+        saveFileTargets();
+        copyOrMoveCurrentImage(picked, move);
     }
 
     void renameCurrentImage() {
@@ -1578,6 +1681,12 @@ public:
             case ToolbarCommand::Command::FlipHorizontal: operateQueue.push({ ActionENUM::flipHorizontal }); break;
             case ToolbarCommand::Command::FlipVertical: operateQueue.push({ ActionENUM::flipVertical }); break;
             case ToolbarCommand::Command::ZoomFit: operateQueue.push({ ActionENUM::zoomFit }); break;
+            case ToolbarCommand::Command::FitImage:
+                // 和「适应窗口」相反：这次是窗口去贴合图片，让原图一次看完。
+                applyImageFittedWindowSize();
+                framedWindowAnchored = true;
+                operateQueue.push({ ActionENUM::refresh });
+                break;
             case ToolbarCommand::Command::ZoomActual: operateQueue.push({ ActionENUM::zoomActual }); break;
             case ToolbarCommand::Command::Fullscreen: operateQueue.push({ ActionENUM::toggleFullScreen }); break;
             case ToolbarCommand::Command::Settings: operateQueue.push({ ActionENUM::setting, 0 }); break;
@@ -1733,6 +1842,9 @@ public:
             case OverlayLayout::Hit::ZoomFit:
                 cursorPos = CursorPos::toolbarZoomFit;
                 break;
+            case OverlayLayout::Hit::FitImage:
+                cursorPos = CursorPos::toolbarFitImage;
+                break;
             case OverlayLayout::Hit::ZoomActual:
                 cursorPos = CursorPos::toolbarZoomActual;
                 break;
@@ -1797,6 +1909,7 @@ public:
             case CursorPos::toolbarFlipHorizontal:
             case CursorPos::toolbarFlipVertical:
             case CursorPos::toolbarZoomFit:
+            case CursorPos::toolbarFitImage:
             case CursorPos::toolbarZoomActual:
             case CursorPos::toolbarFullscreen:
             case CursorPos::toolbarFavorite:
@@ -2128,6 +2241,12 @@ public:
             break;
         case ShortcutConfig::Action::CloseImage:
             operateQueue.push({ ActionENUM::requestExit });
+            break;
+        case ShortcutConfig::Action::CopyToTarget:
+            copyOrMoveToCurrentTarget(false);
+            break;
+        case ShortcutConfig::Action::MoveToTarget:
+            copyOrMoveToCurrentTarget(true);
             break;
         case ShortcutConfig::Action::Count:
             return false;
@@ -2517,6 +2636,14 @@ public:
 
         case ContextMenu::editImageChoose: {
             chooseExternalEditorAndOpenCurrentImage();
+        }break;
+
+        case ContextMenu::copyToTargetChoose: {
+            chooseTargetAndRun(false);
+        }break;
+
+        case ContextMenu::moveToTargetChoose: {
+            chooseTargetAndRun(true);
         }break;
 
         case ContextMenu::renameImage: {
@@ -3969,6 +4096,7 @@ public:
         case CursorPos::toolbarFlipHorizontal: return chinese ? "左右镜像" : "Flip horizontal";
         case CursorPos::toolbarFlipVertical: return chinese ? "上下镜像" : "Flip vertical";
         case CursorPos::toolbarZoomFit: return chinese ? "适应窗口" : "Fit to window";
+        case CursorPos::toolbarFitImage: return chinese ? "适应图片" : "Fit window to image";
         case CursorPos::toolbarZoomActual: return chinese ? "实际大小 (1:1)" : "Actual size (1:1)";
         case CursorPos::toolbarFullscreen: return presentationMode ?
             (chinese ? "退出沉浸" : "Exit immersive") : (chinese ? "沉浸显示" : "Immersive view");
@@ -4034,12 +4162,15 @@ public:
         drawToolbarButton(canvas, OverlayLayout::toolbarNextRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.rightArrow, CursorPos::toolbarNext);
 
+        // 高亮判定改成按当前缩放比对，不再看缓存索引——索引会因为 zoomList 重建而指偏。
         drawToolbarButton(canvas, OverlayLayout::zoomFitRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.fitWindow, CursorPos::toolbarZoomFit,
-            curPar.zoomIndex == curPar.zoomIndexFix);
+            curPar.zoomTarget == curPar.fitWindowZoom(winWidth, winHeight));
+        drawToolbarButton(canvas, OverlayLayout::fitImageRect(canvas.cols, canvas.rows, overlayDpi()),
+            extraUIRes.fitImage, CursorPos::toolbarFitImage);
         drawToolbarButton(canvas, OverlayLayout::zoomActualRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.actualSize, CursorPos::toolbarZoomActual,
-            curPar.zoomIndex == curPar.zoomIndex100percent);
+            curPar.zoomTarget == curPar.ZOOM_BASE);
         drawToolbarButton(canvas, OverlayLayout::fullscreenRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.fullscreen, CursorPos::toolbarFullscreen, presentationMode);
         drawToolbarButton(canvas, OverlayLayout::zoomOutRect(canvas.cols, canvas.rows, overlayDpi()),
@@ -4175,6 +4306,13 @@ public:
             (presentationMode || jarkUtils::IsFullScreen(m_hWnd));
     }
 
+    // 量文字宽度要建字体、建 DC、跑一次 DrawText，逐帧做太贵（实测拖慢到按键都来不及
+    // 处理）。标题和 DPI 不变时结果也不会变，缓存住即可。
+    std::wstring infoBarMeasuredTitle;
+    std::string infoBarUtf8Title;
+    int infoBarMeasuredDpi = 0;
+    int infoBarTextWidth = 0;
+
     void drawFullscreenInfoBar(cv::Mat& canvas) {
         if (!fullscreenInfoBarVisible() || currentTitleText.empty())
             return;
@@ -4182,11 +4320,17 @@ public:
         const int dpi = overlayDpi();
         textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
             TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
-        const auto utf8Title = jarkUtils::wstringToUtf8(currentTitleText);
-        const int measured = textDrawer.measureWidth(utf8Title.c_str());
-        const int textWidth = measured > 0 ?
-            MulDiv(measured, USER_DEFAULT_SCREEN_DPI, dpi) + 2 :
-            static_cast<int>(currentTitleText.size()) * 8;
+        if (infoBarMeasuredTitle != currentTitleText || infoBarMeasuredDpi != dpi) {
+            infoBarUtf8Title = jarkUtils::wstringToUtf8(currentTitleText);
+            const int measured = textDrawer.measureWidth(infoBarUtf8Title.c_str());
+            infoBarTextWidth = measured > 0 ?
+                MulDiv(measured, USER_DEFAULT_SCREEN_DPI, dpi) + 2 :
+                static_cast<int>(currentTitleText.size()) * 8;
+            infoBarMeasuredTitle = currentTitleText;
+            infoBarMeasuredDpi = dpi;
+        }
+        const std::string& utf8Title = infoBarUtf8Title;
+        const int textWidth = infoBarTextWidth;
         const auto rect = FullscreenInfoBar::place(canvas.cols, canvas.rows, dpi, textWidth);
         if (rect.empty())
             return;

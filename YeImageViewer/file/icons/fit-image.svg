@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <!-- 「窗口适应图片」：内圈是图片，四角箭头向外，表示窗口撑开去贴合图片 -->
+  <rect x="15" y="17" width="18" height="14" rx="2"
+        stroke="#FFFFFF" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M10 17V10H17" stroke="#FFFFFF" stroke-width="3"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M38 17V10H31" stroke="#FFFFFF" stroke-width="3"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M10 31V38H17" stroke="#FFFFFF" stroke-width="3"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M38 31V38H31" stroke="#FFFFFF" stroke-width="3"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
