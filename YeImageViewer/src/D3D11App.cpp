@@ -145,6 +145,7 @@ void D3D11App::loadSettings(bool openImageOnCursorMonitor) {
         ExternalEditorConfig::configPath(GlobalVar::settingPath);
     GlobalVar::externalEditors =
         ExternalEditorConfig::load(GlobalVar::externalEditorsPath);
+    GlobalVar::fileTargets = FileTargetConfig::load(GlobalVar::externalEditorsPath);
 
     PWSTR appDataPath = nullptr;
     std::wstring oldSettingPath;
@@ -748,6 +749,33 @@ HMENU D3D11App::CreateContextMenu(HWND hwnd) {
     AppendMenuW(editMenu, MF_STRING, (UINT_PTR)ContextMenu::editImageChoose,
         getUIStringW(59));
     AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)editMenu, getUIStringW(57));
+
+    // 复制到 / 移动到指定位置。菜单整体是 MNS_NOCHECK，勾不了，
+    // 当前目标就在文字前面加个圆点标出来。
+    const bool chineseUI = GlobalVar::settingParameter.UI_LANG == 0;
+    const auto buildTargetMenu = [&](bool move) {
+        HMENU targetMenu = CreatePopupMenu();
+        const auto& targets = GlobalVar::fileTargets.targets;
+        for (std::size_t index = 0; index < targets.size(); ++index) {
+            std::wstring label = (index == GlobalVar::fileTargets.active ? L"● " : L"    ") +
+                FileTargetConfig::displayName(targets[index]);
+            AppendMenuW(targetMenu, MF_STRING,
+                static_cast<UINT_PTR>(move ? ContextMenu::moveToTargetFirst
+                                           : ContextMenu::copyToTargetFirst) + index,
+                label.c_str());
+        }
+        if (!targets.empty())
+            AppendMenuW(targetMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(targetMenu, MF_STRING,
+            static_cast<UINT_PTR>(move ? ContextMenu::moveToTargetChoose
+                                       : ContextMenu::copyToTargetChoose),
+            chineseUI ? L"选择位置…" : L"Choose folder...");
+        return targetMenu;
+    };
+    AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)buildTargetMenu(false),
+        chineseUI ? L"复制到" : L"Copy to");
+    AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)buildTargetMenu(true),
+        chineseUI ? L"移动到" : L"Move to");
 
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::renameImage, getUIStringW(47));
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::deleteImage, getUIStringW(30));

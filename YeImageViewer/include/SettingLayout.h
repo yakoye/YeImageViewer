@@ -160,7 +160,7 @@ inline constexpr int SHORTCUT_KEYBOARD_ROW_Y = 288;
 inline constexpr int SHORTCUT_KEYBOARD_ROW_HEIGHT = 40;
 // 必须与 ShortcutConfig::Action::Count 一致；这里不引用那个头以保持布局可独立测试，
 // 由单元测试断言两者相等。新增动作时只改这一个数，卡片和内容高度会跟着算出来。
-inline constexpr int SHORTCUT_KEYBOARD_ROW_COUNT = 32;
+inline constexpr int SHORTCUT_KEYBOARD_ROW_COUNT = 34;
 inline constexpr int SHORTCUT_KEYBOARD_BOTTOM =
     SHORTCUT_KEYBOARD_ROW_Y + SHORTCUT_KEYBOARD_ROW_COUNT * SHORTCUT_KEYBOARD_ROW_HEIGHT;
 inline constexpr Rect SHORTCUT_CARD{ 20, 20, 580, SHORTCUT_KEYBOARD_BOTTOM + 10 - 20 };

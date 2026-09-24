@@ -20,6 +20,7 @@
 #include <print>
 
 #include "ExternalEditorConfig.h"
+#include "FileTargetConfig.h"
 
 using std::vector;
 using std::string;
@@ -398,7 +399,7 @@ enum class ActionENUM:int64_t {
 enum class CursorPos :int {
     centerArea = 0, leftEdge, rightEdge, toolbarPrevious, toolbarPlayPause, toolbarNext,
     toolbarRotateLeft, toolbarRotateRight, toolbarFlipHorizontal, toolbarFlipVertical,
-    toolbarZoomFit, toolbarZoomActual, toolbarFullscreen, toolbarFavorite,
+    toolbarZoomFit, toolbarFitImage, toolbarZoomActual, toolbarFullscreen, toolbarFavorite,
     toolbarCopy, toolbarDelete, toolbarSetting, toolbarZoomOut, toolbarZoomText, toolbarZoomIn,
     toolbar, centerTop, presentationClose,
 };
@@ -414,7 +415,14 @@ enum class ContextMenu :int {
     editImageFirst = 1015,
     editImageLast = 1024,
     editImageChoose = 1025,
-    backgroundTransparent = 1100, backgroundWhite, backgroundBlack, backgroundFrostedGlass
+    backgroundTransparent = 1100, backgroundWhite, backgroundBlack, backgroundFrostedGlass,
+    // 复制 / 移动到指定位置：每个目标一项，外加「选择位置…」
+    copyToTargetFirst = 1200,
+    copyToTargetLast = 1204,
+    copyToTargetChoose = 1205,
+    moveToTargetFirst = 1210,
+    moveToTargetLast = 1214,
+    moveToTargetChoose = 1215,
 };
 
 struct Action {
@@ -517,6 +525,8 @@ struct GlobalVar {
     static inline wstring settingPath;
     static inline wstring externalEditorsPath;
     static inline std::vector<ExternalEditorConfig::Entry> externalEditors;
+    // 复制 / 移动到指定位置的目标文件夹，和外部编辑器写在同一个配置文件里
+    static inline FileTargetConfig::Model fileTargets;
     static inline string_view settingHeader{ "YeImageViewerSetting" };
     static inline SettingParameter settingParameter;
 };
@@ -580,6 +590,8 @@ public:
 
     // 设置窗口图标
     static void setWindowIcon(HWND hWnd, WORD wIconId);
+    // 把内嵌的应用图标取成带透明通道的 BGRA 位图，供界面里当图片画。
+    static cv::Mat iconToMat(WORD wIconId, int size);
     
     // 禁止窗口调整尺寸
     static void disableWindowResize(HWND hwnd);

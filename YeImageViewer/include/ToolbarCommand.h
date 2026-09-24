@@ -14,6 +14,7 @@ enum class Command {
     FlipHorizontal,
     FlipVertical,
     ZoomFit,
+    FitImage,
     ZoomActual,
     Fullscreen,
     Settings,
@@ -32,6 +33,7 @@ constexpr Command resolve(OverlayLayout::Hit hit) {
     case OverlayLayout::Hit::FlipHorizontal: return Command::FlipHorizontal;
     case OverlayLayout::Hit::FlipVertical: return Command::FlipVertical;
     case OverlayLayout::Hit::ZoomFit: return Command::ZoomFit;
+    case OverlayLayout::Hit::FitImage: return Command::FitImage;
     case OverlayLayout::Hit::ZoomActual: return Command::ZoomActual;
     case OverlayLayout::Hit::Fullscreen: return Command::Fullscreen;
     case OverlayLayout::Hit::Settings: return Command::Settings;

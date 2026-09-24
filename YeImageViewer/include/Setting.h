@@ -430,6 +430,8 @@ private:
             ShortcutItem{ ShortcutConfig::Action::OpenShortcuts, "打开快捷键设置", "Open shortcuts" },
             ShortcutItem{ ShortcutConfig::Action::OpenAbout, "打开关于", "Open about" },
             ShortcutItem{ ShortcutConfig::Action::DeleteImage, "删除图片", "Delete image" },
+            ShortcutItem{ ShortcutConfig::Action::CopyToTarget, "复制到指定位置", "Copy to folder" },
+            ShortcutItem{ ShortcutConfig::Action::MoveToTarget, "移动到指定位置", "Move to folder" },
         };
 
     const char* wheelActionName(ShortcutConfig::WheelAction action, bool chinese) const {
@@ -514,9 +516,20 @@ private:
         const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
         const cv::Rect hero = toCanvasRect(SettingLayout::ABOUT_HERO_CARD);
         drawCard(page, hero);
-        const cv::Rect icon{ hero.x + hero.width / 2 - 32, hero.y + 34, 64, 64 };
-        fillRoundedRect(page, icon, GlobalVar::currentTheme.CHECK, 14);
-        textDrawer.putAlignCenter(page, icon, "Y", 0xFFFFFFFFu);
+        // 用真正的应用图标，和任务栏、快捷方式、文件关联看到的是同一个。
+        // 以前这里画的是一个圆角方块加字母「Y」，和图标对不上。
+        const int iconSize = S(64);
+        const cv::Rect icon{ hero.x + hero.width / 2 - iconSize / 2, hero.y + S(34),
+            iconSize, iconSize };
+        const auto logo = jarkUtils::iconToMat(IDI_YEIMAGEVIEWER, iconSize);
+        if (logo.empty()) {
+            // 取不到图标就退回原来的画法，关于页不至于开天窗
+            fillRoundedRect(page, icon, GlobalVar::currentTheme.CHECK, S(14));
+            textDrawer.putAlignCenter(page, icon, "Y", 0xFFFFFFFFu);
+        }
+        else {
+            jarkUtils::overlayImg(page, logo, icon.x, icon.y);
+        }
         textDrawer.putAlignCenter(page, { hero.x + 40, hero.y + 112, hero.width - 80, 42 },
             "YeImageViewer", primaryText());
         const cv::Rect versionRect{ hero.x + hero.width / 2 - 72, hero.y + 160, 144, 34 };

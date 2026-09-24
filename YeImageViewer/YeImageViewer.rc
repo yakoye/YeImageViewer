@@ -107,7 +107,7 @@ BEGIN
             VALUE "LegalCopyright", "Copyright (C) 2023-2026 JARK006 and YeImageViewer contributors"
             VALUE "OriginalFilename", "YeImageViewer.exe"
             VALUE "ProductName", "YeImageViewer"
-            VALUE "ProductVersion", "1.37.2-rc3"
+            VALUE "ProductVersion", "1.37.2-rc4"
         END
     END
     BLOCK "VarFileInfo"
@@ -138,6 +138,7 @@ IDR_SVG_CLOSE_ICON      SVG                     "file\\icons\\close.svg"
 IDR_SVG_FLIP_HORIZONTAL_ICON SVG                "file\\icons\\flip-horizontal.svg"
 IDR_SVG_FLIP_VERTICAL_ICON SVG                  "file\\icons\\flip-vertical.svg"
 IDR_SVG_FIT_WINDOW_ICON SVG                     "file\\icons\\fit-window.svg"
+IDR_SVG_FIT_IMAGE_ICON  SVG                     "file\\icons\\fit-image.svg"
 IDR_SVG_ACTUAL_SIZE_ICON SVG                    "file\\icons\\actual-size.svg"
 IDR_SVG_FULLSCREEN_ICON SVG                     "file\\icons\\fullscreen.svg"
 IDR_SVG_FAVORITE_ICON   SVG                     "file\\icons\\favorite.svg"

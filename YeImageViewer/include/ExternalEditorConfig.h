@@ -244,6 +244,44 @@ inline std::vector<Entry> load(const std::wstring& filePath) {
     return result;
 }
 
+// 这个配置文件是共用的：复制/移动的目标文件夹也写在同一份里（FileTargetConfig）。
+// 谁保存都只能改自己那几个键，别人的键要原样留下来，否则一存就把对方冲掉。
+inline bool isEditorKey(std::string_view key) {
+    if (key == "Count")
+        return true;
+    for (std::size_t index = 0; index < MAX_EDITORS; ++index) {
+        if (key == "Name" + std::to_string(index) || key == "Path" + std::to_string(index))
+            return true;
+    }
+    return false;
+}
+
+// 读出文件里「不归我管」的行，保存时原样写回去。
+inline std::vector<std::string> foreignLines(const std::wstring& filePath,
+    bool (*isMine)(std::string_view)) {
+    std::vector<std::string> kept;
+    std::ifstream file(std::filesystem::path(filePath), std::ios::binary);
+    if (!file)
+        return kept;
+    std::string line;
+    bool firstLine = true;
+    while (std::getline(file, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (firstLine && line.starts_with("\xEF\xBB\xBF"))
+            line.erase(0, 3);
+        firstLine = false;
+        if (line.empty() || line.front() == '[')
+            continue;
+        const auto equals = line.find('=');
+        if (equals == std::string::npos)
+            continue;
+        if (!isMine(std::string_view(line.data(), equals)))
+            kept.push_back(line);
+    }
+    return kept;
+}
+
 inline bool save(const std::wstring& filePath,
     const std::vector<Entry>& entries) {
     if (filePath.empty() || entries.size() > MAX_EDITORS)
@@ -252,6 +290,7 @@ inline bool save(const std::wstring& filePath,
         if (entry.name.empty() || entry.path.empty())
             return false;
     }
+    const auto kept = foreignLines(filePath, isEditorKey);
     std::ofstream file(std::filesystem::path(filePath),
         std::ios::binary | std::ios::trunc);
     if (!file)
@@ -261,6 +300,8 @@ inline bool save(const std::wstring& filePath,
         file << "Name" << index << '=' << escape(entries[index].name) << "\r\n";
         file << "Path" << index << '=' << escape(entries[index].path) << "\r\n";
     }
+    for (const auto& line : kept)
+        file << line << "\r\n";
     file.flush();
     return file.good();
 }

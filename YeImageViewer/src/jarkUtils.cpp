@@ -223,6 +223,49 @@ void jarkUtils::setWindowIcon(HWND hWnd, WORD wIconId) {
     }
 }
 
+// 取内嵌的应用图标，转成带透明通道的 BGRA 位图。
+// 画到 32 位自上而下的 DIB 上：DrawIconEx 会按图标里的 PNG/掩码正确合成 alpha，
+// 行序也和 cv::Mat 一致，不用再翻转。
+cv::Mat jarkUtils::iconToMat(WORD wIconId, int size) {
+    if (size <= 0)
+        return {};
+    HICON hIcon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(wIconId),
+        IMAGE_ICON, size, size, LR_DEFAULTCOLOR);
+    if (!hIcon)
+        return {};
+
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = size;
+    info.bmiHeader.biHeight = -size;   // 负数 = 自上而下
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+
+    cv::Mat result;
+    HDC screenDC = GetDC(nullptr);
+    if (screenDC) {
+        void* bits = nullptr;
+        HBITMAP dib = CreateDIBSection(screenDC, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (dib && bits) {
+            HDC memDC = CreateCompatibleDC(screenDC);
+            if (memDC) {
+                auto oldBitmap = SelectObject(memDC, dib);
+                memset(bits, 0, static_cast<size_t>(size) * size * 4);
+                DrawIconEx(memDC, 0, 0, hIcon, size, size, 0, nullptr, DI_NORMAL);
+                GdiFlush();
+                result = cv::Mat(size, size, CV_8UC4, bits).clone();
+                SelectObject(memDC, oldBitmap);
+                DeleteDC(memDC);
+            }
+            DeleteObject(dib);
+        }
+        ReleaseDC(nullptr, screenDC);
+    }
+    DestroyIcon(hIcon);
+    return result;
+}
+
 // 禁止窗口调整尺寸
 void jarkUtils::disableWindowResize(HWND hwnd) {
     if (hwnd) {

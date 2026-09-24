@@ -8,13 +8,14 @@
 namespace ShortcutConfig {
 
 inline constexpr uint32_t STORAGE_MAGIC = 0x594B4559u; // "YKEY"
-inline constexpr uint32_t STORAGE_VERSION = 3;
+inline constexpr uint32_t STORAGE_VERSION = 4;
 
 // 各历史版本的动作数量。新动作只能追加在 Action 末尾：动作的枚举值就是它在存储里的
 // 下标，中间插入会让其后所有已保存的自定义绑定整体错位。升级时要按「存的是哪一版」
 // 决定从第几个动作开始补默认值，按固定的版本 1 数量去补会把后来版本的绑定洗掉。
 inline constexpr std::size_t VERSION1_BINDING_COUNT = 30;
 inline constexpr std::size_t VERSION2_BINDING_COUNT = 31;
+inline constexpr std::size_t VERSION3_BINDING_COUNT = 32;
 inline constexpr std::size_t MAGIC_INDEX = 0;
 inline constexpr std::size_t VERSION_INDEX = 1;
 inline constexpr std::size_t WHEEL_BASE_INDEX = 2;
@@ -59,6 +60,8 @@ enum class Action : uint32_t {
     DeleteImage,
     ZoomActual,
     CloseImage,
+    CopyToTarget,
+    MoveToTarget,
     Count,
 };
 
@@ -108,17 +111,23 @@ inline constexpr std::array<uint32_t, static_cast<std::size_t>(Action::Count)> D
     binding(0x2E),             // DeleteImage: VK_DELETE
     binding('1'),              // ZoomActual
     binding(0x1B),             // CloseImage: VK_ESCAPE
+    // 复制 / 移动到指定位置默认不绑键：这两个动作会往磁盘上写文件，
+    // 误触的代价比其他动作大，让用户自己指定。
+    0,                         // CopyToTarget
+    0,                         // MoveToTarget
 };
 
 static_assert(DEFAULT_BINDINGS.size() == static_cast<std::size_t>(Action::Count));
 static_assert(VERSION1_BINDING_COUNT <= DEFAULT_BINDINGS.size());
 static_assert(VERSION2_BINDING_COUNT <= DEFAULT_BINDINGS.size());
+static_assert(VERSION3_BINDING_COUNT <= DEFAULT_BINDINGS.size());
 
 // 某个历史版本的存储里有多少个动作。未知版本按当前版本处理，migrate 会因此什么都不补。
 constexpr std::size_t bindingCountForVersion(uint32_t version) {
     switch (version) {
     case 1: return VERSION1_BINDING_COUNT;
     case 2: return VERSION2_BINDING_COUNT;
+    case 3: return VERSION3_BINDING_COUNT;
     default: return DEFAULT_BINDINGS.size();
     }
 }
