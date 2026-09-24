@@ -1,5 +1,7 @@
 #pragma once
 
+#include "UiLanguage.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -241,9 +243,11 @@ constexpr bool matches(uint32_t storedBinding, uint32_t virtualKey, uint32_t mod
         (storedBinding & MODIFIER_MASK) == (modifiers & MODIFIER_MASK);
 }
 
-inline std::string keyName(uint32_t value, bool chinese) {
+// language 取 UiLanguage 里的三个值。这里不能只传 bool：繁體也是中文，
+// 二选一会让繁體界面显示简体键名。
+inline std::string keyName(uint32_t value, uint32_t language) {
     if (value == 0)
-        return chinese ? "未设置" : "Unassigned";
+        return UiLanguage::pick(language, "未设置", "Unassigned", "未設定");
     std::string result;
     if ((value & MODIFIER_CONTROL) != 0) result += "Ctrl+";
     if ((value & MODIFIER_SHIFT) != 0) result += "Shift+";
@@ -261,15 +265,15 @@ inline std::string keyName(uint32_t value, bool chinese) {
         case 0x09: result += "Tab"; break;
         case 0x0D: result += "Enter"; break;
         case 0x1B: result += "Esc"; break;
-        case 0x20: result += chinese ? "空格" : "Space"; break;
+        case 0x20: result += UiLanguage::pick(language, "空格", "Space", "空白鍵"); break;
         case 0x21: result += "PageUp"; break;
         case 0x22: result += "PageDown"; break;
         case 0x23: result += "End"; break;
         case 0x24: result += "Home"; break;
-        case 0x25: result += chinese ? "左方向键" : "Left"; break;
-        case 0x26: result += chinese ? "上方向键" : "Up"; break;
-        case 0x27: result += chinese ? "右方向键" : "Right"; break;
-        case 0x28: result += chinese ? "下方向键" : "Down"; break;
+        case 0x25: result += UiLanguage::pick(language, "左方向键", "Left", "左方向鍵"); break;
+        case 0x26: result += UiLanguage::pick(language, "上方向键", "Up", "上方向鍵"); break;
+        case 0x27: result += UiLanguage::pick(language, "右方向键", "Right", "右方向鍵"); break;
+        case 0x28: result += UiLanguage::pick(language, "下方向键", "Down", "下方向鍵"); break;
         case 0x2D: result += "Insert"; break;
         case 0x2E: result += "Delete"; break;
         default: result += "VK" + std::to_string(key); break;

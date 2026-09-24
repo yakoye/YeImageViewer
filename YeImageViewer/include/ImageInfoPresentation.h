@@ -1,5 +1,7 @@
 #pragma once
 
+#include "UiLanguage.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -245,7 +247,7 @@ inline int clampScrollOffset(int contentHeight, int viewportHeight, int offset) 
 //                 直读会显示成「未校准」，等于没说。
 //   qualityFactor JPEG 量化表反推的质量因子（见 JpegQuality.h），0 表示估不出来。
 //                 标注「约」是因为只对按 libjpeg 缩放写表的文件准确。
-inline Model build(std::string_view raw, bool chinese, std::string_view colorMode = {},
+inline Model build(std::string_view raw, uint32_t language, std::string_view colorMode = {},
     std::string_view colorSpace = {}, int qualityFactor = 0) {
     const auto rows = parseRows(raw);
     Model model;
@@ -254,68 +256,72 @@ inline Model build(std::string_view raw, bool chinese, std::string_view colorMod
     const std::string size = findValue(rows, { "大小", "FileSize" });
     const std::string resolution = findValue(rows, { "分辨率", "Resolution" });
     if (!path.empty()) {
-        model.basic.push_back({ chinese ? "文件名" : "Name", fileName(path) });
-        model.basic.push_back({ chinese ? "路径" : "Path", path });
+        model.basic.push_back({ UiLanguage::pick(language, "文件名", "Name", "檔案名稱"), fileName(path) });
+        model.basic.push_back({ UiLanguage::pick(language, "路径", "Path", "路徑"), path });
         const std::string format = formatName(path);
         if (!format.empty())
-            model.basic.push_back({ chinese ? "格式" : "Format", format });
+            model.basic.push_back({ UiLanguage::pick(language, "格式", "Format", "格式"), format });
     }
     if (!size.empty())
-        model.basic.push_back({ chinese ? "文件大小" : "Size", size });
+        model.basic.push_back({ UiLanguage::pick(language, "文件大小", "Size", "檔案大小"), size });
     if (!resolution.empty())
-        model.basic.push_back({ chinese ? "分辨率" : "Dimensions", compactResolution(resolution) });
+        model.basic.push_back({ UiLanguage::pick(language, "分辨率", "Dimensions", "解析度"), compactResolution(resolution) });
     if (!colorMode.empty())
-        model.basic.push_back({ chinese ? "色彩" : "Color", std::string(colorMode) });
+        model.basic.push_back({ UiLanguage::pick(language, "色彩", "Color", "色彩"), std::string(colorMode) });
     if (!colorSpace.empty())
-        model.basic.push_back({ chinese ? "色彩空间" : "Color space", std::string(colorSpace) });
+        model.basic.push_back({ UiLanguage::pick(language, "色彩空间", "Color space", "色彩空間"), std::string(colorSpace) });
     if (qualityFactor > 0) {
-        model.basic.push_back({ chinese ? "质量因子" : "Quality",
-            (chinese ? "约 " : "~") + std::to_string(qualityFactor) });
+        model.basic.push_back({ UiLanguage::pick(language, "质量因子", "Quality", "品質因子"),
+            UiLanguage::pick<const char*>(language, "约 ", "~", "約 ") + std::to_string(qualityFactor) });
     }
 
     struct PreferredField {
         const char* zhLabel;
         const char* enLabel;
+        const char* twLabel;
         std::initializer_list<std::string_view> aliases;
     };
     const std::array preferred{
-        PreferredField{ "拍摄时间", "Captured", { "原始日期时间", "Exif.Photo.DateTimeOriginal", "日期时间", "Exif.Image.DateTime" } },
-        PreferredField{ "相机", "Camera", { "型号", "Exif.Image.Model" } },
-        PreferredField{ "制造商", "Maker", { "制造商", "Exif.Image.Make" } },
-        PreferredField{ "镜头", "Lens", { "镜头型号", "Exif.Photo.LensModel" } },
-        PreferredField{ "曝光时间", "Exposure", { "曝光时间", "Exif.Photo.ExposureTime" } },
-        PreferredField{ "光圈", "Aperture", { "光圈值", "Exif.Photo.FNumber" } },
-        PreferredField{ "ISO", "ISO", { "ISO感光度", "Exif.Photo.ISOSpeedRatings", "Exif.Photo.PhotographicSensitivity" } },
-        PreferredField{ "焦距", "Focal length", { "焦距", "Exif.Photo.FocalLength" } },
-        PreferredField{ "曝光补偿", "Exposure bias", { "曝光补偿值", "Exif.Photo.ExposureBiasValue" } },
-        PreferredField{ "白平衡", "White balance", { "白平衡", "Exif.Photo.WhiteBalance" } },
-        PreferredField{ "色彩空间", "Color space", { "色彩空间", "Exif.Photo.ColorSpace" } },
-        PreferredField{ "创建工具", "Creator tool", { "Xmp.xmp.CreatorTool", "Creator Tool" } },
-        PreferredField{ "方向", "Orientation", { "方向", "Exif.Image.Orientation", "Xmp.tiff.Orientation" } },
-        PreferredField{ "实例 ID", "Instance ID", { "Xmp.xmpMM.InstanceID", "Instance ID" } },
+        PreferredField{ "拍摄时间", "Captured", "拍攝時間", { "原始日期时间", "Exif.Photo.DateTimeOriginal", "日期时间", "Exif.Image.DateTime" } },
+        PreferredField{ "相机", "Camera", "相機", { "型号", "Exif.Image.Model" } },
+        PreferredField{ "制造商", "Maker", "製造商", { "制造商", "Exif.Image.Make" } },
+        PreferredField{ "镜头", "Lens", "鏡頭", { "镜头型号", "Exif.Photo.LensModel" } },
+        PreferredField{ "曝光时间", "Exposure", "曝光時間", { "曝光时间", "Exif.Photo.ExposureTime" } },
+        PreferredField{ "光圈", "Aperture", "光圈", { "光圈值", "Exif.Photo.FNumber" } },
+        PreferredField{ "ISO", "ISO", "ISO", { "ISO感光度", "Exif.Photo.ISOSpeedRatings", "Exif.Photo.PhotographicSensitivity" } },
+        PreferredField{ "焦距", "Focal length", "焦距", { "焦距", "Exif.Photo.FocalLength" } },
+        PreferredField{ "曝光补偿", "Exposure bias", "曝光補償", { "曝光补偿值", "Exif.Photo.ExposureBiasValue" } },
+        PreferredField{ "白平衡", "White balance", "白平衡", { "白平衡", "Exif.Photo.WhiteBalance" } },
+        PreferredField{ "色彩空间", "Color space", "色彩空間", { "色彩空间", "Exif.Photo.ColorSpace" } },
+        PreferredField{ "创建工具", "Creator tool", "建立工具", { "Xmp.xmp.CreatorTool", "Creator Tool" } },
+        PreferredField{ "方向", "Orientation", "方向", { "方向", "Exif.Image.Orientation", "Xmp.tiff.Orientation" } },
+        PreferredField{ "实例 ID", "Instance ID", "執行個體 ID", { "Xmp.xmpMM.InstanceID", "Instance ID" } },
     };
 
     for (const auto& field : preferred) {
         const std::string value = findValue(rows, field.aliases);
         if (value.empty())
             continue;
-        const std::string label = chinese ? field.zhLabel : field.enLabel;
+        const std::string label = UiLanguage::pick(language, field.zhLabel, field.enLabel, field.twLabel);
         // 已经在 basic 里给出解析好的色彩空间时，不要再把 EXIF 原始值（1/65535 这种）
         // 重复列一遍——同一个标签出现两次、其中一个还是看不懂的数字，只会让人犯疑。
-        if (!colorSpace.empty() && (label == "色彩空间" || label == "Color space"))
+        if (!colorSpace.empty() && (label == "色彩空间" || label == "Color space" || label == "色彩空間"))
             continue;
         model.details.push_back({ label, value });
     }
     return model;
 }
 
-inline std::vector<Row> compactRows(const Model& model, bool chinese) {
+inline std::vector<Row> compactRows(const Model& model, uint32_t language) {
     // 色彩空间和质量因子都很短，紧凑面板也放得下，一眼能看到才有意义
-    const std::array<std::string_view, 7> labels = chinese ?
-        std::array<std::string_view, 7>{ "格式", "文件大小", "分辨率", "色彩",
-            "色彩空间", "质量因子", "文件名" } :
-        std::array<std::string_view, 7>{ "Format", "Size", "Dimensions", "Color",
-            "Color space", "Quality", "Name" };
+    using LabelRow = std::array<std::string_view, 7>;
+    const auto labels = UiLanguage::pick(language,
+        LabelRow{ "格式", "文件大小", "分辨率", "色彩",
+            "色彩空间", "质量因子", "文件名" },
+        LabelRow{ "Format", "Size", "Dimensions", "Color",
+            "Color space", "Quality", "Name" },
+        LabelRow{ "格式", "檔案大小", "解析度", "色彩",
+            "色彩空間", "品質因子", "檔案名稱" });
     std::vector<Row> result;
     for (const auto label : labels) {
         const auto found = std::ranges::find_if(model.basic, [label](const Row& row) {
@@ -339,9 +345,9 @@ constexpr uint32_t blendBgra(uint32_t destination, uint32_t overlay) {
     return 0xFF000000u | red << 16 | green << 8 | blue;
 }
 
-inline int logicalContentHeight(const Model& model, Mode mode, bool chinese) {
+inline int logicalContentHeight(const Model& model, Mode mode, uint32_t language) {
     int height = 0;
-    const auto rows = mode == Mode::Compact ? compactRows(model, chinese) : model.basic;
+    const auto rows = mode == Mode::Compact ? compactRows(model, language) : model.basic;
     if (mode == Mode::Full)
         height += LOGICAL_SECTION_HEIGHT;
     for (const auto& row : rows)

@@ -27,6 +27,7 @@
 #include "RenamePolicy.h"
 #include "SettingCommand.h"
 #include "SettingLayout.h"
+#include "UiLanguage.h"
 #include "ShortcutConfig.h"
 #include "ViewerOptions.h"
 #include "TextRenderingPolicy.h"
@@ -797,7 +798,7 @@ void expectInfoPanelFields() {
         "型号: ILCE-7S\n";
 
     // 解析好的色彩空间与质量因子应当出现在基本信息里
-    const auto model = ImageInfoPresentation::build(raw, true, "RGB · 24bpp",
+    const auto model = ImageInfoPresentation::build(raw, UiLanguage::SIMPLIFIED, "RGB · 24bpp",
         "Adobe RGB (1998)", 85);
     const auto hasBasic = [&model](std::string_view label, std::string_view value) {
         return std::ranges::any_of(model.basic, [&](const ImageInfoPresentation::Row& row) {
@@ -807,6 +808,19 @@ void expectInfoPanelFields() {
     passOrFail("info panel shows the resolved color space and quality factor",
         hasBasic("色彩空间", "Adobe RGB (1998)") && hasBasic("质量因子", "约 85"));
 
+    // 同一份 EXIF 换成繁體，标签要跟着换成台湾用词，不能还是简体那套
+    const auto traditional = ImageInfoPresentation::build(raw, UiLanguage::TRADITIONAL,
+        "RGB · 24bpp", "Adobe RGB (1998)", 85);
+    const auto hasTraditional = [&traditional](std::string_view label) {
+        return std::ranges::any_of(traditional.basic,
+            [&](const ImageInfoPresentation::Row& row) { return row.label == label; });
+        };
+    passOrFail("the info panel uses Taiwanese wording in traditional Chinese",
+        hasTraditional("檔案名稱") && hasTraditional("解析度") &&
+        hasTraditional("色彩空間") && hasTraditional("品質因子") &&
+        std::ranges::any_of(traditional.details,
+            [](const ImageInfoPresentation::Row& row) { return row.label == "相機"; }));
+
     // EXIF 原始值 65535 不能再作为「色彩空间」重复列一遍——
     // 同一个标签出现两次、其中一个还是看不懂的数字，只会让人犯疑
     passOrFail("info panel drops the raw EXIF color space once it is resolved",
@@ -815,7 +829,7 @@ void expectInfoPanelFields() {
             }));
 
     // 两项都很短，紧凑面板也要能看到
-    const auto compact = ImageInfoPresentation::compactRows(model, true);
+    const auto compact = ImageInfoPresentation::compactRows(model, UiLanguage::SIMPLIFIED);
     passOrFail("info panel surfaces both fields in the compact layout",
         std::ranges::any_of(compact, [](const ImageInfoPresentation::Row& row) {
             return row.label == "色彩空间"; }) &&
@@ -823,7 +837,7 @@ void expectInfoPanelFields() {
             return row.label == "质量因子"; }));
 
     // 估不出质量因子（0）时不能显示「约 0」；色彩空间为空时同理
-    const auto bare = ImageInfoPresentation::build(raw, true, "RGB · 24bpp", {}, 0);
+    const auto bare = ImageInfoPresentation::build(raw, UiLanguage::SIMPLIFIED, "RGB · 24bpp", {}, 0);
     passOrFail("info panel omits the fields when nothing identifies them",
         std::ranges::none_of(bare.basic, [](const ImageInfoPresentation::Row& row) {
             return row.label == "质量因子" || row.label == "色彩空间"; }) &&
@@ -832,7 +846,7 @@ void expectInfoPanelFields() {
             return row.label == "色彩空间"; }));
 
     // 英文界面用英文标签
-    const auto english = ImageInfoPresentation::build(raw, false, "RGB · 24bpp", "sRGB", 92);
+    const auto english = ImageInfoPresentation::build(raw, UiLanguage::ENGLISH, "RGB · 24bpp", "sRGB", 92);
     passOrFail("info panel labels the fields in English when the UI is English",
         std::ranges::any_of(english.basic, [](const ImageInfoPresentation::Row& row) {
             return row.label == "Color space" && row.value == "sRGB"; }) &&
@@ -1735,11 +1749,11 @@ void expectExternalEditorConfig() {
         ExternalEditorConfig::resolvedName(L"   ", paintPath) == L"mspaint" &&
         ExternalEditorConfig::add(editors, { L"画图", paintPath }));
     passOrFail("external editor menu labels use a space without parentheses",
-        ExternalEditorConfig::menuLabel(editors.front(), true) == L"在 画图" &&
-        ExternalEditorConfig::menuLabel(editors.front(), false) == L"Open in 画图" &&
-        ExternalEditorConfig::menuLabel(editors.front(), true).find(L'（') ==
+        ExternalEditorConfig::menuLabel(editors.front(), UiLanguage::SIMPLIFIED) == L"在 画图" &&
+        ExternalEditorConfig::menuLabel(editors.front(), UiLanguage::ENGLISH) == L"Open in 画图" &&
+        ExternalEditorConfig::menuLabel(editors.front(), UiLanguage::SIMPLIFIED).find(L'（') ==
             std::wstring::npos &&
-        ExternalEditorConfig::menuLabel(editors.front(), true).find(L'(') ==
+        ExternalEditorConfig::menuLabel(editors.front(), UiLanguage::SIMPLIFIED).find(L'(') ==
             std::wstring::npos);
 
     for (int index = 1; index < 10; ++index) {
@@ -1846,7 +1860,7 @@ void expectImageInfoPresentation() {
         "Xmp.xmp.CreatorTool: Microsoft Windows Photo Viewer with a deliberately long creator name\n"
         "Xmp.xmpMM.InstanceID: uuid:faf5bdd5-ba3d-11da-ad31-d33d75182f1b\n"
         "Exif.Photo.MakerNote: private binary payload\n";
-    const auto model = ImageInfoPresentation::build(rawInfo, true, "RGBA · 32bpp");
+    const auto model = ImageInfoPresentation::build(rawInfo, UiLanguage::SIMPLIFIED, "RGBA · 32bpp");
 
     passOrFail("full image information preserves the complete filename path and color mode",
         model.basic.size() == 6 &&
@@ -1855,7 +1869,7 @@ void expectImageInfoPresentation() {
         model.basic[1].label == "路径" && model.basic[1].value.starts_with("C:\\Pictures\\") &&
         model.basic[2].value == "PNG" && model.basic[3].value == "103.0 KiB" &&
         model.basic[4].value == "671 × 477 px" && model.basic[5].value == "RGBA · 32bpp");
-    const auto compact = ImageInfoPresentation::compactRows(model, true);
+    const auto compact = ImageInfoPresentation::compactRows(model, UiLanguage::SIMPLIFIED);
     passOrFail("compact image information follows the five-field reference order",
         compact.size() == 5 && compact[0].label == "格式" &&
         compact[1].label == "文件大小" && compact[2].label == "分辨率" &&
@@ -2058,7 +2072,7 @@ void expectShortcutConfig() {
         ShortcutConfig::getWheelAction(storage.data(), 0) == ShortcutConfig::DEFAULT_WHEEL_ACTIONS[0] &&
         ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::OpenFile) ==
             ShortcutConfig::DEFAULT_BINDINGS[ShortcutConfig::actionIndex(ShortcutConfig::Action::OpenFile)] &&
-        ShortcutConfig::keyName(ShortcutConfig::binding(0x71), true) == "F2");
+        ShortcutConfig::keyName(ShortcutConfig::binding(0x71), UiLanguage::SIMPLIFIED) == "F2");
 
     // 追加动作后升级旧配置：只补新动作，用户改过的绑定必须原样保留。整体 reset 会
     // 清空全部自定义快捷键，所以这条回归盯的就是“别把用户配置洗掉”。
@@ -2105,7 +2119,7 @@ void expectShortcutConfig() {
     passOrFail("closing the image defaults to Escape",
         ShortcutConfig::matches(ShortcutConfig::getBinding(closing.data(),
             ShortcutConfig::Action::CloseImage), 0x1B /* VK_ESCAPE */, 0) &&
-        ShortcutConfig::keyName(ShortcutConfig::binding(0x1B /* VK_ESCAPE */), true) == "Esc");
+        ShortcutConfig::keyName(ShortcutConfig::binding(0x1B /* VK_ESCAPE */), UiLanguage::SIMPLIFIED) == "Esc");
 
     // 从版本 2 升级只能补第 32 个动作。按版本 1 的数量去补会把 31 号（实际大小）
     // 一起重写，用户改过的键位就没了——这条盯的就是这个回归。
@@ -2138,8 +2152,24 @@ void expectShortcutConfig() {
     passOrFail("a cleared shortcut stays unassigned and never fires",
         ShortcutConfig::getBinding(cleared.data(), ShortcutConfig::Action::DeleteImage) == 0 &&
         !ShortcutConfig::matches(0, 0x2E /* VK_DELETE */, 0) &&
-        ShortcutConfig::keyName(0, true) == "未设置" &&
-        ShortcutConfig::keyName(0, false) == "Unassigned");
+        ShortcutConfig::keyName(0, UiLanguage::SIMPLIFIED) == "未设置" &&
+        ShortcutConfig::keyName(0, UiLanguage::ENGLISH) == "Unassigned");
+
+    // 繁體是第三种语言，不是「中文」的别名。凡是当年写成 chinese ? 简体 : English 的
+    // 地方，漏改一处就会让繁體界面掉回简体或英文，这里挑几条有代表性的钉住。
+    passOrFail("traditional Chinese is a language of its own, not an alias of simplified",
+        UiLanguage::pick<const char*>(UiLanguage::TRADITIONAL, "简", "en", "繁") == std::string("繁") &&
+        UiLanguage::pick<const char*>(UiLanguage::SIMPLIFIED, "简", "en", "繁") == std::string("简") &&
+        UiLanguage::pick<const char*>(UiLanguage::ENGLISH, "简", "en", "繁") == std::string("en") &&
+        UiLanguage::isChinese(UiLanguage::TRADITIONAL) &&
+        UiLanguage::isChinese(UiLanguage::SIMPLIFIED) &&
+        !UiLanguage::isChinese(UiLanguage::ENGLISH) &&
+        UiLanguage::clamp(99) == UiLanguage::SIMPLIFIED);
+
+    passOrFail("shortcut key names and image info labels have their own traditional wording",
+        ShortcutConfig::keyName(0, UiLanguage::TRADITIONAL) == "未設定" &&
+        ShortcutConfig::keyName(ShortcutConfig::binding(0x20), UiLanguage::TRADITIONAL) == "空白鍵" &&
+        ShortcutConfig::keyName(ShortcutConfig::binding(0x25), UiLanguage::TRADITIONAL) == "左方向鍵");
 
     // 双键、三键、四键：修饰键任意组合都要存得下、认得出、显示得对
     std::array<uint32_t, 777> combos{};
@@ -2158,8 +2188,8 @@ void expectShortcutConfig() {
         ShortcutConfig::matches(quad, 'P', ShortcutConfig::MODIFIER_CONTROL |
             ShortcutConfig::MODIFIER_SHIFT | ShortcutConfig::MODIFIER_ALT) &&
         !ShortcutConfig::matches(quad, 'P', ShortcutConfig::MODIFIER_CONTROL) &&
-        ShortcutConfig::keyName(triple, true) == "Ctrl+Shift+S" &&
-        ShortcutConfig::keyName(quad, true) == "Ctrl+Shift+Alt+P");
+        ShortcutConfig::keyName(triple, UiLanguage::SIMPLIFIED) == "Ctrl+Shift+S" &&
+        ShortcutConfig::keyName(quad, UiLanguage::SIMPLIFIED) == "Ctrl+Shift+Alt+P");
 }
 
 void expectDrawioTextFallback(std::string_view path) {

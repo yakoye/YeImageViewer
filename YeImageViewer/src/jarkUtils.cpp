@@ -625,11 +625,11 @@ std::wstring jarkUtils::SelectExecutable(HWND hWnd) {
     ofn.hwndOwner = hWnd;
     ofn.lpstrFile = filePath;
     ofn.nMaxFile = ARRAYSIZE(filePath);
-    ofn.lpstrFilter = GlobalVar::settingParameter.UI_LANG == 0 ?
+    ofn.lpstrFilter = isChineseUI() ?
         L"应用程序 (*.exe)\0*.exe\0所有文件 (*.*)\0*.*\0" :
         L"Applications (*.exe)\0*.exe\0All files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
-    ofn.lpstrTitle = GlobalVar::settingParameter.UI_LANG == 0 ?
+    ofn.lpstrTitle = isChineseUI() ?
         L"选择外部图片编辑器" : L"Choose an external image editor";
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST |
         OFN_NOCHANGEDIR | OFN_EXPLORER;

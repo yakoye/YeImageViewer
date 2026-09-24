@@ -47,7 +47,7 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.37.2-rc6";
+std::wstring_view appVersion = L"v1.37.2-rc7";
 constinit int appVersionCode = 13630; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
@@ -116,9 +116,13 @@ LRESULT CALLBACK RenameDialogProc(HWND window, UINT message, WPARAM wParam, LPAR
             226, 88, 82, 30, IDOK);
         makeControl(L"BUTTON", L"取消", WS_TABSTOP | BS_PUSHBUTTON,
             318, 88, 82, 30, IDCANCEL);
-        if (GlobalVar::settingParameter.UI_LANG != 0) {
+        if (!isChineseUI()) {
             SetDlgItemTextW(window, IDOK, L"OK");
             SetDlgItemTextW(window, IDCANCEL, L"Cancel");
+        }
+        else if (GlobalVar::settingParameter.UI_LANG == 2) {
+            SetDlgItemTextW(window, IDOK, L"確定");
+            SetDlgItemTextW(window, IDCANCEL, L"取消");
         }
         SendMessageW(state->edit, EM_SETLIMITTEXT, 255, 0);
         return 0;
@@ -668,11 +672,10 @@ public:
             return;
 
         const std::wstring automaticName = ExternalEditorConfig::defaultName(selected);
-        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        const bool chinese = isChineseUI();
         auto requestedName = showTextInputDialog(m_hWnd, automaticName,
-            chinese ? L"设置编辑应用" : L"Configure editor",
-            chinese ? L"显示名称（留空则使用程序名称）：" :
-                L"Display name (leave blank to use the application name):");
+            trW(L"设置编辑应用", L"Configure editor", L"設定編輯應用程式"),
+            trW(L"显示名称（留空则使用程序名称）：", L"Display name (leave blank to use the application name):", L"顯示名稱（留空則使用程式名稱）："));
         if (!requestedName)
             return;
         const std::wstring displayName = ExternalEditorConfig::resolvedName(
@@ -680,16 +683,14 @@ public:
         ExternalEditorConfig::Entry editor{ displayName, selected };
         if (!ExternalEditorConfig::add(GlobalVar::externalEditors, editor)) {
             MessageBoxW(m_hWnd,
-                chinese ? L"最多可以设置 10 个外部图片编辑器。" :
-                    L"You can configure up to 10 external image editors.",
+                trW(L"最多可以设置 10 个外部图片编辑器。", L"You can configure up to 10 external image editors.", L"最多可以設定 10 個外部圖片編輯器。"),
                 getUIStringW(15), MB_OK | MB_ICONINFORMATION);
             return;
         }
         if (!ExternalEditorConfig::save(GlobalVar::externalEditorsPath,
             GlobalVar::externalEditors)) {
             MessageBoxW(m_hWnd,
-                chinese ? L"无法保存外部编辑器设置。" :
-                    L"Unable to save the external editor settings.",
+                trW(L"无法保存外部编辑器设置。", L"Unable to save the external editor settings.", L"無法儲存外部編輯器設定。"),
                 getUIStringW(14), MB_OK | MB_ICONERROR);
             return;
         }
@@ -760,8 +761,8 @@ public:
         DWORD options = 0;
         if (SUCCEEDED(dialog->GetOptions(&options)))
             dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM);
-        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
-        dialog->SetTitle(chinese ? L"选择目标文件夹" : L"Choose target folder");
+        const bool chinese = isChineseUI();
+        dialog->SetTitle(trW(L"选择目标文件夹", L"Choose target folder", L"選擇目標資料夾"));
         if (SUCCEEDED(dialog->Show(m_hWnd))) {
             IShellItem* item = nullptr;
             if (SUCCEEDED(dialog->GetResult(&item)) && item) {
@@ -786,14 +787,15 @@ public:
     void copyOrMoveCurrentImage(const std::wstring& target, bool move) {
         if (target.empty() || !hasCurrentImagePath())
             return;
-        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        const bool chinese = isChineseUI();
         const std::filesystem::path source(imgFileList[curFileIdx]);
 
         std::error_code error;
         std::filesystem::create_directories(target, error);
         if (!std::filesystem::is_directory(target, error)) {
             const std::wstring message =
-                (chinese ? L"无法创建目标文件夹：\n" : L"Cannot create the target folder:\n") + target;
+                trW(L"无法创建目标文件夹：\n", L"Cannot create the target folder:\n",
+                    L"無法建立目標資料夾：\n") + target;
             MessageBoxW(m_hWnd, message.c_str(), getUIStringW(14), MB_OK | MB_ICONWARNING);
             return;
         }
@@ -818,15 +820,15 @@ public:
             const auto code = GetLastError();
             MessageBoxW(m_hWnd,
                 std::format(L"{} 0x{:08X}",
-                    chinese ? (move ? L"移动失败" : L"复制失败")
-                            : (move ? L"Move failed" : L"Copy failed"), code).c_str(),
+                    move ? trW(L"移动失败", L"Move failed", L"移動失敗")
+                         : trW(L"复制失败", L"Copy failed", L"複製失敗"), code).c_str(),
                 getUIStringW(14), MB_OK | MB_ICONWARNING);
             return;
         }
 
         const std::wstring folder = FileTargetConfig::displayName(target);
-        showNotice((chinese ? (move ? L"已移动到 " : L"已复制到 ")
-                            : (move ? L"Moved to " : L"Copied to ")) + folder);
+        showNotice((move ? trW(L"已移动到 ", L"Moved to ", L"已移動到 ")
+                         : trW(L"已复制到 ", L"Copied to ", L"已複製到 ")) + folder);
 
         // 移动之后源文件已经不在了，把它从浏览列表里摘掉并显示下一张。
         // 这里不能复用 deleteImg：那条路径开头就要求文件还在，移动完正好不在，
@@ -3791,7 +3793,7 @@ public:
             imageInfoHistogramCache = {};
             imageInfoHistogramReady = false;
             imageInfoModelCache = ImageInfoPresentation::build(
-                asset ? asset->exifInfo : std::string_view{}, language == 0,
+                asset ? asset->exifInfo : std::string_view{}, language,
                 imageColorMode(asset), currentColorSpaceName(), currentJpegQualityFactor());
         }
         return imageInfoModelCache;
@@ -3895,9 +3897,11 @@ public:
             return;
 
         const auto& model = currentImageInfoModel();
-        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        const bool chinese = isChineseUI();
         const bool compact = mode == ImageInfoPresentation::Mode::Compact;
-        const auto rows = compact ? ImageInfoPresentation::compactRows(model, chinese) : model.basic;
+        const auto rows = compact ?
+            ImageInfoPresentation::compactRows(model, GlobalVar::settingParameter.UI_LANG) :
+            model.basic;
         const UINT dpi = m_hWnd ? GetDpiForWindow(m_hWnd) : 96;
         const auto scaled = [dpi](int logical) {
             return TextRenderingPolicy::scaledPixelSize(logical, dpi);
@@ -3979,7 +3983,7 @@ public:
         textDrawer.putAlignLeft(canvas,
             { panel.x + padding + iconSize + scaled(8), panel.y,
                 panel.width - padding * 2 - iconSize - scaled(36), headerHeight },
-            chinese ? "图像信息" : "Image information",
+            tr("图像信息", "Image information", "影像資訊"),
             palette.primary);
         cv::line(canvas,
             { imageInfoCloseRect.x + scaled(5), imageInfoCloseRect.y + scaled(5) },
@@ -4036,10 +4040,10 @@ public:
             drawRows(rows);
         }
         else {
-            drawSectionLabel(chinese ? "基本信息" : "BASIC INFORMATION");
+            drawSectionLabel(tr("基本信息", "BASIC INFORMATION", "基本資訊"));
             drawRows(rows);
             if (showHistogram) {
-                drawSectionLabel(chinese ? "直方图" : "HISTOGRAM");
+                drawSectionLabel(tr("直方图", "HISTOGRAM", "直方圖"));
                 drawHistogramBlock(contentCanvas,
                     { padding, y, contentRect.width - padding * 2, histogramHeight },
                     palette);
@@ -4050,7 +4054,7 @@ public:
                     { contentRect.width - padding, y },
                     jarkUtils::to_cv_scalar(palette.border), 1);
                 ++y;
-                drawSectionLabel(chinese ? "照片信息" : "PHOTO METADATA");
+                drawSectionLabel(tr("照片信息", "PHOTO METADATA", "照片資訊"));
                 drawRows(model.details);
             }
         }
@@ -4093,7 +4097,7 @@ public:
         textDrawer.putAlignLeft(canvas,
             { keyRect.x + keyRect.width + scaled(7), imageInfoCopyRect.y,
                 imageInfoCopyRect.width - keyRect.width - scaled(18), copyHeight },
-            chinese ? "复制全部" : "Copy all", palette.muted);
+            tr("复制全部", "Copy all", "複製全部"), palette.muted);
     }
 
     void drawExifInfo(cv::Mat& canvas) {
@@ -4160,26 +4164,26 @@ public:
     }
 
     const char* toolbarTooltip() const {
-        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        const bool chinese = isChineseUI();
         switch (cursorPos) {
-        case CursorPos::toolbarPrevious: return chinese ? "上一张" : "Previous";
+        case CursorPos::toolbarPrevious: return tr("上一张", "Previous", "上一張");
         case CursorPos::toolbarPlayPause: return slideshowPlaying ?
-            (chinese ? "暂停播放" : "Pause slideshow") :
-            (chinese ? "播放幻灯片" : "Play slideshow");
-        case CursorPos::toolbarNext: return chinese ? "下一张" : "Next";
-        case CursorPos::toolbarRotateLeft: return chinese ? "左旋转 90°" : "Rotate left";
-        case CursorPos::toolbarRotateRight: return chinese ? "右旋转 90°" : "Rotate right";
-        case CursorPos::toolbarFlipHorizontal: return chinese ? "左右镜像" : "Flip horizontal";
-        case CursorPos::toolbarFlipVertical: return chinese ? "上下镜像" : "Flip vertical";
-        case CursorPos::toolbarZoomFit: return chinese ? "适应窗口" : "Fit to window";
-        case CursorPos::toolbarFitImage: return chinese ? "适应图片" : "Fit window to image";
-        case CursorPos::toolbarZoomActual: return chinese ? "实际大小 (1:1)" : "Actual size (1:1)";
+            (tr("暂停播放", "Pause slideshow", "暫停播放")) :
+            (tr("播放幻灯片", "Play slideshow", "播放投影片"));
+        case CursorPos::toolbarNext: return tr("下一张", "Next", "下一張");
+        case CursorPos::toolbarRotateLeft: return tr("左旋转 90°", "Rotate left", "左旋轉 90°");
+        case CursorPos::toolbarRotateRight: return tr("右旋转 90°", "Rotate right", "右旋轉 90°");
+        case CursorPos::toolbarFlipHorizontal: return tr("左右镜像", "Flip horizontal", "左右鏡像");
+        case CursorPos::toolbarFlipVertical: return tr("上下镜像", "Flip vertical", "上下鏡像");
+        case CursorPos::toolbarZoomFit: return tr("适应窗口", "Fit to window", "適應視窗");
+        case CursorPos::toolbarFitImage: return tr("适应图片", "Fit window to image", "適應圖片");
+        case CursorPos::toolbarZoomActual: return tr("实际大小 (1:1)", "Actual size (1:1)", "實際大小 (1:1)");
         case CursorPos::toolbarFullscreen: return presentationMode ?
-            (chinese ? "退出沉浸" : "Exit immersive") : (chinese ? "沉浸显示" : "Immersive view");
-        case CursorPos::toolbarSetting: return chinese ? "设置" : "Settings";
-        case CursorPos::toolbarZoomOut: return chinese ? "缩小" : "Zoom out";
-        case CursorPos::toolbarZoomText: return chinese ? "输入缩放倍率" : "Enter zoom percentage";
-        case CursorPos::toolbarZoomIn: return chinese ? "放大" : "Zoom in";
+            (tr("退出沉浸", "Exit immersive", "退出沉浸")) : (tr("沉浸显示", "Immersive view", "沉浸顯示"));
+        case CursorPos::toolbarSetting: return tr("设置", "Settings", "設定");
+        case CursorPos::toolbarZoomOut: return tr("缩小", "Zoom out", "縮小");
+        case CursorPos::toolbarZoomText: return tr("输入缩放倍率", "Enter zoom percentage", "輸入縮放倍率");
+        case CursorPos::toolbarZoomIn: return tr("放大", "Zoom in", "放大");
         default: return nullptr;
         }
     }

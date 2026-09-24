@@ -105,6 +105,7 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #include <opencv2/highgui.hpp>
 
 #include "stringRes.h"
+#include "UiLanguage.h"
 #include "BackgroundRenderer.h"
 #include "EscapeBehavior.h"
 #include "OverlayLayout.h"
@@ -140,6 +141,26 @@ inline constexpr ThemeColor lightTheme{
 
 // 不要随意更改此结构体的成员顺序或大小，否则会导致设置文件无法兼容
 // 设置文件大小固定为4096字节
+// 界面语言的取值与三选一工具都在 UiLanguage.h 里，那边不依赖 GlobalVar，
+// 纯逻辑头和单元测试也能用。
+inline constexpr uint32_t UI_LANG_COUNT = UiLanguage::COUNT;
+
+// 首次运行时按系统界面语言猜一个。台湾、香港、澳门给繁體，其余中文地区给简体。
+// zh-Hant 的 SUBLANG 就这三个，没有更细的分法，够用了。
+inline uint32_t defaultUILanguage() {
+    const LANGID language = GetUserDefaultUILanguage();
+    if (PRIMARYLANGID(language) != LANG_CHINESE)
+        return 1;
+    switch (SUBLANGID(language)) {
+    case SUBLANG_CHINESE_TRADITIONAL:   // 台湾
+    case SUBLANG_CHINESE_HONGKONG:
+    case SUBLANG_CHINESE_MACAU:
+        return 2;
+    default:
+        return 0;
+    }
+}
+
 struct SettingParameter {
     // 常见格式
     static inline std::string_view defaultExtList{ 
@@ -170,7 +191,7 @@ struct SettingParameter {
     uint32_t pptTimeout = 5;                // 幻灯片模式  切换间隔 1 ~ 300 秒
 
     uint32_t UI_Mode = 0;                   // 界面主题 0:跟随系统  1:浅色  2:深色
-    uint32_t UI_LANG = 0;                   // 界面语言 0:中文  1:English
+    uint32_t UI_LANG = 0;                   // 界面语言 0:简体中文  1:English  2:繁體中文
 
     uint32_t rightClickAction = 0;          // 右键点击行为  0:打开菜单  1:退出程序
 
@@ -186,14 +207,14 @@ struct SettingParameter {
 
     SettingParameter() {
         memcpy(extCheckedListStr, defaultExtList.data(), defaultExtList.length() + 1);
-        UI_LANG = (PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE) ? 0 : 1;
+        UI_LANG = defaultUILanguage();
         ShortcutConfig::initialize(reserve, std::size(reserve));
         ViewerOptions::initialize(reserve, std::size(reserve));
     }
 
     SettingParameter(const SettingParameter& other) {
         memcpy(extCheckedListStr, defaultExtList.data(), defaultExtList.length() + 1);
-        UI_LANG = (PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE) ? 0 : 1;
+        UI_LANG = defaultUILanguage();
 
         memcpy(this, &other, sizeof(SettingParameter));
         ValidateParameters();
@@ -244,8 +265,8 @@ struct SettingParameter {
         // 界面主题检查 (0~2)
         if (UI_Mode > 2) UI_Mode = 0; // 超出范围则设为跟随系统
 
-        // 语言检查，目前仅中英，索引范围0~1
-        if (UI_LANG > 1) UI_LANG = 0;
+        // 语言检查：0 简体 / 1 English / 2 繁體
+        if (UI_LANG >= UI_LANG_COUNT) UI_LANG = 0;
 
         // 右键点击行为检查 (0~1)
         if (rightClickAction > 1) rightClickAction = 0;
@@ -530,6 +551,25 @@ struct GlobalVar {
     static inline string_view settingHeader{ "YeImageViewerSetting" };
     static inline SettingParameter settingParameter;
 };
+
+// 「当前界面是不是中文」。繁體也是中文，写成 UI_LANG == 0 会让繁體界面掉进英文分支，
+// 所以凡是二选一的中英判断都走这里。
+inline bool isChineseUI() {
+    return UiLanguage::isChinese(GlobalVar::settingParameter.UI_LANG);
+}
+
+// 按当前界面语言三选一。加繁體之前这些地方写的都是 `chinese ? 简体 : English`，
+// 二选一接不住第三种语言，嵌套三目又太难读，所以统一走这里。
+inline const char* tr(const char* simplified, const char* english, const char* traditional) {
+    return UiLanguage::pick(GlobalVar::settingParameter.UI_LANG,
+        simplified, english, traditional);
+}
+
+inline const wchar_t* trW(const wchar_t* simplified, const wchar_t* english,
+    const wchar_t* traditional) {
+    return UiLanguage::pick(GlobalVar::settingParameter.UI_LANG,
+        simplified, english, traditional);
+}
 
 #ifdef NDEBUG
 #define JARK_LOG(fmt, ...)
