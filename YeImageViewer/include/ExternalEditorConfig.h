@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ConfigFile.h"
 #include "UiLanguage.h"
 
 #include <algorithm>
@@ -17,7 +18,10 @@
 namespace ExternalEditorConfig {
 
 inline constexpr std::size_t MAX_EDITORS = 10;
-inline constexpr wchar_t FILE_NAME[] = L"YeImageViewer.editors.ini";
+
+// 旧版本单开的配置文件。现在编辑器、复制/移动目标、旋转记录都写在 YeImageViewer.db
+// 的文本区里，这个名字只剩迁移时用一次：读进来、写到 db、删掉。
+inline constexpr wchar_t LEGACY_FILE_NAME[] = L"YeImageViewer.editors.ini";
 
 struct Entry {
     std::wstring name;
@@ -26,9 +30,14 @@ struct Entry {
     bool operator==(const Entry&) const = default;
 };
 
+// 配置就写在设置文件里，不再另开一份
 inline std::wstring configPath(std::wstring_view settingsPath) {
+    return std::wstring(settingsPath);
+}
+
+inline std::wstring legacyConfigPath(std::wstring_view settingsPath) {
     std::filesystem::path path(settingsPath);
-    path.replace_filename(FILE_NAME);
+    path.replace_filename(LEGACY_FILE_NAME);
     return path.wstring();
 }
 
@@ -199,27 +208,15 @@ inline std::wstring unescape(std::string_view value) {
     return fromUtf8(utf8);
 }
 
-inline std::vector<Entry> load(const std::wstring& filePath) {
-    std::ifstream file(std::filesystem::path(filePath), std::ios::binary);
-    if (!file)
-        return {};
+inline std::vector<Entry> loadFrom(const std::vector<std::string>& lines) {
     std::array<std::wstring, MAX_EDITORS> names;
     std::array<std::wstring, MAX_EDITORS> paths;
     std::size_t count = 0;
-    std::string line;
-    bool firstLine = true;
-    while (std::getline(file, line)) {
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        if (firstLine && line.starts_with("\xEF\xBB\xBF"))
-            line.erase(0, 3);
-        firstLine = false;
-        const auto equals = line.find('=');
-        if (equals == std::string::npos)
+    for (const auto& line : lines) {
+        const auto key = ConfigFile::keyOf(line);
+        if (key.empty())
             continue;
-        const std::string_view key(line.data(), equals);
-        const std::string_view value(line.data() + equals + 1,
-            line.size() - equals - 1);
+        const auto value = ConfigFile::valueOf(line);
         if (key == "Count") {
             try {
                 count = std::min<std::size_t>(std::stoul(std::string(value)), MAX_EDITORS);
@@ -246,6 +243,15 @@ inline std::vector<Entry> load(const std::wstring& filePath) {
     return result;
 }
 
+inline std::vector<Entry> load(const std::wstring& filePath) {
+    return loadFrom(ConfigFile::readLines(filePath));
+}
+
+// 迁移旧的 .editors.ini：那份文件是纯文本，没有 4096 字节的头
+inline std::vector<Entry> loadLegacy(const std::wstring& filePath) {
+    return loadFrom(ConfigFile::readPlainLines(filePath));
+}
+
 // 这个配置文件是共用的：复制/移动的目标文件夹也写在同一份里（FileTargetConfig）。
 // 谁保存都只能改自己那几个键，别人的键要原样留下来，否则一存就把对方冲掉。
 inline bool isEditorKey(std::string_view key) {
@@ -261,27 +267,7 @@ inline bool isEditorKey(std::string_view key) {
 // 读出文件里「不归我管」的行，保存时原样写回去。
 inline std::vector<std::string> foreignLines(const std::wstring& filePath,
     bool (*isMine)(std::string_view)) {
-    std::vector<std::string> kept;
-    std::ifstream file(std::filesystem::path(filePath), std::ios::binary);
-    if (!file)
-        return kept;
-    std::string line;
-    bool firstLine = true;
-    while (std::getline(file, line)) {
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        if (firstLine && line.starts_with("\xEF\xBB\xBF"))
-            line.erase(0, 3);
-        firstLine = false;
-        if (line.empty() || line.front() == '[')
-            continue;
-        const auto equals = line.find('=');
-        if (equals == std::string::npos)
-            continue;
-        if (!isMine(std::string_view(line.data(), equals)))
-            kept.push_back(line);
-    }
-    return kept;
+    return ConfigFile::foreignLines(ConfigFile::readLines(filePath), isMine);
 }
 
 inline bool save(const std::wstring& filePath,
@@ -292,20 +278,15 @@ inline bool save(const std::wstring& filePath,
         if (entry.name.empty() || entry.path.empty())
             return false;
     }
-    const auto kept = foreignLines(filePath, isEditorKey);
-    std::ofstream file(std::filesystem::path(filePath),
-        std::ios::binary | std::ios::trunc);
-    if (!file)
-        return false;
-    file << "\xEF\xBB\xBF[Editors]\r\nCount=" << entries.size() << "\r\n";
+    auto lines = ConfigFile::foreignLines(ConfigFile::readLines(filePath), isEditorKey);
+    std::vector<std::string> mine;
+    mine.push_back("Count=" + std::to_string(entries.size()));
     for (std::size_t index = 0; index < entries.size(); ++index) {
-        file << "Name" << index << '=' << escape(entries[index].name) << "\r\n";
-        file << "Path" << index << '=' << escape(entries[index].path) << "\r\n";
+        mine.push_back("Name" + std::to_string(index) + "=" + escape(entries[index].name));
+        mine.push_back("Path" + std::to_string(index) + "=" + escape(entries[index].path));
     }
-    for (const auto& line : kept)
-        file << line << "\r\n";
-    file.flush();
-    return file.good();
+    mine.insert(mine.end(), lines.begin(), lines.end());
+    return ConfigFile::writeLines(filePath, mine);
 }
 
 inline bool pathEquals(std::wstring_view left, std::wstring_view right) {

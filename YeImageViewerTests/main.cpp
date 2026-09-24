@@ -3,6 +3,7 @@
 #include "BackgroundRenderer.h"
 #include "BackgroundPolicy.h"
 #include "EscapeBehavior.h"
+#include "ConfigFile.h"
 #include "ExternalEditorConfig.h"
 #include "FramePacingPolicy.h"
 #include "HomeScreenLayout.h"
@@ -1457,13 +1458,33 @@ void expectRotationPersistence() {
     passOrFail("returning to the original orientation removes the persisted override",
         resetSave && afterReset.load() && afterReset.get(originalPath) == 0 && afterReset.size() == 0);
 
+    // 旋转记录搬进设置文件的文本区之后，「坏文件」的样子变了：不再是魔数对不上，
+    // 而是文本区里都是读不懂的行。要求不变——读不出来就当没有，绝不能返回旧值。
+    afterReset.set(originalPath, 2);
+    const bool beforeCorruption = afterReset.save();
     {
         std::ofstream corrupt(databasePath, std::ios::binary | std::ios::trunc);
         corrupt << "not a rotation database";
     }
     RotationStore corrupted(databasePath);
-    passOrFail("a malformed rotation database fails safely without returning stale data",
-        !corrupted.load() && corrupted.get(originalPath) == 0);
+    passOrFail("a truncated settings file yields no rotations instead of stale data",
+        beforeCorruption && corrupted.load() && corrupted.get(originalPath) == 0 &&
+        corrupted.size() == 0);
+
+    {
+        // 头还在、文本区是垃圾：逐行跳过，同样一条都不认
+        std::vector<char> head(static_cast<std::size_t>(ConfigFile::HEAD_SIZE), 'Z');
+        std::ofstream garbage(databasePath, std::ios::binary | std::ios::trunc);
+        garbage.write(head.data(), ConfigFile::HEAD_SIZE);
+        garbage << "Rot0=" << "\r\n"
+                << "Rot1=9|whatever" << "\r\n"
+                << "a line without any equals sign" << "\r\n"
+
+                << "Rot2=1|" << "\r\n";
+    }
+    RotationStore garbled(databasePath);
+    passOrFail("unreadable rotation lines are skipped rather than trusted",
+        garbled.load() && garbled.size() == 0 && garbled.get(originalPath) == 0);
 
     std::error_code ignored;
     std::filesystem::remove(databasePath, ignored);
@@ -1773,13 +1794,68 @@ void expectExternalEditorConfig() {
 
     const auto tempDirectory = std::filesystem::temp_directory_path() /
         (L"YeImageViewer-ExternalEditors-" + std::to_wstring(GetCurrentProcessId()));
-    const auto configFile = tempDirectory / ExternalEditorConfig::FILE_NAME;
+    const auto configFile = tempDirectory / L"YeImageViewer.db";
     std::error_code ignored;
     std::filesystem::create_directories(tempDirectory, ignored);
     const bool saved = ExternalEditorConfig::save(configFile.wstring(), editors);
     const auto loaded = ExternalEditorConfig::load(configFile.wstring());
-    passOrFail("external editor names and Unicode executable paths persist in a dedicated INI file",
-        saved && loaded == editors && std::filesystem::file_size(configFile, ignored) > 2);
+    passOrFail("external editor names and Unicode executable paths persist in the settings file",
+        saved && loaded == editors &&
+        std::filesystem::file_size(configFile, ignored) > ConfigFile::HEAD_SIZE);
+
+    // 三份配置挤在同一个文件里，谁保存都不能把别人的行抹掉——
+    // 这正是 5 个文件并成 3 个之后最容易翻车的地方。
+    FileTargetConfig::Model targets;
+    FileTargetConfig::addTarget(targets, L"D:\\相册\\精选");
+    FileTargetConfig::addTarget(targets, L"E:\\backup");
+    const bool targetsSaved = FileTargetConfig::save(configFile.wstring(), targets);
+
+    RotationStore rotations;
+    rotations.setStoragePath(configFile);
+    rotations.set(L"D:\\照片\\a 1.png", 1);
+    rotations.set(L"D:\\照片\\b.png", 3);
+    const bool rotationsSaved = rotations.save();
+
+    // 再存一遍编辑器：它必须把目标和旋转那些行原样带回去
+    const bool editorsResaved = ExternalEditorConfig::save(configFile.wstring(), editors);
+
+    RotationStore reloaded;
+    reloaded.setStoragePath(configFile);
+    const bool rotationsReloaded = reloaded.load();
+    const auto targetsReloaded = FileTargetConfig::load(configFile.wstring());
+    const auto editorsReloaded = ExternalEditorConfig::load(configFile.wstring());
+
+    passOrFail("editors, copy targets, and rotations share one settings file without clobbering each other",
+        targetsSaved && rotationsSaved && editorsResaved && rotationsReloaded &&
+        editorsReloaded == editors &&
+        targetsReloaded.targets.size() == 2 &&
+        targetsReloaded.targets.front() == L"D:\\相册\\精选" &&
+        reloaded.get(L"D:\\照片\\a 1.png") == 1 &&
+        reloaded.get(L"D:\\照片\\b.png") == 3);
+
+    // 头 4096 字节是设置结构体，文本区只能追加在后面：
+    // 写文本不能把已有的设置抹掉，否则用户一配置编辑器，窗口位置和主题就全丢了。
+    std::vector<char> head(static_cast<std::size_t>(ConfigFile::HEAD_SIZE), '\0');
+    {
+        std::ifstream probe(configFile, std::ios::binary);
+        probe.read(head.data(), ConfigFile::HEAD_SIZE);
+    }
+    for (std::size_t index = 0; index < head.size(); ++index)
+        head[index] = static_cast<char>('A' + (index % 26));
+    {
+        std::fstream writer(configFile, std::ios::binary | std::ios::in | std::ios::out);
+        writer.write(head.data(), ConfigFile::HEAD_SIZE);
+    }
+    const bool editorsAfterHead = ExternalEditorConfig::save(configFile.wstring(), editors);
+    std::vector<char> headAfter(static_cast<std::size_t>(ConfigFile::HEAD_SIZE), '\0');
+    {
+        std::ifstream probe(configFile, std::ios::binary);
+        probe.read(headAfter.data(), ConfigFile::HEAD_SIZE);
+    }
+    passOrFail("writing the text section leaves the fixed-size settings block untouched",
+        editorsAfterHead && headAfter == head &&
+        ExternalEditorConfig::load(configFile.wstring()) == editors);
+
     std::filesystem::remove(configFile, ignored);
     std::filesystem::remove(tempDirectory, ignored);
 

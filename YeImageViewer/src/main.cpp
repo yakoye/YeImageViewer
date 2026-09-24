@@ -47,7 +47,7 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.37.2-rc7";
+std::wstring_view appVersion = L"v1.37.2-rc8";
 constinit int appVersionCode = 13630; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
@@ -613,9 +613,19 @@ public:
     explicit YeImageViewerApp(bool openImageOnCursorMonitor = false)
         : D3D11App(openImageOnCursorMonitor) {
         m_wndCaption = std::format(L"{} {}", appName, appVersion);
-        auto rotationPath = std::filesystem::path(GlobalVar::settingPath);
-        rotationPath.replace_filename(L"YeImageViewer.rotations.db");
-        rotationStore.setStoragePath(std::move(rotationPath));
+        // 旋转记录写在设置文件的文本区里（见 ConfigFile.h），不再单开一份文件。
+        const std::filesystem::path rotationPath(GlobalVar::settingPath);
+        const auto legacyRotationPath = std::filesystem::path(rotationPath)
+            .replace_filename(L"YeImageViewer.rotations.db");
+        if (std::filesystem::exists(legacyRotationPath)) {
+            // 旧版本留下的二进制记录：读一次、转写到设置文件、删掉旧文件
+            RotationStore legacy;
+            legacy.setStoragePath(rotationPath);
+            if (legacy.loadLegacyBinary(legacyRotationPath) && legacy.size() > 0)
+                legacy.save();
+            DeleteFileW(legacyRotationPath.c_str());
+        }
+        rotationStore.setStoragePath(rotationPath);
         rotationStore.load();
 
         textDrawer.setSize(TextRenderingPolicy::LOGICAL_FONT_SIZE);

@@ -1,5 +1,8 @@
 #include "RotationStore.h"
 
+#include "ConfigFile.h"
+#include "ExternalEditorConfig.h"
+
 #include <Windows.h>
 
 #include <algorithm>
@@ -9,18 +12,16 @@
 
 namespace {
 
-constexpr std::array<char, 8> MAGIC{ 'Y', 'E', 'R', 'O', 'T', '1', '\r', '\n' };
 constexpr uint32_t MAX_ENTRY_COUNT = 100000;
 constexpr uint32_t MAX_PATH_CHARS = 32768;
 
-template<typename T>
-bool readValue(std::istream& stream, T& value) {
-    return static_cast<bool>(stream.read(reinterpret_cast<char*>(&value), sizeof(value)));
-}
+// 旋转记录原来是自己一个二进制文件。现在和外部编辑器、复制/移动目标一起
+// 写进 YeImageViewer.db 的文本区，绿色版落地就只剩本体、缩略图 DLL 和一个配置。
+// 路径里什么字符都可能有（包括换行），所以复用编辑器那套转义。
+constexpr char ROTATION_PREFIX[] = "Rot";
 
-template<typename T>
-void writeValue(std::ostream& stream, const T& value) {
-    stream.write(reinterpret_cast<const char*>(&value), sizeof(value));
+bool isRotationKey(std::string_view key) {
+    return key.starts_with(ROTATION_PREFIX);
 }
 
 }
@@ -49,29 +50,64 @@ std::wstring RotationStore::normalizePath(std::wstring_view imagePath) {
     return normalized;
 }
 
+bool RotationStore::loadFrom(const std::vector<std::string>& lines) {
+    std::map<std::wstring, uint8_t> loaded;
+    for (const auto& line : lines) {
+        const auto key = ConfigFile::keyOf(line);
+        if (!isRotationKey(key))
+            continue;
+        // Rot<序号>=<旋转数>|<转义后的路径>
+        const auto value = ConfigFile::valueOf(line);
+        const auto bar = value.find('|');
+        if (bar == std::string_view::npos || bar == 0)
+            continue;
+        const int rotation = value[0] - '0';
+        if (rotation < 1 || rotation > 3)
+            continue;
+        auto path = ExternalEditorConfig::unescape(value.substr(bar + 1));
+        if (path.empty() || path.size() > MAX_PATH_CHARS)
+            continue;
+        loaded[std::move(path)] = static_cast<uint8_t>(rotation);
+        if (loaded.size() > MAX_ENTRY_COUNT)
+            return false;
+    }
+    rotations_ = std::move(loaded);
+    return true;
+}
+
+// 返回 false 只表示「没有存储位置可读」。文本区为空是合法状态（设置文件刚建、
+// 或者用户从没转过图），读不懂的行一律跳过，绝不把上一次的内存内容留着当结果。
 bool RotationStore::load() {
     rotations_.clear();
     if (storagePath_.empty())
         return false;
+    return loadFrom(ConfigFile::readLines(storagePath_.wstring()));
+}
 
-    std::ifstream stream(storagePath_, std::ios::binary);
+// 迁移旧的 YeImageViewer.rotations.db：那是自带魔数的二进制文件。
+// 读成功就地转写到设置文件里，调用方随后把旧文件删掉。
+bool RotationStore::loadLegacyBinary(const std::filesystem::path& legacyPath) {
+    rotations_.clear();
+    std::ifstream stream(legacyPath, std::ios::binary);
     if (!stream)
-        return !std::filesystem::exists(storagePath_);
+        return false;
 
+    constexpr std::array<char, 8> MAGIC{ 'Y', 'E', 'R', 'O', 'T', '1', '\r', '\n' };
     std::array<char, MAGIC.size()> magic{};
     if (!stream.read(magic.data(), magic.size()) || magic != MAGIC)
         return false;
 
     uint32_t count = 0;
-    if (!readValue(stream, count) || count > MAX_ENTRY_COUNT)
+    if (!stream.read(reinterpret_cast<char*>(&count), sizeof(count)) || count > MAX_ENTRY_COUNT)
         return false;
 
     std::map<std::wstring, uint8_t> loaded;
     for (uint32_t index = 0; index < count; ++index) {
         uint32_t pathLength = 0;
         uint8_t rotation = 0;
-        if (!readValue(stream, pathLength) || pathLength == 0 || pathLength > MAX_PATH_CHARS ||
-            !readValue(stream, rotation) || rotation > 3)
+        if (!stream.read(reinterpret_cast<char*>(&pathLength), sizeof(pathLength)) ||
+            pathLength == 0 || pathLength > MAX_PATH_CHARS ||
+            !stream.read(reinterpret_cast<char*>(&rotation), sizeof(rotation)) || rotation > 3)
             return false;
 
         std::wstring path(pathLength, L'\0');
@@ -89,37 +125,17 @@ bool RotationStore::save() const {
     if (storagePath_.empty() || rotations_.size() > MAX_ENTRY_COUNT)
         return false;
 
-    auto temporaryPath = storagePath_;
-    temporaryPath += L".tmp";
-    {
-        std::ofstream stream(temporaryPath, std::ios::binary | std::ios::trunc);
-        if (!stream)
+    const auto path = storagePath_.wstring();
+    auto lines = ConfigFile::foreignLines(ConfigFile::readLines(path), isRotationKey);
+    std::size_t index = 0;
+    for (const auto& [imagePath, rotation] : rotations_) {
+        if (imagePath.empty() || imagePath.size() > MAX_PATH_CHARS)
             return false;
-
-        stream.write(MAGIC.data(), MAGIC.size());
-        const auto count = static_cast<uint32_t>(rotations_.size());
-        writeValue(stream, count);
-        for (const auto& [path, rotation] : rotations_) {
-            if (path.empty() || path.size() > MAX_PATH_CHARS)
-                return false;
-            const auto pathLength = static_cast<uint32_t>(path.size());
-            writeValue(stream, pathLength);
-            writeValue(stream, rotation);
-            stream.write(reinterpret_cast<const char*>(path.data()),
-                static_cast<std::streamsize>(path.size()) * sizeof(wchar_t));
-        }
-        stream.flush();
-        if (!stream)
-            return false;
+        lines.push_back(std::string(ROTATION_PREFIX) + std::to_string(index++) + "=" +
+            static_cast<char>('0' + rotation) + "|" +
+            ExternalEditorConfig::escape(imagePath));
     }
-
-    if (!MoveFileExW(temporaryPath.c_str(), storagePath_.c_str(),
-        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        std::error_code ignored;
-        std::filesystem::remove(temporaryPath, ignored);
-        return false;
-    }
-    return true;
+    return ConfigFile::writeLines(path, lines);
 }
 
 int RotationStore::get(std::wstring_view imagePath) const {

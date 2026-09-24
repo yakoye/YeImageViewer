@@ -141,8 +141,24 @@ void D3D11App::loadSettings(bool openImageOnCursorMonitor) {
     else {
         GlobalVar::settingPath = exePath.substr(0, lastSlash) + L"\\YeImageViewer.db";
     }
+    // 编辑器、复制/移动目标、旋转记录都写在设置文件的文本区里，不再各开一份文件。
     GlobalVar::externalEditorsPath =
         ExternalEditorConfig::configPath(GlobalVar::settingPath);
+
+    // 旧版本留下的 YeImageViewer.editors.ini 搬进来再删掉。只搬一次：
+    // 搬完删不掉（文件被占用之类）的话下次还会再搬一遍，内容一样，不会出错。
+    const auto legacyEditorsPath =
+        ExternalEditorConfig::legacyConfigPath(GlobalVar::settingPath);
+    if (std::filesystem::exists(legacyEditorsPath)) {
+        auto legacyEditors = ExternalEditorConfig::loadLegacy(legacyEditorsPath);
+        auto legacyTargets = FileTargetConfig::loadLegacy(legacyEditorsPath);
+        if (!legacyEditors.empty())
+            ExternalEditorConfig::save(GlobalVar::externalEditorsPath, legacyEditors);
+        if (!legacyTargets.targets.empty())
+            FileTargetConfig::save(GlobalVar::externalEditorsPath, legacyTargets);
+        DeleteFileW(legacyEditorsPath.c_str());
+    }
+
     GlobalVar::externalEditors =
         ExternalEditorConfig::load(GlobalVar::externalEditorsPath);
     GlobalVar::fileTargets = FileTargetConfig::load(GlobalVar::externalEditorsPath);
@@ -245,7 +261,12 @@ void D3D11App::saveSettings() const {
 
     memcpy(GlobalVar::settingParameter.header, GlobalVar::settingHeader.data(), GlobalVar::settingHeader.length());
 
-    auto f = _wfopen(GlobalVar::settingPath.c_str(), L"wb");
+    // 用 r+b 就地改写前 4096 字节，不能用 wb：wb 会把文件截断，
+    // 而 4096 字节之后是外部编辑器、复制/移动目标和旋转记录的文本区，
+    // 一截断这三样就全没了。文件还不存在时才退回 wb 新建。
+    auto f = _wfopen(GlobalVar::settingPath.c_str(), L"r+b");
+    if (!f)
+        f = _wfopen(GlobalVar::settingPath.c_str(), L"wb");
     if (f) {
         fwrite(&GlobalVar::settingParameter, 1, sizeof(SettingParameter), f);
         fclose(f);

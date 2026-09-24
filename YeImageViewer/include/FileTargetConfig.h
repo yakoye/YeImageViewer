@@ -133,28 +133,17 @@ inline bool isTargetKey(std::string_view key) {
     return false;
 }
 
-inline Model load(const std::wstring& filePath) {
+inline Model loadFrom(const std::vector<std::string>& lines) {
     Model model;
-    std::ifstream file(std::filesystem::path(filePath), std::ios::binary);
-    if (!file)
-        return model;
-
     std::vector<std::wstring> slots(MAX_TARGETS);
     std::size_t count = 0;
     std::size_t active = 0;
-    std::string line;
-    bool firstLine = true;
-    while (std::getline(file, line)) {
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        if (firstLine && line.starts_with("\xEF\xBB\xBF"))
-            line.erase(0, 3);
-        firstLine = false;
-        const auto equals = line.find('=');
-        if (equals == std::string::npos)
+    for (const auto& line : lines) {
+        const auto keyView = ConfigFile::keyOf(line);
+        if (keyView.empty())
             continue;
-        const std::string key(line.data(), equals);
-        const std::string value(line.data() + equals + 1, line.size() - equals - 1);
+        const std::string key(keyView);
+        const std::string value(ConfigFile::valueOf(line));
         const auto toIndex = [](const std::string& text) -> std::size_t {
             try { return static_cast<std::size_t>(std::stoul(text)); }
             catch (...) { return 0; }
@@ -181,25 +170,25 @@ inline Model load(const std::wstring& filePath) {
     return model;
 }
 
+inline Model load(const std::wstring& filePath) {
+    return loadFrom(ConfigFile::readLines(filePath));
+}
+
+inline Model loadLegacy(const std::wstring& filePath) {
+    return loadFrom(ConfigFile::readPlainLines(filePath));
+}
+
 inline bool save(const std::wstring& filePath, const Model& model) {
     if (filePath.empty() || model.targets.size() > MAX_TARGETS)
         return false;
-    const auto kept = ExternalEditorConfig::foreignLines(filePath, isTargetKey);
-    std::ofstream file(std::filesystem::path(filePath),
-        std::ios::binary | std::ios::trunc);
-    if (!file)
-        return false;
-    file << "\xEF\xBB\xBF";
-    for (const auto& line : kept)
-        file << line << "\r\n";
-    file << "TargetCount=" << model.targets.size() << "\r\n";
-    file << "TargetActive=" << model.active << "\r\n";
+    auto lines = ConfigFile::foreignLines(ConfigFile::readLines(filePath), isTargetKey);
+    lines.push_back("TargetCount=" + std::to_string(model.targets.size()));
+    lines.push_back("TargetActive=" + std::to_string(model.active));
     for (std::size_t index = 0; index < model.targets.size(); ++index) {
-        file << "Target" << index << '='
-             << ExternalEditorConfig::escape(model.targets[index]) << "\r\n";
+        lines.push_back("Target" + std::to_string(index) + "=" +
+            ExternalEditorConfig::escape(model.targets[index]));
     }
-    file.flush();
-    return file.good();
+    return ConfigFile::writeLines(filePath, lines);
 }
 
 }

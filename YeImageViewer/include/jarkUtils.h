@@ -105,6 +105,7 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #include <opencv2/highgui.hpp>
 
 #include "stringRes.h"
+#include "ConfigFile.h"
 #include "UiLanguage.h"
 #include "BackgroundRenderer.h"
 #include "EscapeBehavior.h"
@@ -299,6 +300,10 @@ struct SettingParameter {
 };
 
 static_assert(sizeof(SettingParameter) == 4096, "sizeof(SettingParameter) != 4096");
+// 设置结构体就是配置文件的前 4096 字节，之后才是编辑器/目标/旋转的文本区。
+// 两边对不上，文本区就会被错位读成乱码，或者被设置覆盖掉。
+static_assert(sizeof(SettingParameter) == ConfigFile::HEAD_SIZE,
+    "SettingParameter 的大小必须与 ConfigFile::HEAD_SIZE 一致");
 
 struct rcFileInfo {
     uint8_t* ptr = nullptr;

@@ -83,7 +83,7 @@ if ($actualFileVersion -ne $expectedFileVersion) {
 Write-Host "PASS viewer file version is $expectedFileVersion."
 
 # 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
-$expectedProductVersion = "1.37.2-rc7"
+$expectedProductVersion = "1.37.2-rc8"
 $actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
@@ -744,6 +744,99 @@ finally {
     }
 }
 
+Write-Host "Checking that settings, editors, targets, and rotations live in one file..."
+# 绿色版落地只应该有三个文件：本体、缩略图 DLL、一个配置。
+# 外部编辑器、复制/移动目标、图片旋转记录都写在 YeImageViewer.db 的文本区里
+# （前 4096 字节仍是固定大小的设置结构体）。旧版本留下的两份独立配置要能迁进来。
+$oneConfigDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-OneConfig-" + [Guid]::NewGuid().ToString("N"))
+$oneConfigProcess = $null
+try {
+    [void](New-Item -ItemType Directory -Path $oneConfigDirectory)
+    $oneConfigViewer = Join-Path $oneConfigDirectory "YeImageViewer.exe"
+    Copy-Item -LiteralPath $viewer -Destination $oneConfigViewer
+    Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $viewer) "YeThumbnailProvider.dll") -Destination (Join-Path $oneConfigDirectory "YeThumbnailProvider.dll")
+
+    $oneConfigImages = Join-Path $oneConfigDirectory "pics"
+    [void](New-Item -ItemType Directory -Path $oneConfigImages)
+    $oneConfigImage = Join-Path $oneConfigImages "rotated.png"
+    Copy-Item -LiteralPath $commonPngFixture -Destination $oneConfigImage
+
+    # 旧版本的两份配置：编辑器 INI 与二进制旋转记录
+    $legacyEditors = Join-Path $oneConfigDirectory "YeImageViewer.editors.ini"
+    [IO.File]::WriteAllText($legacyEditors,
+        "Count=1`r`nName0=LegacyProbe`r`nPath0=$oneConfigViewer`r`n",
+        [Text.UTF8Encoding]::new($true))
+
+    $legacyRotations = Join-Path $oneConfigDirectory "YeImageViewer.rotations.db"
+    $rotationKey = $oneConfigImage.ToLowerInvariant()
+    $rotationStream = [IO.File]::Create($legacyRotations)
+    $rotationWriter = New-Object IO.BinaryWriter($rotationStream)
+    $rotationWriter.Write([Text.Encoding]::ASCII.GetBytes("YEROT1`r`n"))
+    $rotationWriter.Write([uint32]1)
+    $rotationWriter.Write([uint32]$rotationKey.Length)
+    $rotationWriter.Write([byte]1)
+    $rotationWriter.Write([Text.Encoding]::Unicode.GetBytes($rotationKey))
+    $rotationWriter.Close()
+    $rotationStream.Close()
+
+    $oneConfigProcess = Start-Process -FilePath $oneConfigViewer -ArgumentList ('"' + $oneConfigImage + '"') -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 200
+        $oneConfigProcess.Refresh()
+    } while (-not $oneConfigProcess.HasExited -and $oneConfigProcess.MainWindowHandle -eq 0 -and [DateTime]::UtcNow -lt $deadline)
+    if ($oneConfigProcess.HasExited -or $oneConfigProcess.MainWindowHandle -eq 0) {
+        throw "One-config regression failed: the viewer did not open a window."
+    }
+    Start-Sleep -Milliseconds 1500
+
+    # 旋转记录要从旧文件迁过来并且真的生效：标题里会带旋转角度
+    $oneConfigTitle = New-Object Text.StringBuilder 512
+    [void][YeImageViewerTestNativeV1365]::GetWindowText([IntPtr]$oneConfigProcess.MainWindowHandle, $oneConfigTitle, 512)
+    if ($oneConfigTitle.ToString() -notmatch "90") {
+        throw "One-config regression failed: the migrated rotation was not applied ($($oneConfigTitle.ToString()))."
+    }
+
+    [void]$oneConfigProcess.CloseMainWindow()
+    if (-not $oneConfigProcess.WaitForExit(5000)) {
+        Stop-Process -Id $oneConfigProcess.Id -Force
+        [void]$oneConfigProcess.WaitForExit(3000)
+    }
+    Start-Sleep -Milliseconds 400
+
+    if (Test-Path -LiteralPath $legacyEditors) {
+        throw "One-config regression failed: the legacy editors file was not migrated away."
+    }
+    if (Test-Path -LiteralPath $legacyRotations) {
+        throw "One-config regression failed: the legacy rotation database was not migrated away."
+    }
+
+    $landed = @(Get-ChildItem -LiteralPath $oneConfigDirectory -File | Sort-Object Name)
+    $landedNames = ($landed | ForEach-Object { $_.Name }) -join ", "
+    if ($landed.Count -ne 3) {
+        throw "One-config regression failed: expected exactly three files, found $($landed.Count) ($landedNames)."
+    }
+
+    $configBytes = [IO.File]::ReadAllBytes((Join-Path $oneConfigDirectory "YeImageViewer.db"))
+    if ($configBytes.Length -le 4096) {
+        throw "One-config regression failed: the settings file has no text section."
+    }
+    if ([Text.Encoding]::ASCII.GetString($configBytes, 0, 20) -ne "YeImageViewerSetting") {
+        throw "One-config regression failed: the fixed settings block was overwritten by the text section."
+    }
+    $configTail = [Text.Encoding]::UTF8.GetString($configBytes, 4096, $configBytes.Length - 4096)
+    if ($configTail -notmatch "Path0=" -or $configTail -notmatch "Rot0=") {
+        throw "One-config regression failed: editors or rotations are missing from the shared text section."
+    }
+    Write-Host "PASS settings, editors, and rotations share one file and legacy configs migrate into it ($landedNames)."
+}
+finally {
+    if ($null -ne $oneConfigProcess -and -not $oneConfigProcess.HasExited) {
+        Stop-Process -Id $oneConfigProcess.Id -Force -ErrorAction SilentlyContinue
+        [void]$oneConfigProcess.WaitForExit(3000)
+    }
+    Remove-Item -LiteralPath $oneConfigDirectory -Recurse -Force -ErrorAction SilentlyContinue
+}
 Write-Host "Checking fresh-install window defaults..."
 $freshDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Fresh-" + [Guid]::NewGuid().ToString("N"))
 $freshViewer = Join-Path $freshDirectory "YeImageViewer.exe"
@@ -1021,10 +1114,20 @@ try {
         $editorProbeProcess.WaitForExit()
     }
     $editorProbeProcess = $null
-    if (-not (Test-Path -LiteralPath $externalEditorSettings -PathType Leaf) -or
-        (Get-Item -LiteralPath $externalEditorSettings).Length -le 2 -or
-        -not (Get-Content -LiteralPath $externalEditorSettings -Raw -Encoding UTF8).Contains("ExternalEditorProbe")) {
-        throw "External-editor regression failed: the named editor was not persisted in its dedicated INI file."
+    # 编辑器配置已经并进 YeImageViewer.db 的文本区（前 4096 字节是设置结构体），
+    # 启动时旧的 .editors.ini 会被迁移后删除，所以这里查的是合并后的那个文件。
+    if (Test-Path -LiteralPath $externalEditorSettings -PathType Leaf) {
+        throw "External-editor regression failed: the legacy editors file was left behind instead of migrated."
+    }
+    $mergedConfigPath = Join-Path $freshDirectory "YeImageViewer.db"
+    if (-not (Test-Path -LiteralPath $mergedConfigPath -PathType Leaf)) {
+        throw "External-editor regression failed: the shared settings file was not created."
+    }
+    $mergedConfigBytes = [IO.File]::ReadAllBytes($mergedConfigPath)
+    if ($mergedConfigBytes.Length -le 4096 -or
+        -not [Text.Encoding]::UTF8.GetString($mergedConfigBytes, 4096,
+            $mergedConfigBytes.Length - 4096).Contains("ExternalEditorProbe")) {
+        throw "External-editor regression failed: the named editor was not persisted in the shared settings file."
     }
     Write-Host "PASS external-editor picker restores interaction and the submenu opens the current image in its configured application."
 
@@ -1151,9 +1254,7 @@ finally {
         $freshViewer,
         $editorProbe,
         (Join-Path $freshDirectory "YeImageViewer.db"),
-        (Join-Path $freshDirectory "YeImageViewer.editors.ini"),
-        (Join-Path $freshDirectory "YeImageViewer.rotations.db"),
-        (Join-Path $freshDirectory "YeImageViewer.rotations.db.tmp")
+        (Join-Path $freshDirectory "YeImageViewer.editors.ini")
     )) {
         if (Test-Path -LiteralPath $freshFile) {
             # 进程刚退出时，它的 exe 可能还被杀毒扫描或程序兼容性助手短暂占用，
@@ -1393,9 +1494,15 @@ try {
         Stop-Process -Id $escapeProcess.Id -Force
         $escapeProcess.WaitForExit()
     }
-    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf) -or
-        (Get-Item -LiteralPath $settingsPath).Length -ne 4096) {
-        throw "Escape-shortcut regression failed: the cleared shortcut was not persisted to the 4096-byte configuration file."
+    # 设置块仍是固定 4096 字节，但文件后面可能跟着编辑器/目标/旋转的文本区，
+    # 所以不能再要求「文件正好 4096 字节」，只能要求前 4096 字节是有效的设置块。
+    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) {
+        throw "Escape-shortcut regression failed: the configuration file was not written."
+    }
+    $escapeConfigBytes = [IO.File]::ReadAllBytes($settingsPath)
+    if ($escapeConfigBytes.Length -lt 4096 -or
+        [Text.Encoding]::ASCII.GetString($escapeConfigBytes, 0, 20) -ne "YeImageViewerSetting") {
+        throw "Escape-shortcut regression failed: the cleared shortcut was not persisted to the fixed 4096-byte settings block."
     }
 
     $escapeProcess = Start-EscapeViewer
