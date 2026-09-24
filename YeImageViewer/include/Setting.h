@@ -146,7 +146,7 @@ private:
             generalTabRadioList = {
                 { toCvRect(SettingLayout::GENERAL_RADIOS[0]), {20, 21, 22, 23}, &GlobalVar::settingParameter.switchImageAnimationMode },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[1]), {24, 25, 26, 27}, &GlobalVar::settingParameter.UI_Mode },
-                { toCvRect(SettingLayout::GENERAL_RADIOS[2]), {28, 30, 31}, &GlobalVar::settingParameter.UI_LANG },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[2]), {28, 30, 31, 86}, &GlobalVar::settingParameter.UI_LANG },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[3]), {36, 37, 38}, &GlobalVar::settingParameter.rightClickAction },
                 // 这四组存在 reserve 里（设置结构固定 4096 字节，加不了新成员），
                 // 正好都是 uint32_t，可以直接交给单选组按值编辑。
@@ -276,16 +276,16 @@ private:
     }
 
     void refreshGeneralTab(cv::Mat& page) {
-        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        const bool chinese = isChineseUI();
         drawCard(page, toCanvasRect(SettingLayout::GENERAL_BEHAVIOR_CARD));
         drawSectionTitle(page, toCanvasRect(SettingLayout::GENERAL_BEHAVIOR_CARD),
-            chinese ? "行为" : "BEHAVIOR");
+            tr("行为", "BEHAVIOR", "行為"));
         for (const auto& item : generalTabCheckBoxList)
             drawToggle(page, item);
 
         drawCard(page, toCanvasRect(SettingLayout::GENERAL_DISPLAY_CARD));
         drawSectionTitle(page, toCanvasRect(SettingLayout::GENERAL_DISPLAY_CARD),
-            chinese ? "显示与交互" : "DISPLAY & INPUT");
+            tr("显示与交互", "DISPLAY & INPUT", "顯示與互動"));
         for (const auto& radio : generalTabRadioList)
             drawSegment(page, radio);
 
@@ -293,7 +293,7 @@ private:
         const auto editorCard = SettingLayout::generalEditorCard(editorCount);
         drawCard(page, toCanvasRect(editorCard));
         drawSectionTitle(page, toCanvasRect(editorCard),
-            chinese ? "外部图片编辑器" : "EXTERNAL EDITOR");
+            tr("外部图片编辑器", "EXTERNAL EDITOR", "外部圖片編輯器"));
         for (int index = 0; index < editorCount; ++index) {
             const auto& editor = GlobalVar::externalEditors[index];
             const cv::Rect nameRect = toCanvasRect(SettingLayout::generalEditorName(index));
@@ -320,24 +320,23 @@ private:
                 { pathRect.x + 10, pathRect.y, pathRect.width - 20, pathRect.height },
                 pathText.c_str(), secondaryText());
             textDrawer.putAlignCenter(page, removeRect,
-                chinese ? "删除" : "Remove", primaryText());
+                tr("删除", "Remove", "刪除"), primaryText());
         }
 
         const auto addRect = toCanvasRect(SettingLayout::generalEditorAdd(editorCount));
         fillRoundedRect(page, addRect, editorCount < ExternalEditorConfig::MAX_EDITORS ?
             GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG, 7);
         textDrawer.putAlignCenter(page, addRect,
-            chinese ? "添加应用..." : "Add application...",
+            tr("添加应用...", "Add application...", "新增應用程式..."),
             editorCount < ExternalEditorConfig::MAX_EDITORS ? 0xFFFFFFFFu : secondaryText());
         textDrawer.putAlignLeft(page,
             toCanvasRect(SettingLayout::generalEditorHint(editorCount)),
-            chinese ? "点击名称可编辑；点击路径可更换程序（最多 10 个）" :
-                "Click a name to edit it or a path to replace it (up to 10)",
+            tr("点击名称可编辑；点击路径可更换程序（最多 10 个）", "Click a name to edit it or a path to replace it (up to 10)", "點名稱可編輯；點路徑可更換程式（最多 10 個）"),
             secondaryText());
     }
 
     void refreshAssociateTab(cv::Mat& page) {
-        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        const bool chinese = isChineseUI();
         const cv::Rect search = toCanvasRect(SettingLayout::ASSOCIATION_SEARCH);
         drawCard(page, search);
         cv::circle(page, { search.x + 20, search.y + search.height / 2 - 2 }, 6,
@@ -346,7 +345,7 @@ private:
             { search.x + 31, search.y + search.height / 2 + 9 },
             jarkUtils::to_cv_scalar(secondaryText()), 2);
         const std::string searchText = associationFilter.empty() ?
-            (associationSearchActive ? "|" : (chinese ? "搜索格式..." : "Search formats...")) :
+            (associationSearchActive ? "|" : (tr("搜索格式...", "Search formats...", "搜尋格式..."))) :
             associationFilter + (associationSearchActive ? "|" : "");
         textDrawer.putAlignLeft(page,
             { search.x + 42, search.y, search.width - 170, search.height },
@@ -394,52 +393,53 @@ private:
         ShortcutConfig::Action action;
         const char* nameZH;
         const char* nameEN;
+        const char* nameTW;
     };
 
     static constexpr std::array<ShortcutItem,
         static_cast<std::size_t>(ShortcutConfig::Action::Count)> shortcutItems{
-            ShortcutItem{ ShortcutConfig::Action::OpenFile, "打开图片", "Open image" },
-            ShortcutItem{ ShortcutConfig::Action::ExportFrames, "导出全部帧", "Export all frames" },
-            ShortcutItem{ ShortcutConfig::Action::CopyImage, "复制图片", "Copy image" },
-            ShortcutItem{ ShortcutConfig::Action::PrintImage, "打印图片", "Print image" },
-            ShortcutItem{ ShortcutConfig::Action::CloseImage, "关闭图片", "Close image" },
-            ShortcutItem{ ShortcutConfig::Action::CloseViewer, "关闭看图窗口", "Close viewer" },
-            ShortcutItem{ ShortcutConfig::Action::PreviousFrame, "上一帧", "Previous frame" },
-            ShortcutItem{ ShortcutConfig::Action::ToggleAnimation, "暂停/继续动图", "Pause/resume animation" },
-            ShortcutItem{ ShortcutConfig::Action::NextFrame, "下一帧", "Next frame" },
-            ShortcutItem{ ShortcutConfig::Action::CopyImageInfo, "复制图片信息", "Copy image information" },
-            ShortcutItem{ ShortcutConfig::Action::ToggleFullscreen, "全屏显示", "Toggle fullscreen" },
-            ShortcutItem{ ShortcutConfig::Action::RotateLeft, "向左旋转", "Rotate left" },
-            ShortcutItem{ ShortcutConfig::Action::RotateRight, "向右旋转", "Rotate right" },
-            ShortcutItem{ ShortcutConfig::Action::PanUp, "向上拖动", "Pan up" },
-            ShortcutItem{ ShortcutConfig::Action::PanDown, "向下拖动", "Pan down" },
-            ShortcutItem{ ShortcutConfig::Action::PanLeft, "向左拖动", "Pan left" },
-            ShortcutItem{ ShortcutConfig::Action::PanRight, "向右拖动", "Pan right" },
-            ShortcutItem{ ShortcutConfig::Action::ZoomIn, "放大", "Zoom in" },
-            ShortcutItem{ ShortcutConfig::Action::ZoomOut, "缩小", "Zoom out" },
-            ShortcutItem{ ShortcutConfig::Action::ZoomFit, "适合窗口", "Fit window" },
-            ShortcutItem{ ShortcutConfig::Action::ZoomActual, "实际大小", "Actual size" },
-            ShortcutItem{ ShortcutConfig::Action::PreviousImage, "上一张", "Previous image" },
-            ShortcutItem{ ShortcutConfig::Action::NextImage, "下一张", "Next image" },
-            ShortcutItem{ ShortcutConfig::Action::FirstImage, "第一张", "First image" },
-            ShortcutItem{ ShortcutConfig::Action::LastImage, "最后一张", "Last image" },
-            ShortcutItem{ ShortcutConfig::Action::PlayPause, "播放/暂停", "Play/pause" },
-            ShortcutItem{ ShortcutConfig::Action::ToggleImageInfo, "显示图片信息", "Toggle image information" },
-            ShortcutItem{ ShortcutConfig::Action::OpenSettings, "打开设置", "Open settings" },
-            ShortcutItem{ ShortcutConfig::Action::RenameImage, "重命名图片", "Rename image" },
-            ShortcutItem{ ShortcutConfig::Action::OpenShortcuts, "打开快捷键设置", "Open shortcuts" },
-            ShortcutItem{ ShortcutConfig::Action::OpenAbout, "打开关于", "Open about" },
-            ShortcutItem{ ShortcutConfig::Action::DeleteImage, "删除图片", "Delete image" },
-            ShortcutItem{ ShortcutConfig::Action::CopyToTarget, "复制到指定位置", "Copy to folder" },
-            ShortcutItem{ ShortcutConfig::Action::MoveToTarget, "移动到指定位置", "Move to folder" },
+            ShortcutItem{ ShortcutConfig::Action::OpenFile, "打开图片", "Open image", "開啟圖片" },
+            ShortcutItem{ ShortcutConfig::Action::ExportFrames, "导出全部帧", "Export all frames", "匯出全部影格" },
+            ShortcutItem{ ShortcutConfig::Action::CopyImage, "复制图片", "Copy image", "複製圖片" },
+            ShortcutItem{ ShortcutConfig::Action::PrintImage, "打印图片", "Print image", "列印圖片" },
+            ShortcutItem{ ShortcutConfig::Action::CloseImage, "关闭图片", "Close image", "關閉圖片" },
+            ShortcutItem{ ShortcutConfig::Action::CloseViewer, "关闭看图窗口", "Close viewer", "關閉看圖視窗" },
+            ShortcutItem{ ShortcutConfig::Action::PreviousFrame, "上一帧", "Previous frame", "上一影格" },
+            ShortcutItem{ ShortcutConfig::Action::ToggleAnimation, "暂停/继续动图", "Pause/resume animation", "暫停/繼續動圖" },
+            ShortcutItem{ ShortcutConfig::Action::NextFrame, "下一帧", "Next frame", "下一影格" },
+            ShortcutItem{ ShortcutConfig::Action::CopyImageInfo, "复制图片信息", "Copy image information", "複製圖片資訊" },
+            ShortcutItem{ ShortcutConfig::Action::ToggleFullscreen, "全屏显示", "Toggle fullscreen", "全螢幕顯示" },
+            ShortcutItem{ ShortcutConfig::Action::RotateLeft, "向左旋转", "Rotate left", "向左旋轉" },
+            ShortcutItem{ ShortcutConfig::Action::RotateRight, "向右旋转", "Rotate right", "向右旋轉" },
+            ShortcutItem{ ShortcutConfig::Action::PanUp, "向上拖动", "Pan up", "向上拖曳" },
+            ShortcutItem{ ShortcutConfig::Action::PanDown, "向下拖动", "Pan down", "向下拖曳" },
+            ShortcutItem{ ShortcutConfig::Action::PanLeft, "向左拖动", "Pan left", "向左拖曳" },
+            ShortcutItem{ ShortcutConfig::Action::PanRight, "向右拖动", "Pan right", "向右拖曳" },
+            ShortcutItem{ ShortcutConfig::Action::ZoomIn, "放大", "Zoom in", "放大" },
+            ShortcutItem{ ShortcutConfig::Action::ZoomOut, "缩小", "Zoom out", "縮小" },
+            ShortcutItem{ ShortcutConfig::Action::ZoomFit, "适合窗口", "Fit window", "適合視窗" },
+            ShortcutItem{ ShortcutConfig::Action::ZoomActual, "实际大小", "Actual size", "實際大小" },
+            ShortcutItem{ ShortcutConfig::Action::PreviousImage, "上一张", "Previous image", "上一張" },
+            ShortcutItem{ ShortcutConfig::Action::NextImage, "下一张", "Next image", "下一張" },
+            ShortcutItem{ ShortcutConfig::Action::FirstImage, "第一张", "First image", "第一張" },
+            ShortcutItem{ ShortcutConfig::Action::LastImage, "最后一张", "Last image", "最後一張" },
+            ShortcutItem{ ShortcutConfig::Action::PlayPause, "播放/暂停", "Play/pause", "播放/暫停" },
+            ShortcutItem{ ShortcutConfig::Action::ToggleImageInfo, "显示图片信息", "Toggle image information", "顯示圖片資訊" },
+            ShortcutItem{ ShortcutConfig::Action::OpenSettings, "打开设置", "Open settings", "開啟設定" },
+            ShortcutItem{ ShortcutConfig::Action::RenameImage, "重命名图片", "Rename image", "重新命名圖片" },
+            ShortcutItem{ ShortcutConfig::Action::OpenShortcuts, "打开快捷键设置", "Open shortcuts", "開啟快速鍵設定" },
+            ShortcutItem{ ShortcutConfig::Action::OpenAbout, "打开关于", "Open about", "開啟關於" },
+            ShortcutItem{ ShortcutConfig::Action::DeleteImage, "删除图片", "Delete image", "刪除圖片" },
+            ShortcutItem{ ShortcutConfig::Action::CopyToTarget, "复制到指定位置", "Copy to folder", "複製到指定位置" },
+            ShortcutItem{ ShortcutConfig::Action::MoveToTarget, "移动到指定位置", "Move to folder", "移動到指定位置" },
         };
 
-    const char* wheelActionName(ShortcutConfig::WheelAction action, bool chinese) const {
+    const char* wheelActionName(ShortcutConfig::WheelAction action) const {
         switch (action) {
-        case ShortcutConfig::WheelAction::Zoom: return chinese ? "放大/缩小" : "Zoom";
-        case ShortcutConfig::WheelAction::PanVertical: return chinese ? "上下拖动" : "Pan vertically";
-        case ShortcutConfig::WheelAction::PanHorizontal: return chinese ? "左右拖动" : "Pan horizontally";
-        case ShortcutConfig::WheelAction::SwitchImage: return chinese ? "上一张/下一张" : "Previous/next image";
+        case ShortcutConfig::WheelAction::Zoom: return tr("放大/缩小", "Zoom", "放大/縮小");
+        case ShortcutConfig::WheelAction::PanVertical: return tr("上下拖动", "Pan vertically", "上下拖曳");
+        case ShortcutConfig::WheelAction::PanHorizontal: return tr("左右拖动", "Pan horizontally", "左右拖曳");
+        case ShortcutConfig::WheelAction::SwitchImage: return tr("上一张/下一张", "Previous/next image", "上一張/下一張");
         case ShortcutConfig::WheelAction::Count: break;
         }
         return "";
@@ -452,37 +452,36 @@ private:
         if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) held += "Shift + ";
         if ((GetKeyState(VK_MENU) & 0x8000) != 0) held += "Alt + ";
         if (!held.empty())
-            return held + (chinese ? "？" : "?");
-        return chinese ? "请按新组合…" : "Press a combination...";
+            return held + (tr("？", "?", "？"));
+        return tr("请按新组合…", "Press a combination...", "請按新組合…");
     }
 
     void refreshShortcutTab(cv::Mat& page) {
-        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        const bool chinese = isChineseUI();
         drawCard(page, toCanvasRect(SettingLayout::SHORTCUT_CARD));
         textDrawer.putAlignLeft(page, toCanvasRect(SettingLayout::SHORTCUT_WHEEL_HEADER),
-            chinese ? "鼠标滚轮（点击右侧选项可切换）" :
-                "MOUSE WHEEL (click an option to change)", GlobalVar::currentTheme.CHECK);
+            tr("鼠标滚轮（点击右侧选项可切换）", "MOUSE WHEEL (click an option to change)", "滑鼠滾輪（點右側選項可切換）"), GlobalVar::currentTheme.CHECK);
         static constexpr std::array<const char*, 3> wheelZH{ "滚轮", "Ctrl + 滚轮", "Shift + 滚轮" };
         static constexpr std::array<const char*, 3> wheelEN{ "Wheel", "Ctrl + wheel", "Shift + wheel" };
+        static constexpr std::array<const char*, 3> wheelTW{ "滾輪", "Ctrl + 滾輪", "Shift + 滾輪" };
         for (int index = 0; index < 3; ++index) {
             const cv::Rect row = toCanvasRect(SettingLayout::shortcutWheelRow(index));
             cv::line(page, { row.x, row.y }, { row.x + row.width, row.y },
                 jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
             textDrawer.putAlignLeft(page, { row.x + 8, row.y, 220, row.height },
-                chinese ? wheelZH[index] : wheelEN[index], primaryText());
+                tr(wheelZH[index], wheelEN[index], wheelTW[index]), primaryText());
             const cv::Rect keyRect{ row.x + 260, row.y + 5, 280, row.height - 10 };
             fillRoundedRect(page, keyRect, GlobalVar::currentTheme.BG_DEEP, 5);
             textDrawer.putAlignCenter(page, keyRect, wheelActionName(
-                ShortcutConfig::getWheelAction(GlobalVar::settingParameter.reserve, index), chinese),
+                ShortcutConfig::getWheelAction(GlobalVar::settingParameter.reserve, index)),
                 GlobalVar::currentTheme.CHECK);
         }
         const cv::Rect reset = toCanvasRect(SettingLayout::SHORTCUT_RESET_BUTTON);
         fillRoundedRect(page, reset, GlobalVar::currentTheme.BG_TAG, 6);
-        textDrawer.putAlignCenter(page, reset, chinese ? "恢复默认" : "Restore defaults", primaryText());
+        textDrawer.putAlignCenter(page, reset, tr("恢复默认", "Restore defaults", "恢復預設"), primaryText());
 
         textDrawer.putAlignLeft(page, toCanvasRect(SettingLayout::SHORTCUT_KEYBOARD_HEADER),
-            chinese ? "键盘快捷键（点按键后按新组合，可带 Ctrl / Shift / Alt；× 取消）" :
-                "KEYBOARD (click a key, press a new combination; x clears it)",
+            tr("键盘快捷键（点按键后按新组合，可带 Ctrl / Shift / Alt；× 取消）", "KEYBOARD (click a key, press a new combination; x clears it)", "鍵盤快速鍵（點按鍵後按新組合，可帶 Ctrl / Shift / Alt；× 取消）"),
             GlobalVar::currentTheme.CHECK);
         for (int index = 0; index < static_cast<int>(shortcutItems.size()); ++index) {
             const auto& item = shortcutItems[index];
@@ -491,14 +490,15 @@ private:
                 jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
             textDrawer.putAlignLeft(page,
                 { row.x + S(8), row.y, S(SettingLayout::SHORTCUT_NAME_WIDTH), row.height },
-                chinese ? item.nameZH : item.nameEN, primaryText());
+                tr(item.nameZH, item.nameEN, item.nameTW), primaryText());
             const cv::Rect keyRect = toCanvasRect(SettingLayout::shortcutKeyCell(index));
             const bool capturing = shortcutCapture && *shortcutCapture == item.action;
             fillRoundedRect(page, keyRect, capturing ?
                 GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_DEEP, 5);
             const std::string keyText = capturing ? capturePrompt(chinese) :
                 ShortcutConfig::keyName(ShortcutConfig::getBinding(
-                    GlobalVar::settingParameter.reserve, item.action), chinese);
+                    GlobalVar::settingParameter.reserve, item.action),
+                    GlobalVar::settingParameter.UI_LANG);
             textDrawer.putAlignCenter(page, keyRect, keyText.c_str(),
                 capturing ? 0xFFFFFFFFu : secondaryText());
 
@@ -513,7 +513,7 @@ private:
     }
 
     void refreshAboutTab(cv::Mat& page) {
-        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        const bool chinese = isChineseUI();
         const cv::Rect hero = toCanvasRect(SettingLayout::ABOUT_HERO_CARD);
         drawCard(page, hero);
         // 用真正的应用图标，和任务栏、快捷方式、文件关联看到的是同一个。
@@ -537,11 +537,10 @@ private:
         textDrawer.putAlignCenter(page, versionRect,
             jarkUtils::wstringToUtf8(appVersion).c_str(), GlobalVar::currentTheme.CHECK);
         textDrawer.putAlignCenter(page, { hero.x + 30, hero.y + 208, hero.width - 60, 36 },
-            chinese ? "基于 JarkViewer 开发  ·  GNU GPL v3" :
-                "Based on JarkViewer  ·  GNU GPL v3",
+            tr("基于 JarkViewer 开发  ·  GNU GPL v3", "Based on JarkViewer  ·  GNU GPL v3", "基於 JarkViewer 開發  ·  GNU GPL v3"),
             secondaryText());
         textDrawer.putAlignCenter(page, { hero.x + 30, hero.y + 254, hero.width - 60, 34 },
-            chinese ? "作者  yakoye" : "Author  yakoye", secondaryText());
+            tr("作者  yakoye", "Author  yakoye", "作者  yakoye"), secondaryText());
 
         cv::line(page, { hero.x + 30, hero.y + 300 },
             { hero.x + hero.width - 30, hero.y + 300 },
@@ -561,9 +560,9 @@ private:
         fillRoundedRect(page, projectButton, GlobalVar::currentTheme.CHECK, 8);
         fillRoundedRect(page, upstreamButton, GlobalVar::currentTheme.BG_TAG, 8);
         textDrawer.putAlignCenter(page, projectButton,
-            chinese ? "访问本项目" : "Open this project", 0xFFFFFFFFu);
+            tr("访问本项目", "Open this project", "造訪本專案"), 0xFFFFFFFFu);
         textDrawer.putAlignCenter(page, upstreamButton,
-            chinese ? "访问上游项目" : "Open upstream", primaryText());
+            tr("访问上游项目", "Open upstream", "造訪上游專案"), primaryText());
     }
 
     void drawTabs() {

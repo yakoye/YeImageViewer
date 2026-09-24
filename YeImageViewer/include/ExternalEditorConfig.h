@@ -1,5 +1,7 @@
 #pragma once
 
+#include "UiLanguage.h"
+
 #include <algorithm>
 #include <array>
 #include <climits>
@@ -45,8 +47,8 @@ inline std::wstring resolvedName(std::wstring_view requestedName,
     return std::wstring(requestedName.substr(first, last - first + 1));
 }
 
-inline std::wstring menuLabel(const Entry& entry, bool chinese) {
-    return (chinese ? L"在 " : L"Open in ") + entry.name;
+inline std::wstring menuLabel(const Entry& entry, uint32_t language) {
+    return UiLanguage::pick<const wchar_t*>(language, L"在 ", L"Open in ", L"以 ") + entry.name;
 }
 
 inline void appendUtf8(std::string& output, std::uint32_t codePoint) {

@@ -296,7 +296,7 @@ public:
             auto rc = jarkUtils::GetResource(IDB_PNG_TIPS, L"PNG");
             cv::Mat imgData(1, (int)rc.size, CV_8UC1, (uint8_t*)rc.ptr);
             auto errorTipsMat = cv::imdecode(imgData, cv::IMREAD_UNCHANGED);
-            if (GlobalVar::settingParameter.UI_LANG == 0) {
+            if (isChineseUI()) {
                 errorTipsMatLight = errorTipsMat({ 0, 0, 800, 600 }).clone();
                 errorTipsMatDeep = errorTipsMat({ 0, 600, 800, 600 }).clone();
             }
@@ -402,7 +402,7 @@ public:
 
     cv::Mat getHomeMat(int dpi = USER_DEFAULT_SCREEN_DPI) {
         dpi = std::max(1, dpi);
-        const bool chinese = GlobalVar::settingParameter.UI_LANG == 0;
+        const bool chinese = isChineseUI();
         const bool dark = GlobalVar::isCurrentUIDarkMode;
         const std::size_t cacheIndex = (chinese ? 0 : 2) + (dark ? 1 : 0);
         auto& home = homeMats[cacheIndex];
@@ -458,8 +458,7 @@ public:
             "YeImageViewer", primary);
         drawer.setSize(scaled(12));
         drawer.putAlignCenter(home, toRect(HomeScreenLayout::SUBTITLE),
-            chinese ? "快速、清晰的 Windows 图片查看器" :
-                "A fast and clear image viewer for Windows",
+            tr("快速、清晰的 Windows 图片查看器", "A fast and clear image viewer for Windows", "快速、清晰的 Windows 圖片檢視器"),
             secondary);
 
         rounded(HomeScreenLayout::OPEN_BUTTON, accent, 14);
@@ -468,30 +467,37 @@ public:
             toRect({ HomeScreenLayout::OPEN_BUTTON.x + 16,
                 HomeScreenLayout::OPEN_BUTTON.y + 7,
                 HomeScreenLayout::OPEN_BUTTON.width - 32, 26 }),
-            chinese ? "打开一张图片" : "Open an image", 0xFFFFFFFFu);
+            tr("打开一张图片", "Open an image", "開啟一張圖片"), 0xFFFFFFFFu);
         drawer.setSize(scaled(12));
         drawer.putAlignCenter(home,
             toRect({ HomeScreenLayout::OPEN_BUTTON.x + 16,
                 HomeScreenLayout::OPEN_BUTTON.y + 35,
                 HomeScreenLayout::OPEN_BUTTON.width - 32, 22 }),
-            chinese ? "点击这里选择图片，也可以直接拖入图片" :
-                "Click here to choose an image, or drop one into this window",
+            tr("点击这里选择图片，也可以直接拖入图片", "Click here to choose an image, or drop one into this window", "點這裡選擇圖片，也可以直接拖入圖片"),
             buttonHint);
 
-        const std::array<const char*, 3> titles = chinese ?
-            std::array<const char*, 3>{ "浏览", "查看", "更多" } :
-            std::array<const char*, 3>{ "BROWSE", "VIEW", "MORE" };
-        const std::array<std::array<const char*, 3>, 3> lines = chinese ?
-            std::array<std::array<const char*, 3>, 3>{
-                std::array<const char*, 3>{ "滚轮  上下浏览", "Ctrl+滚轮  缩放", "Shift+滚轮  左右" },
-                std::array<const char*, 3>{ "拖动  平移图片", "双击/最大化  沉浸", "Esc  退出/关闭" },
-                std::array<const char*, 3>{ "I/Tab  图片信息", "F2  重命名", "F3  自定义快捷键" },
-            } :
-            std::array<std::array<const char*, 3>, 3>{
-                std::array<const char*, 3>{ "Wheel  Vertical", "Ctrl+Wheel  Zoom", "Shift+Wheel  Horizontal" },
-                std::array<const char*, 3>{ "Drag  Pan image", "Double-click  Immersive", "Esc  Exit / close" },
-                std::array<const char*, 3>{ "I/Tab  Image info", "F2  Rename", "F3  Shortcuts" },
-            };
+        using TipRow = std::array<const char*, 3>;
+        using TipBlock = std::array<TipRow, 3>;
+        const auto titles = UiLanguage::pick(GlobalVar::settingParameter.UI_LANG,
+            TipRow{ "浏览", "查看", "更多" },
+            TipRow{ "BROWSE", "VIEW", "MORE" },
+            TipRow{ "瀏覽", "檢視", "更多" });
+        const auto lines = UiLanguage::pick(GlobalVar::settingParameter.UI_LANG,
+            TipBlock{
+                TipRow{ "滚轮  上下浏览", "Ctrl+滚轮  缩放", "Shift+滚轮  左右" },
+                TipRow{ "拖动  平移图片", "双击/最大化  沉浸", "Esc  退出/关闭" },
+                TipRow{ "I/Tab  图片信息", "F2  重命名", "F3  自定义快捷键" },
+            },
+            TipBlock{
+                TipRow{ "Wheel  Vertical", "Ctrl+Wheel  Zoom", "Shift+Wheel  Horizontal" },
+                TipRow{ "Drag  Pan image", "Double-click  Immersive", "Esc  Exit / close" },
+                TipRow{ "I/Tab  Image info", "F2  Rename", "F3  Shortcuts" },
+            },
+            TipBlock{
+                TipRow{ "滾輪  上下瀏覽", "Ctrl+滾輪  縮放", "Shift+滾輪  左右" },
+                TipRow{ "拖曳  平移圖片", "按兩下/最大化  沉浸", "Esc  離開/關閉" },
+                TipRow{ "I/Tab  圖片資訊", "F2  重新命名", "F3  自訂快速鍵" },
+            });
 
         for (std::size_t index = 0; index < HomeScreenLayout::GUIDE_CARDS.size(); ++index) {
             const auto& layout = HomeScreenLayout::GUIDE_CARDS[index];
@@ -512,8 +518,7 @@ public:
 
         drawer.setSize(scaled(12));
         drawer.putAlignCenter(home, toRect(HomeScreenLayout::FOOTER),
-            chinese ? "设置 → 快捷键：所有按键和滚轮操作都可以修改" :
-                "Settings > Shortcuts: customize every key and wheel action",
+            tr("设置 → 快捷键：所有按键和滚轮操作都可以修改", "Settings > Shortcuts: customize every key and wheel action", "設定 → 快速鍵：所有按鍵和滾輪操作都可以修改"),
             secondary);
         return home;
     }

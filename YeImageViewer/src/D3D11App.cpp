@@ -738,7 +738,7 @@ HMENU D3D11App::CreateContextMenu(HWND hwnd) {
         const bool editorAvailable =
             std::filesystem::is_regular_file(editor.path, editorError);
         const std::wstring editorText = ExternalEditorConfig::menuLabel(editor,
-            GlobalVar::settingParameter.UI_LANG == 0);
+            GlobalVar::settingParameter.UI_LANG);
         AppendMenuW(editMenu,
             MF_STRING | (editorAvailable ? MF_ENABLED : MF_GRAYED),
             static_cast<UINT_PTR>(ContextMenu::editImageFirst) + index,
@@ -752,7 +752,7 @@ HMENU D3D11App::CreateContextMenu(HWND hwnd) {
 
     // 复制到 / 移动到指定位置。菜单整体是 MNS_NOCHECK，勾不了，
     // 当前目标就在文字前面加个圆点标出来。
-    const bool chineseUI = GlobalVar::settingParameter.UI_LANG == 0;
+    const bool chineseUI = isChineseUI();
     const auto buildTargetMenu = [&](bool move) {
         HMENU targetMenu = CreatePopupMenu();
         const auto& targets = GlobalVar::fileTargets.targets;
@@ -769,13 +769,13 @@ HMENU D3D11App::CreateContextMenu(HWND hwnd) {
         AppendMenuW(targetMenu, MF_STRING,
             static_cast<UINT_PTR>(move ? ContextMenu::moveToTargetChoose
                                        : ContextMenu::copyToTargetChoose),
-            chineseUI ? L"选择位置…" : L"Choose folder...");
+            trW(L"选择位置…", L"Choose folder...", L"選擇位置…"));
         return targetMenu;
     };
     AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)buildTargetMenu(false),
-        chineseUI ? L"复制到" : L"Copy to");
+        trW(L"复制到", L"Copy to", L"複製到"));
     AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)buildTargetMenu(true),
-        chineseUI ? L"移动到" : L"Move to");
+        trW(L"移动到", L"Move to", L"移動到"));
 
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::renameImage, getUIStringW(47));
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::deleteImage, getUIStringW(30));

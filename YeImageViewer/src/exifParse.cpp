@@ -87,7 +87,7 @@ std::string ExifParse::exifDataToString(wstring_view path, const Exiv2::ExifData
         bool toEnd = true;
         std::string translatedTagName;
 
-        if (GlobalVar::settingParameter.UI_LANG == 0) {
+        if (isChineseUI()) {
             if (tagName.starts_with("Exif.SubImage")) {
                 string tag = "Exif.Image" + tagName.substr(14);
                 translatedTagName = exifTagsMap.contains(tag) ?
