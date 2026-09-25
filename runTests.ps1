@@ -83,7 +83,7 @@ if ($actualFileVersion -ne $expectedFileVersion) {
 Write-Host "PASS viewer file version is $expectedFileVersion."
 
 # 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
-$expectedProductVersion = "1.37.2-rc8"
+$expectedProductVersion = "1.37.2-rc9"
 $actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
@@ -742,6 +742,33 @@ finally {
     if (Test-Path -LiteralPath $homeDirectory) {
         [IO.Directory]::Delete($homeDirectory, $true)
     }
+}
+
+Write-Host "Checking the color-management fast paths..."
+# 色彩管理这一步排在解码之后，直接顶在出图时间上，所以做了两件提速：
+# 源和目标同色彩空间时整步跳过，大图按行分块并行。两件事都可能改坏画面，
+# 让程序用生产代码自检一遍：恒等要真跳过且一个像素都不动，并行结果要和串行逐字节相同。
+$colorSelfTestResult = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Color-" + [Guid]::NewGuid().ToString("N") + ".txt")
+try {
+    $colorProcess = Start-Process -FilePath $viewer -ArgumentList @("--color-selftest", ('"' + $colorSelfTestResult + '"')) -Wait -PassThru -WindowStyle Hidden
+    if ($colorProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $colorSelfTestResult)) {
+        throw "Color-management regression failed: the self test did not complete (exit code $($colorProcess.ExitCode))."
+    }
+    $colorLine = (Get-Content -LiteralPath $colorSelfTestResult -Raw).Trim()
+    if (-not $colorLine.StartsWith("OK")) {
+        throw "Color-management regression failed: $colorLine"
+    }
+    foreach ($flag in @("identitySkipped=1", "identityUntouched=1", "transformApplied=1", "parallelMatchesSerial=1")) {
+        if ($colorLine -notmatch [regex]::Escape($flag)) {
+            throw "Color-management regression failed: expected $flag in '$colorLine'."
+        }
+    }
+    $colorParallelUs = if ($colorLine -match "parallelUs=(\d+)") { [int]$matches[1] } else { 0 }
+    $colorSerialUs = if ($colorLine -match "serialUs=(\d+)") { [int]$matches[1] } else { 0 }
+    Write-Host ("PASS identity color transforms are skipped and the parallel transform matches the serial one ({0:N1} ms vs {1:N1} ms on 2.3 MP)." -f ($colorParallelUs / 1000.0), ($colorSerialUs / 1000.0))
+}
+finally {
+    Remove-Item -LiteralPath $colorSelfTestResult -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host "Checking that settings, editors, targets, and rotations live in one file..."

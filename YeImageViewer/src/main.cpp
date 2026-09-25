@@ -1,6 +1,8 @@
 #include "jarkUtils.h"
 
 #include "TextDrawer.h"
+#include "lcms2.h"
+#include "StartupTrace.h"
 #include "ImageDatabase.h"
 #include "ImageInterpolation.h"
 #include "ImageViewTransform.h"
@@ -47,7 +49,7 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.37.2-rc8";
+std::wstring_view appVersion = L"v1.37.2-rc9";
 constinit int appVersionCode = 13630; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
@@ -564,6 +566,7 @@ public:
     bool presentationClickCandidate = false;
     // 真图仍在后台解码时，这里记着它的路径，主循环据此轮询接手。
     wstring pendingImagePath;
+    wstring startupImagePath;
     wstring transientNotice;
     std::chrono::steady_clock::time_point transientNoticeUntil{};
     std::chrono::steady_clock::time_point loadingStartedAt{};
@@ -1271,6 +1274,31 @@ public:
         operateQueue.push({ ActionENUM::refresh });
     }
 
+    // 命令行带进来的图片。窗口一建好就先把它的解码派出去，不等 D3D 设备。
+    void setStartupImagePath(std::wstring path) {
+        startupImagePath = std::move(path);
+    }
+
+    void onWindowCreated() override {
+        // 色彩管理要按窗口所在的显示器取 profile，这时候句柄已经有了
+        imgDB.setColorManagementWindow(m_hWnd);
+
+        if (startupImagePath.empty())
+            return;
+
+        // 键要和 initOpenFile 建列表时用的一致：绝对路径。
+        // 命令行给的大小写和磁盘上不一致时这里会白解一张（之后 initOpenFile
+        // 用磁盘上的真实文件名另解一次），但 shell 传进来的永远是真实文件名，
+        // 手敲错大小写才碰得到，代价只是多解一次，显示的内容仍然是对的。
+        std::error_code error;
+        const auto absolute = std::filesystem::absolute(startupImagePath, error);
+        if (error)
+            return;
+        const auto key = absolute.wstring();
+        imgDB.requestPreload(key, true);
+        imgDB.requestPreview(key);
+    }
+
     HRESULT InitWindow(HINSTANCE hInstance) {
         if (!SUCCEEDED(D3D11App::Initialize(hInstance)))
             return S_FALSE;
@@ -1279,20 +1307,23 @@ public:
             return S_FALSE;
 
         applyDefaultWindowSize();
-        imgDB.setColorManagementWindow(m_hWnd);
 
         return S_OK;
     }
 
-    void initOpenFile(wstring filePath) {
+    // keepWarmCache：启动那一次要留着缓存。窗口建好时已经把首图的解码派出去了
+    // （见 onWindowCreated），这里再 clear 一次会把在途的任务作废，白等一场。
+    // 其他调用方（重新打开、重命名）必须清，旧路径的缓存和预览都已经失效。
+    void initOpenFile(wstring filePath, bool keepWarmCache = false) {
         namespace fs = std::filesystem;
 
         stopSlideshow();
         curFileIdx = -1;
         imgFileList.clear();
-        imgDB.clear();
-        // 重命名也走这里，旧路径的预览已经失效
-        imgDB.clearPreviews();
+        if (!keepWarmCache) {
+            imgDB.clear();
+            imgDB.clearPreviews();
+        }
 
         if (filePath.empty()) {
             imgFileList.emplace_back(m_wndCaption);
@@ -5290,10 +5321,115 @@ static void dumpMotionForProbe(const ImageAsset& asset, const std::filesystem::p
     wav.write(reinterpret_cast<const char*>(audio.samples.data()), dataBytes);
 }
 
+
+// 色彩管理自检：并行与串行必须逐字节一致，恒等变换必须被跳过。
+//
+// 为什么做成程序里的一个模式而不是单元测试：applyToMat 吃的是 cv::Mat，
+// 而测试工程没有链接 OpenCV，为这一条把 OpenCV 引进去代价太大。
+// 这里用的是和正式路径完全相同的那份代码。
+
+static int runColorSelfTest(const std::wstring& resultPath) {
+    // 造一张有层次的图。纯色看不出变换有没有生效，也掩盖得了分块错位。
+    const int width = 1920;
+    const int height = 1200;          // 230 万像素，越过 applyToMat 的并行门槛
+    cv::Mat source(height, width, CV_8UC3);
+    for (int y = 0; y < height; ++y) {
+        auto* row = source.ptr<uchar>(y);
+        for (int x = 0; x < width; ++x) {
+            row[x * 3 + 0] = static_cast<uchar>((x * 7 + y * 3) & 0xFF);
+            row[x * 3 + 1] = static_cast<uchar>((x * 3 + y * 11) & 0xFF);
+            row[x * 3 + 2] = static_cast<uchar>((x * 13 + y * 5) & 0xFF);
+        }
+    }
+
+    // 一份和 sRGB 不同的 profile：宽色域原色 + gamma 2.2
+    std::vector<uint8_t> wideGamut;
+    {
+        cmsCIExyY whitePoint{ 0.3127, 0.3290, 1.0 };
+        cmsCIExyYTRIPLE primaries{
+            { 0.680, 0.320, 1.0 },
+            { 0.265, 0.690, 1.0 },
+            { 0.150, 0.060, 1.0 } };
+        cmsToneCurve* gamma = cmsBuildGamma(nullptr, 2.2);
+        cmsToneCurve* curves[3]{ gamma, gamma, gamma };
+        cmsHPROFILE profile = cmsCreateRGBProfile(&whitePoint, &primaries, curves);
+        if (gamma)
+            cmsFreeToneCurve(gamma);
+        if (profile) {
+            cmsUInt32Number size = 0;
+            if (cmsSaveProfileToMem(profile, nullptr, &size) && size > 0) {
+                wideGamut.resize(size);
+                if (!cmsSaveProfileToMem(profile, wideGamut.data(), &size))
+                    wideGamut.clear();
+            }
+            cmsCloseProfile(profile);
+        }
+    }
+
+    std::ofstream result(std::filesystem::path(resultPath), std::ios::trunc);
+    if (!result)
+        return 3;
+    if (wideGamut.empty()) {
+        result << "ERROR\tcould not build a test ICC profile\n";
+        return 2;
+    }
+
+    const std::vector<uint8_t> noProfile;
+
+    // 恒等：两边都没 profile，或两边同一个 profile。整步都该被跳过，像素一个都不能动。
+    cv::Mat identityBoth = source.clone();
+    const bool skippedBoth = !ColorManager::applyToMat(identityBoth, noProfile, noProfile);
+    cv::Mat identitySame = source.clone();
+    const bool skippedSame = !ColorManager::applyToMat(identitySame, wideGamut, wideGamut);
+    const bool identityUntouched =
+        std::equal(source.datastart, source.dataend, identityBoth.datastart) &&
+        std::equal(source.datastart, source.dataend, identitySame.datastart);
+
+    // 整图走并行路径
+    cv::Mat whole = source.clone();
+    const auto wholeStart = std::chrono::steady_clock::now();
+    const bool wholeApplied = ColorManager::applyToMat(whole, wideGamut, noProfile);
+    const auto parallelUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - wholeStart).count();
+    const bool wholeChanged = !std::equal(source.datastart, source.dataend, whole.datastart);
+
+    // 同样内容按小块处理：每块都低于并行门槛，走的是串行路径
+    cv::Mat tiled = source.clone();
+    bool tiledApplied = true;
+    const int tileRows = 200;         // 1920x200 = 38 万像素
+    const auto tiledStart = std::chrono::steady_clock::now();
+    for (int top = 0; top < height; top += tileRows) {
+        const int rows = std::min(tileRows, height - top);
+        cv::Mat tile = tiled(cv::Rect(0, top, width, rows)).clone();
+        tiledApplied = ColorManager::applyToMat(tile, wideGamut, noProfile) && tiledApplied;
+        tile.copyTo(tiled(cv::Rect(0, top, width, rows)));
+    }
+
+    const auto serialUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - tiledStart).count();
+    const bool sameResult = std::equal(whole.datastart, whole.dataend, tiled.datastart);
+    const bool success = skippedBoth && skippedSame && identityUntouched &&
+        wholeApplied && wholeChanged && tiledApplied && sameResult;
+
+    result << (success ? "OK" : "ERROR")
+        << "\tidentitySkipped=" << (skippedBoth && skippedSame ? 1 : 0)
+        << "\tidentityUntouched=" << (identityUntouched ? 1 : 0)
+        << "\ttransformApplied=" << (wholeApplied && wholeChanged ? 1 : 0)
+        << "\tparallelMatchesSerial=" << (sameResult ? 1 : 0)
+        << "\tparallelUs=" << parallelUs
+        << "\tserialUs=" << serialUs
+        << "\n";
+    return success ? 0 : 2;
+}
+
 static int runDecodeProbe(const std::wstring& imagePath, const std::wstring& resultPath,
     const std::wstring& dumpDirectory = {}) {
     ImageDatabase imageDatabase;
     const cv::Mat errorTips = imageDatabase.getErrorTipsMat();
+    // 只走 myLoader：这个探针是格式语料的判定依据，结果必须与机器无关。
+    // 走完整的 loader() 会把色彩管理算进去，而那一步取决于本机显示器有没有设
+    // ICC profile，同一张图在不同机器上会给出不同的像素均值。
+    // 想看各阶段耗时用 YEIMAGEVIEWER_STARTUP_TRACE（见 StartupTrace.h）。
     const ImageAsset asset = imageDatabase.myLoader(imagePath);
 
     const cv::Mat* decodedFrame = nullptr;
@@ -5425,6 +5561,9 @@ int WINAPI wWinMain(
 
     //test();
 
+    StartupTrace::initialize();
+    StartupTrace::mark("wWinMain");
+
     // 限制 PPL 默认调度器最多 4 线程, 必须在任何 concurrency::parallel_* 调用之前设置。
     {
         concurrency::SchedulerPolicy policy(2,
@@ -5443,7 +5582,9 @@ int WINAPI wWinMain(
     // 初始化完了，这里再设环境变量没有任何作用。上限改在 OpenCV 自己的源码里，
     // 见 scripts/build-opencv-slim.ps1。
 
+    StartupTrace::mark("beforeExiv2");
     Exiv2::enableBMFF();
+    StartupTrace::mark("afterExiv2");
 
     // 视觉样式要先初始化公共控件，设置页的原生勾选框与单选钮才走当前系统主题。
     INITCOMMONCONTROLSEX commonControls{ sizeof(INITCOMMONCONTROLSEX),
@@ -5456,6 +5597,13 @@ int WINAPI wWinMain(
 
     int argumentCount = 0;
     LPWSTR* arguments = ::CommandLineToArgvW(::GetCommandLineW(), &argumentCount);
+    if (arguments != nullptr && argumentCount == 3
+        && std::wstring_view(arguments[1]) == L"--color-selftest") {
+        const int selfTestResult = runColorSelfTest(arguments[2]);
+        ::LocalFree(arguments);
+        ::CoUninitialize();
+        return selfTestResult;
+    }
     if (arguments != nullptr && (argumentCount == 4 || argumentCount == 5)
         && std::wstring_view(arguments[1]) == L"--decode-probe") {
         const int probeResult = runDecodeProbe(arguments[2], arguments[3],
@@ -5493,12 +5641,19 @@ int WINAPI wWinMain(
         filePath.pop_back();
     }
 
+    StartupTrace::mark("beforeConstruct");
     YeImageViewerApp app(!filePath.empty());
+    app.setStartupImagePath(filePath);
+    StartupTrace::mark("afterConstruct");
     if (SUCCEEDED(app.InitWindow(hInstance))) {
-        app.initOpenFile(filePath);
+        StartupTrace::mark("afterInitWindow");
+        app.initOpenFile(filePath, /*keepWarmCache*/ true);
+        StartupTrace::mark("afterInitOpenFile");
         app.applyConfiguredOpenMode();
         app.DrawScene();
+        StartupTrace::mark("afterFirstDraw");
         app.ShowInitialWindow();
+        StartupTrace::mark("afterShowWindow");
         app.Run();
     }
     else {

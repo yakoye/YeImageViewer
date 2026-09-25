@@ -51,6 +51,10 @@ protected:
     void SafeRelease(Interface*& pInterfaceToRelease);
 
     void loadSettings(bool openImageOnCursorMonitor);
+
+    // 窗口句柄已经有了、D3D 设备还没开始建的时刻。
+    // 建设备要七十毫秒，这段时间业务层可以先把图片解码派出去，两件事并行跑。
+    virtual void onWindowCreated() {}
     void saveSettings() const;
 
 protected:
