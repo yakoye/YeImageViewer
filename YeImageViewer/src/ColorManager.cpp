@@ -1,4 +1,7 @@
 #include "ColorManager.h"
+
+#include <ppl.h>
+#include <algorithm>
 #include "exifParse.h"
 #include "lcms2.h"
 
@@ -174,6 +177,14 @@ bool ColorManager::applyToMat(cv::Mat& mat, const std::vector<uint8_t>& sourceIc
     if (pixelType == 0)
         return false;
 
+    // 源和目标是同一个色彩空间时，变换是恒等的，跑一遍只是把每个像素原样写回去。
+    // 绝大多数图是这种情况：文件里没嵌 profile（当 sRGB 处理），显示器也没设 profile
+    // （当 sRGB 处理）。一亿像素白跑一趟要两三百毫秒，直接省掉。
+    if (sourceIcc.empty() && monitorIcc.empty())
+        return false;
+    if (!sourceIcc.empty() && sourceIcc == monitorIcc)
+        return false;
+
     CmsProfile sourceProfile(sourceIcc.empty() ?
         cmsCreate_sRGBProfile() :
         cmsOpenProfileFromMem(sourceIcc.data(), static_cast<cmsUInt32Number>(sourceIcc.size())));
@@ -200,13 +211,39 @@ bool ColorManager::applyToMat(cv::Mat& mat, const std::vector<uint8_t>& sourceIc
     if (!transform)
         return false;
 
-    if (mat.isContinuous()) {
-        cmsDoTransform(transform, mat.ptr(), mat.ptr(), static_cast<cmsUInt32Number>(mat.total()));
+    // 一亿像素的图单线程做变换要两三百毫秒，而这一步在「用户已经等完解码」之后，
+    // 直接顶在出图时间上。lcms2 的 transform 句柄可以被多线程共用（只要没人去改它），
+    // 各线程处理互不重叠的行，结果与单线程逐行调用完全一致。
+    //
+    // 小图不值得分线程：调度开销比变换本身还大，所以设个像素数门槛。
+    constexpr std::size_t PARALLEL_PIXEL_THRESHOLD = 2u << 20;   // 约 200 万像素
+    const std::size_t totalPixels = mat.total();
+
+    if (totalPixels < PARALLEL_PIXEL_THRESHOLD) {
+        if (mat.isContinuous()) {
+            cmsDoTransform(transform, mat.ptr(), mat.ptr(),
+                static_cast<cmsUInt32Number>(totalPixels));
+        }
+        else {
+            for (int y = 0; y < mat.rows; ++y)
+                cmsDoTransform(transform, mat.ptr(y), mat.ptr(y),
+                    static_cast<cmsUInt32Number>(mat.cols));
+        }
+        return true;
     }
-    else {
-        for (int y = 0; y < mat.rows; ++y)
-            cmsDoTransform(transform, mat.ptr(y), mat.ptr(y), static_cast<cmsUInt32Number>(mat.cols));
-    }
+
+    // 按行分块：一行一次调用太碎（一亿像素的图有上万行），按块调用开销可以忽略。
+    const int rowsPerBlock = std::max(1, mat.rows / 64);
+    const int blockCount = (mat.rows + rowsPerBlock - 1) / rowsPerBlock;
+    const cmsHTRANSFORM rawTransform = transform;   // CmsTransform 有到句柄的隐式转换
+    concurrency::parallel_for(0, blockCount, [&](int block) {
+        const int firstRow = block * rowsPerBlock;
+        const int lastRow = std::min(firstRow + rowsPerBlock, mat.rows);
+        for (int y = firstRow; y < lastRow; ++y) {
+            cmsDoTransform(rawTransform, mat.ptr(y), mat.ptr(y),
+                static_cast<cmsUInt32Number>(mat.cols));
+        }
+    });
     return true;
 }
 

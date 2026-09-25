@@ -1,4 +1,5 @@
 #include "ImageDatabase.h"
+#include "StartupTrace.h"
 #include "MotionPhotoUtils.h"
 #include "StbImageDecoder.h"
 #include "SystemFont.h"
@@ -3501,16 +3502,30 @@ ImageAsset ImageDatabase::loader(const wstring& path) {
         decodeMs);
 
     JARK_LOG("{}", parseImageAssetInfo(path, imageAsset));
-    convertImageAssetToCV_8U(imageAsset);
 
+    const auto convertStart = std::chrono::steady_clock::now();
+    convertImageAssetToCV_8U(imageAsset);
+    const auto convertMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - convertStart).count();
+
+    int64_t iccReadMs = 0;
+    int64_t iccApplyMs = 0;
     if (GlobalVar::settingParameter.enableColorManagement) {
+        const auto iccReadStart = std::chrono::steady_clock::now();
         if (imageAsset.iccProfile.empty()) {
             auto fileReader = MappedFileReader(path);
             if (!fileReader.isEmpty())
                 imageAsset.iccProfile = ColorManager::readEmbeddedIccProfile(path, fileReader.view());
         }
+        iccReadMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - iccReadStart).count();
+
+        const auto iccApplyStart = std::chrono::steady_clock::now();
         colorManager.applyToImageAsset(imageAsset);
+        iccApplyMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - iccApplyStart).count();
     }
 
+    StartupTrace::markLoad(path, decodeMs, convertMs, iccReadMs, iccApplyMs);
     return imageAsset;
 }

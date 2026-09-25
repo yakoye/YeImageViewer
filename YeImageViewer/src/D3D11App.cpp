@@ -1,4 +1,5 @@
 #include "D3D11App.h"
+#include "StartupTrace.h"
 #include "BackgroundPolicy.h"
 #include "MonitorPlacement.h"
 #include "FramePacingPolicy.h"
@@ -303,7 +304,15 @@ HRESULT D3D11App::Initialize(HINSTANCE hInstance) {
         // 打不出中文。按窗口摘除只影响这一个窗口。
         ::ImmAssociateContext(m_hWnd, nullptr);
 
+        StartupTrace::mark("windowCreated");
+
+        // 先把图片解码派出去，再建 D3D 设备。建设备是纯 CPU 等待（约 70 毫秒），
+        // 解码在另一条线程上跑，两件事重叠起来，出图就能早这么多。
+        onWindowCreated();
+        StartupTrace::mark("decodeRequested");
+
         CreateDeviceResources();
+        StartupTrace::mark("deviceCreated");
         ApplyWindowBackgroundMode();
 
         BOOL themeMode = GlobalVar::isCurrentUIDarkMode;

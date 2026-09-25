@@ -107,7 +107,7 @@ BEGIN
             VALUE "LegalCopyright", "Copyright (C) 2023-2026 JARK006 and YeImageViewer contributors"
             VALUE "OriginalFilename", "YeImageViewer.exe"
             VALUE "ProductName", "YeImageViewer"
-            VALUE "ProductVersion", "1.37.2-rc8"
+            VALUE "ProductVersion", "1.37.2-rc9"
         END
     END
     BLOCK "VarFileInfo"
