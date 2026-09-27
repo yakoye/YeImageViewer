@@ -1,5 +1,17 @@
 # YeImageViewer 修改记录
 
+## 未发布
+
+- PNG 解压换成 zlib-ng，打开大图再快 0.22~0.47 秒。`libopencv/zlib.lib` 换成 zlib-ng 的 compat 构建即可，不必重建 OpenCV——仓库里只有这一份 zlib，opencv_world 是在最终链接时才解析 `inflate` 这些符号的。重建脚本是 `scripts/build-zlib-ng.ps1`。
+
+  | 图 | v1.37.2 | 换 zlib-ng 后 |
+  | --- | ---: | ---: |
+  | Gradestr 103 MB | 877 ms | **653 ms** |
+  | Mandelbrot 124 MB | 1140 ms | **874 ms** |
+  | moon 291 MB / 9000×9000 | 2450 ms | **1978 ms** |
+
+  纯解码耗时 2185 → 1733 / 914 → 681 / 714 → 549 毫秒。程序体积 +0.11 MiB（26.47 → 26.58）。
+
 ## v1.37.2 - 2026-09-25
 
 体积砍掉七成，打开大图更快，配置合并成一个文件，界面多了繁體中文。

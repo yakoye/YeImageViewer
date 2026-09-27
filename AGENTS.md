@@ -30,6 +30,7 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 - `YeImageViewer.vcxproj` 中 `VcpkgEnabled=false`，默认使用仓库内的静态库目录：`YeImageViewer/lib*`、`YeImageViewer/libffmpeg`、`YeImageViewer/include`。
 - README 说明第三方静态库需从 release 的 `static_lib` 包准备；如果改为 vcpkg，需要在项目属性中启用并补齐依赖。
 - `avif.lib` 与 `heif.lib` 不能直接用上游 `static_lib` 包里的：本仓库去掉了它们携带的 aom / x265 编码器（看图软件只解码），主程序也不再链接 `x265-static.lib`。新环境先跑 `./scripts/build-thirdparty-slim.ps1 -Install` 重建，否则链接失败。
+- `libopencv/zlib.lib` 换成了 zlib-ng 的 compat 构建（`./scripts/build-zlib-ng.ps1 -Install`）。不换也能链接能跑，只是 PNG 解压慢约 1.4 倍——一张 291 MB 的 16 位 PNG 差 0.45 秒。`include/` 下的 zlib 头文件已经是 zlib-ng 的，compat 模式不改符号名（`zlib_name_mangling.h` 是空的），和原版 zlib.lib 混用也不会出问题。
 - Release 输出程序位于 `x64/Release/YeImageViewer.exe`，中间文件位于 `YeImageViewer/x64/<Configuration>/YeImageViewer`。
 
 ## 高层架构
