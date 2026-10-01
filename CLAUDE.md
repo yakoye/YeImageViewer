@@ -25,7 +25,8 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 每次修改后至少保证 `buildRelease.ps1` 能干净编译通过。
 
 测试用发布闸门，一条命令跑完全部环节（构建、单元测试、窗口行为、格式语料、图片语料、
-渐进加载、翻页响应、实况声音、性能压测），存在阻断失败时退出码非 0：
+源码不变量自检的反向验证、渐进加载、翻页响应、实况声音、性能压测），存在阻断
+失败时退出码非 0：
 
 ```powershell
 # 全量（含 10000 张性能压测，约 30 分钟）
@@ -36,6 +37,8 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 
 # 单独跑某一环
 ./runTests.ps1                                    # 单元测试 + 窗口行为 + 格式语料
+./scripts/check-source-invariants.ps1             # 只读源码的四项约定，几秒钟
+./scripts/verify-source-invariant-checks.ps1      # 反向验证上面那四项真能抓到错
 ./tools/image-test-runner/run-tests.ps1 -All      # 图片语料 145 例
 ./tools/image-test-runner/probe-extreme-png.ps1   # 极端 PNG：大图/200MP/损坏/快速连切
 ```
@@ -112,12 +115,20 @@ RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 3
   「适应窗口」只缩不放：图片比窗口小就停在 100%。
   `applyImageFittedWindowSize()` 必须在动窗口**之前**关掉 `framedWindowAnchored`：`SetWindowPos` 会同步派发 WM_SIZE，而锚定那条路径会按工作区重算缩放，把刚算好的覆盖掉。
 - 预览图（系统缩略图）的像素尺寸和真图可以毫无关系——一张 280x288 的 SVG，系统给的缩略图是 995x1024。所以：缩放要按真图尺寸算再折算回缩略图像素（`ZoomPolicy::previewZoom`），标题报的尺寸和百分比也要按真图口径（`ZoomPolicy::reportedPercent`），否则换成真图那一刻画面和数字都会跳。系统报不出真图尺寸时（SVG 就报不出）干脆不显示预览，直接等真图。
-- `runTests.ps1` 里有一段「源码不变量检查」，查的是跑起来也看不出来的三件事：三语
-  字符串表三列齐全且 `// N` 索引标注没错位（中间插一条会让所有硬编码 stringID 整体
-  错位）、没有谁把「界面是不是中文」写成 `UI_LANG == 0`、继承 `LRU<>` 的类都在自己的
-  析构函数里先调了 `stopPreloadWorker()`。
-  最后那条是条真 bug 的护栏：预读线程跑的是派生类的 `loader()`、用的是派生类的成员，
-  等 `~LRU()` 才停线程时派生部分已经销毁，在途那次解码正访问已释放的内存。
+- `scripts/check-source-invariants.ps1` 查四件跑起来也看不出来的事，`runTests.ps1`
+  会调它，提交前也可以单独跑（只读源码，几秒钟）：
+  1. 三语字符串表三列齐全，`// N` 索引标注没错位——那些索引是硬编码的，中间插一条
+     会让后面所有 stringID 整体指错。
+  2. 没有谁把「界面是不是中文」写成 `UI_LANG == 0`（繁體是 2，会掉进英文分支）。
+  3. 继承 `LRU<>` 的类都在自己的析构函数里先调了 `stopPreloadWorker()`。这是一条真
+     bug 的护栏：预读线程跑的是派生类的 `loader()`、用的是派生类的成员，等 `~LRU()`
+     才停线程时派生部分已经销毁，在途那次解码正访问已释放的内存。
+  4. 格式清单在 `supportExt`/`supportRaw`/`videoExt`、默认关联列表、两份 README 之间
+     对得上。加格式漏改一处不会报错，只会让某个格式「能开但没人知道」。
+  静态检查最危险的失效方式是什么都抓不到（正则写歪一个字符就照样 PASS），所以配了
+  `scripts/verify-source-invariant-checks.ps1`：逐条制造该抓的错误，确认真会报错，
+  跑完按原字节还原（不用 `git checkout --`，那会连未提交的改动一起抹掉）。
+  新增一条检查就在它里面加一条对应的破坏。
 - 查「打开一张图为什么慢」用 `YEIMAGEVIEWER_STARTUP_TRACE=<文件路径>` 环境变量（见 `StartupTrace.h`），会记下 CRT 静态初始化、建窗口、建 D3D 设备、解码、格式转换、色彩管理、首帧绘制各段的时刻。没设环境变量时一个字节都不写。
 - 建 D3D 设备要七十多毫秒，建窗口只要五毫秒。图片解码在 `onWindowCreated()` 里就派出去了，和建设备并行跑；启动那一次的 `initOpenFile` 要传 `keepWarmCache = true`，否则 `imgDB.clear()` 会把在途的解码作废。
 - 别再去给 libpng 的去滤波写 SIMD。做过一轮完整的：libpng 自带的 SSE2 只覆盖 3 和 4 字节像素（`intel/intel_init.c` 里 `if (bpp == 3) ... else if (bpp == 4)`），16 位图是 6 或 8 字节像素，确实掉回标量。补齐 6/8 字节的 SSE2 实现之后，自检确认结果与规范逐字节一致，解码耗时却一点没变——A/B 各跑四轮：原版 1506/1513/1513/1523 ms，SIMD 版 1512/1524/1594/1608 ms。

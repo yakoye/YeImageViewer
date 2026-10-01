@@ -152,6 +152,12 @@ if (-not (Test-Path -LiteralPath $viewer)) {
 Invoke-Stage -Name "单元测试 + 窗口行为 + 格式语料（runTests.ps1）" -LogName "02-runtests.log" -Blocking $true `
     -Body { & (Join-Path $repoRoot "runTests.ps1") -SkipBuild }
 
+# runTests.ps1 里那组源码不变量检查，最危险的失效方式是「什么都抓不到」：
+# 正则写歪一个字符就照样打印 PASS，看着有护栏其实没有。这一环逐条制造它该抓的
+# 错误，确认它真会报错，跑完按原字节还原。只读改源码文件，不启动程序，几秒钟。
+Invoke-Stage -Name "源码不变量检查自身的反向验证" -LogName "02b-lint-verify.log" -Blocking $true `
+    -Body { & (Join-Path $repoRoot "scripts\verify-source-invariant-checks.ps1") }
+
 # ---------------------------------------------------------------- 3 图片语料
 Invoke-Stage -Name "图片语料全套（run-tests.ps1 -All）" -LogName "03-corpus.log" -Blocking $true `
     -Body { & (Join-Path $repoRoot "tools\image-test-runner\run-tests.ps1") -All -OutputDir $corpusReportDir }
