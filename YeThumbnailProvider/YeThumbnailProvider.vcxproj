@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -95,6 +95,7 @@
     <ClInclude Include="include\ClassFactory.h" />
     <ClInclude Include="include\FormatSniffer.h" />
     <ClInclude Include="include\ThumbDecoders.h" />
+    <ClInclude Include="include\ThumbPsd.h" />
     <ClInclude Include="include\ThumbnailProvider.h" />
     <ClInclude Include="include\ThumbTypes.h" />
   </ItemGroup>
@@ -104,6 +105,7 @@
     <ClCompile Include="src\dllmain.cpp" />
     <ClCompile Include="src\FormatSniffer.cpp" />
     <ClCompile Include="src\ThumbDecoders.cpp" />
+    <ClCompile Include="src\ThumbPsd.cpp" />
     <ClCompile Include="src\ThumbnailProvider.cpp" />
     <None Include="YeThumbnailProvider.def" />
   </ItemGroup>

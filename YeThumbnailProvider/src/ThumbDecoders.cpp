@@ -1,6 +1,7 @@
 #include "ThumbDecoders.h"
 
 #include "FormatSniffer.h"
+#include "ThumbPsd.h"
 
 #include <algorithm>
 #include <array>
@@ -1295,30 +1296,6 @@ uint8_t floatToByte(float value) noexcept {
 // Sun raster（.ras / .sr）。枚举里一直有 Format::Ras/Sr，但嗅探器从来没返回过，
 // 于是这两种格式一路落到 default 分支，WIC 和 stb 都不认，资源管理器永远只给通用图标。
 // 头部八个字段都是大端 32 位，行按 2 字节对齐。
-// 整张图的 alpha 全是 0 等于「完全看不见」：预乘之后每个像素都变成全透明的黑，
-// 资源管理器里就是一片空白。真正带透明的图不会每一个像素都全透明——那样这张图
-// 压根没有内容——所以出现这种情况一定是解码器把透明通道整层解成了 0。
-// 16 位 PSD 就是这样（见 test/corpus/README.md 里那一节）。
-//
-// 这时按不透明处理：缩略图能看见，比一片空白有用；判据是「全零」，
-// 真的带透明的图一个都不会被误伤。
-void repairFullyTransparent(ThumbBitmap& bitmap) noexcept {
-    if (bitmap.bgra.size() < 4) {
-        return;
-    }
-
-    for (size_t offset = 3; offset < bitmap.bgra.size(); offset += 4) {
-        if (bitmap.bgra[offset] != 0) {
-            return;
-        }
-    }
-
-    for (size_t offset = 3; offset < bitmap.bgra.size(); offset += 4) {
-        bitmap.bgra[offset] = 255;
-    }
-    bitmap.hasAlpha = false;
-}
-
 bool decodeSunRaster(std::span<const uint8_t> data, ThumbBitmap& out) {
     constexpr size_t headerBytes = 32;
     if (data.size() < headerBytes) {
@@ -1728,6 +1705,9 @@ bool decodeByFormat(std::span<const uint8_t> data, uint32_t maxEdge, ThumbBitmap
             return decodePcx(data, out);
         case Format::Pfm:
             return decodePfm(data, out);
+        // psd_sdk 优先、stb 兜底。顺序不能反，理由见 decodePsd 上面那段注释。
+        case Format::Psd:
+            return decodePsd(data, out) || decodeWic(data, out) || decodeStb(data, out);
         case Format::Ras:
         case Format::Sr:
             return decodeSunRaster(data, out);
@@ -1763,11 +1743,6 @@ bool decodeThumbnail(std::span<const uint8_t> data, uint32_t maxEdge, ThumbBitma
         return false;
     }
 
-    // 只对 PSD 兜这一手，和主程序的 loadPSD 保持一致。
-    // 别推广到其他格式：一张全透明的 PNG 本来就该是看不见的。
-    if (sniffFormat(data) == Format::Psd) {
-        repairFullyTransparent(out);
-    }
     return true;
 }
 }

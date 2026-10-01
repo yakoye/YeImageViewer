@@ -190,9 +190,13 @@ alpha 读到的是别的通道的尾巴，整层为零。
 - 多解码器按顺序兜底的结构里，**前一个解码器「返回成功但结果是错的」比它直接失败
   危险得多**——兜底永远不会触发，而且不会有任何报错。
 
-遗留：缩略图组件（`YeThumbnailProvider.dll`）走的是 WIC → stb，没有 psd_sdk，
-所以 16 位 RLE 的 PSD 缩略图颜色仍然是错的（现在靠「alpha 全零视为不透明」
-至少能看见，但那是另一回事）。
+缩略图组件（`YeThumbnailProvider.dll`）原先走 WIC → stb，踩的是同一个坑，
+所以也给它接了 psd_sdk（`ThumbPsd.cpp`，用内存版的 `psd::File`）。
+那个文件必须单独一个编译单元：psd_sdk 的 `PsdPlatform.h` 会 `#define NOMSG`
+`NOUSER` `NOGDI` 一整串把 windows.h 砍瘦，只要它排在 COM 头之前，后面的
+`oleidl.h` / `ocidl.h` 就会因为缺 `MSG` 编译失败。
+单元测试里 `psd_16bit.psd` 的缩略图现在和 `psd_8bit.psd` 逐像素一致
+（mean 0.32、worst 1）。
 
 另外仍未确认的是：手上只有 ImageMagick 写出的 16 位 PSD，**没有 Photoshop 原生文件**。
 补一个原生样本仍然值得做。
