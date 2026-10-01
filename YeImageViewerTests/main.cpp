@@ -3311,48 +3311,51 @@ void expectThumbnailProvider(const std::string& dllPath, const std::vector<std::
         }
     }
 
-    // 「出图了」不等于「出对了」。format corpus 里的 common.* 都是同一张 160x80 参考图
-    // 导出的不同格式，无损的那几种解出来应当几乎一模一样。拿 PNG（走 WIC，最可信）
-    // 当基准，逐个比较——通道顺序搞反这种错，只看「有没有图」是看不出来的。
+    // 「出图了」不等于「出对了」：通道顺序搞反、通道错位这类错照样「有图」。
+    // 语料里几组素材是同一张源图导出的不同格式，拿其中最可信的一个当基准逐像素比。
     //
-    // 比之前要先还原预乘：参考图有一半区域是 50% 透明，交出去的位图是预乘过的，
-    // 而 Sun raster 压根没有透明通道，直接比会差出 127（第一次写这条测试就是这么
-    // 误判成「解码错了」的，实际是在拿预乘值和不透明值做比较）。
+    // 比之前要先还原预乘。交出去的位图是预乘过的，而有些格式压根没有透明通道
+    // （Sun raster），直接比会差出 127——第一次写这条测试就是这么误判成
+    // 「解码错了」的，实际是在拿预乘值和不透明值做比较。
     {
-        const auto referencePath = std::find_if(fixtures.begin(), fixtures.end(),
-            [](const std::string& path) {
-                return std::filesystem::path(path).filename() == "common.png";
-            });
+        const auto findFixture = [&fixtures](std::string_view fileName) {
+            return std::find_if(fixtures.begin(), fixtures.end(),
+                [fileName](const std::string& path) {
+                    return std::filesystem::path(path).filename() == fileName;
+                });
+        };
 
-        if (referencePath == fixtures.end()) {
-            ++failedTests;
-            std::cerr << "FAIL common.png was not provided as the pixel reference\n";
-        }
-        else {
-            const auto reference = renderThumbnail(module, readFile(*referencePath), 160);
-            for (const char* lossless : { "common.tga", "common.ras", "common.sr", "common.pcx" }) {
-                const auto candidatePath = std::find_if(fixtures.begin(), fixtures.end(),
-                    [lossless](const std::string& path) {
-                        return std::filesystem::path(path).filename() == lossless;
-                    });
+        const auto comparePixels = [&](std::string_view referenceName,
+            const std::vector<std::string_view>& candidates, uint32_t renderSize) {
+            const auto referencePath = findFixture(referenceName);
+            if (referencePath == fixtures.end()) {
+                ++failedTests;
+                std::cerr << "FAIL " << referenceName << " was not provided as a pixel reference\n";
+                return;
+            }
+
+            const auto reference = renderThumbnail(module, readFile(*referencePath), renderSize);
+            for (const auto candidateName : candidates) {
+                const auto candidatePath = findFixture(candidateName);
                 if (candidatePath == fixtures.end()) {
                     ++failedTests;
-                    std::cerr << "FAIL lossless comparison fixture was not provided: " << lossless << '\n';
+                    std::cerr << "FAIL comparison fixture was not provided: "
+                        << candidateName << '\n';
                     continue;
                 }
 
-                const auto candidate = renderThumbnail(module, readFile(*candidatePath), 160);
-                if (candidate.pixels.size() != reference.pixels.size() ||
-                    reference.pixels.empty()) {
+                const auto candidate = renderThumbnail(module, readFile(*candidatePath), renderSize);
+                if (reference.pixels.empty() ||
+                    candidate.pixels.size() != reference.pixels.size()) {
                     ++failedTests;
-                    std::cerr << "FAIL " << lossless << " does not decode to the reference size\n";
+                    std::cerr << "FAIL " << candidateName << " does not decode to the same size as "
+                        << referenceName << '\n';
                     continue;
                 }
 
                 // 还原预乘后再比 B/G/R；全透明的像素没有颜色可比，跳过
                 const auto straighten = [](int premultiplied, int alpha) {
-                    return alpha <= 0 ? 0 :
-                        std::clamp(premultiplied * 255 / alpha, 0, 255);
+                    return alpha <= 0 ? 0 : std::clamp(premultiplied * 255 / alpha, 0, 255);
                 };
 
                 uint64_t total = 0;
@@ -3376,23 +3379,33 @@ void expectThumbnailProvider(const std::string& dllPath, const std::vector<std::
 
                 if (compared == 0) {
                     ++failedTests;
-                    std::cerr << "FAIL " << lossless << " had no comparable opaque pixels\n";
+                    std::cerr << "FAIL " << candidateName << " had no comparable opaque pixels\n";
                     continue;
                 }
 
                 const double mean = static_cast<double>(total) / compared;
                 if (mean > 2.0 || worst > 24) {
                     ++failedTests;
-                    std::cerr << "FAIL " << lossless << " does not match the PNG reference"
+                    std::cerr << "FAIL " << candidateName << " does not match " << referenceName
                         << " (mean " << mean << ", worst " << worst << ")\n";
                 }
                 else {
                     ++passedTests;
-                    std::cout << "PASS " << lossless << " decodes to the same picture as the PNG"
-                        << " reference (mean " << mean << ", worst " << worst << ")\n";
+                    std::cout << "PASS " << candidateName << " decodes to the same picture as "
+                        << referenceName << " (mean " << mean << ", worst " << worst << ")\n";
                 }
             }
-        }
+        };
+
+        // common.* 是同一张 160x80 参考图导出的各种格式。基准用 PNG，它走 WIC 最可信。
+        comparePixels("common.png",
+            { "common.tga", "common.ras", "common.sr", "common.pcx" }, 160);
+
+        // 三张 PSD 同源（ImageMagick 比 psd_8bit 和 psd_16bit 的 RMSE 是 0），
+        // 和 common.* 不是同一张图，所以单独一组。
+        // 16 位那张是 RLE 压缩的，stb 解它会从第二个通道起全部错位——出图但颜色是错的，
+        // 这一条就是为了盯住「出的图对不对」而不只是「有没有图」。
+        comparePixels("psd_8bit.psd", { "psd_16bit.psd", "psd_alpha.psd" }, 160);
     }
 
     const auto& first = fixtures.front();
