@@ -167,6 +167,12 @@ Format sniffFormat(std::span<const uint8_t> data) noexcept {
         return Format::Hdr;
     }
 
+    // Sun raster（.ras / .sr）。枚举里一直有这两个值，但以前没人认它的魔数，
+    // 于是这两种文件一路落到 default 分支，谁都解不出来。
+    if (startsWith(data, { 0x59, 0xA6, 0x6A, 0x95 })) {
+        return Format::Ras;
+    }
+
     if (startsWith(data, { 'P', '1' }) || startsWith(data, { 'P', '2' }) ||
         startsWith(data, { 'P', '3' }) || startsWith(data, { 'P', '4' }) ||
         startsWith(data, { 'P', '5' }) || startsWith(data, { 'P', '6' }) ||

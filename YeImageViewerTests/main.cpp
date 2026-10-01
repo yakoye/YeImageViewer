@@ -1,6 +1,7 @@
 #include "LRU.h"
 #include "PrintLayout.h"
 #include "SVGPreprocessor.h"
+#include "YeThumbnailProviderGuids.h"
 #include "FileAssociationNaming.h"
 #include "MotionPhotoUtils.h"
 #include "MonitorPlacement.h"
@@ -45,7 +46,18 @@
 #include "SvgRenderer.h"
 #include "SystemFont.h"
 
+#include <windows.h>
+#include <objbase.h>
+#include <shlwapi.h>
+#include <shobjidl.h>
+#include <thumbcache.h>
+
+#pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "ole32.lib")
+
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <chrono>
 #include <atomic>
@@ -3100,9 +3112,397 @@ void expectSvgPreprocessor() {
         passOrFail("empty input yields nothing", process("", "en").empty());
     }
 }
+// ===== 缩略图组件（YeThumbnailProvider.dll）=====
+// 这是随程序交付的三个文件之一，之前一条自动化测试都没有：注册成功不等于
+// 真能出图，而资源管理器只会默默显示一个通用图标，不报错也没日志。
+//
+// 这里直接 LoadLibrary 构建产物里的那份 DLL，走 DllGetClassObject →
+// IInitializeWithStream → IThumbnailProvider::GetThumbnail，和资源管理器
+// 调它的路子一样，但不依赖注册表、不受 shell 缩略图缓存干扰。
+
+struct ThumbnailModule {
+    HMODULE handle = nullptr;
+    HRESULT(STDAPICALLTYPE* getClassObject)(REFCLSID, REFIID, void**) = nullptr;
+    HRESULT(STDAPICALLTYPE* canUnloadNow)() = nullptr;
+
+    ~ThumbnailModule() {
+        if (handle)
+            FreeLibrary(handle);
+    }
+};
+
+bool loadThumbnailModule(const std::string& dllPath, ThumbnailModule& module) {
+    module.handle = LoadLibraryA(dllPath.c_str());
+    if (!module.handle)
+        return false;
+
+    module.getClassObject = reinterpret_cast<decltype(module.getClassObject)>(
+        GetProcAddress(module.handle, "DllGetClassObject"));
+    module.canUnloadNow = reinterpret_cast<decltype(module.canUnloadNow)>(
+        GetProcAddress(module.handle, "DllCanUnloadNow"));
+    return module.getClassObject != nullptr && module.canUnloadNow != nullptr;
+}
+
+// 每次都新建一个对象：Initialize 只允许调一次，复用会得到 ERROR_ALREADY_INITIALIZED
+IInitializeWithStream* createThumbnailProvider(const ThumbnailModule& module) {
+    IClassFactory* factory = nullptr;
+    if (FAILED(module.getClassObject(YeThumbnailProviderGuids::CLSID_YeThumbnailProvider,
+        IID_IClassFactory, reinterpret_cast<void**>(&factory))) || !factory) {
+        return nullptr;
+    }
+
+    IInitializeWithStream* initializer = nullptr;
+    const HRESULT created = factory->CreateInstance(nullptr, IID_IInitializeWithStream,
+        reinterpret_cast<void**>(&initializer));
+    factory->Release();
+    return SUCCEEDED(created) ? initializer : nullptr;
+}
+
+struct ThumbnailResult {
+    HRESULT hr = E_FAIL;
+    int width = 0;
+    int height = 0;
+    WTS_ALPHATYPE alphaType = WTSAT_UNKNOWN;
+    bool allZero = true;
+    std::vector<uint8_t> pixels;   // BGRA，自上而下
+};
+
+ThumbnailResult renderThumbnail(const ThumbnailModule& module,
+    const std::vector<uint8_t>& fileBytes, UINT requestedSize) {
+    ThumbnailResult result;
+
+    IInitializeWithStream* initializer = createThumbnailProvider(module);
+    if (!initializer)
+        return result;
+
+    IStream* stream = SHCreateMemStream(fileBytes.data(), static_cast<UINT>(fileBytes.size()));
+    if (!stream) {
+        initializer->Release();
+        return result;
+    }
+
+    const HRESULT initialized = initializer->Initialize(stream, STGM_READ);
+    stream->Release();
+
+    if (FAILED(initialized)) {
+        result.hr = initialized;
+        initializer->Release();
+        return result;
+    }
+
+    IThumbnailProvider* provider = nullptr;
+    if (FAILED(initializer->QueryInterface(IID_IThumbnailProvider,
+        reinterpret_cast<void**>(&provider))) || !provider) {
+        initializer->Release();
+        return result;
+    }
+
+    HBITMAP bitmap = nullptr;
+    result.hr = provider->GetThumbnail(requestedSize, &bitmap, &result.alphaType);
+
+    if (SUCCEEDED(result.hr) && bitmap) {
+        BITMAP info{};
+        if (GetObjectW(bitmap, sizeof(info), &info) != 0) {
+            result.width = info.bmWidth;
+            result.height = info.bmHeight;
+
+            // 全透明/全黑的位图也是「成功」，但用户看到的是一块空白，所以要查像素
+            const size_t pixelBytes = static_cast<size_t>(info.bmWidthBytes) * info.bmHeight;
+            result.pixels.resize(pixelBytes);
+            if (pixelBytes > 0 &&
+                GetBitmapBits(bitmap, static_cast<LONG>(pixelBytes), result.pixels.data()) != 0) {
+                result.allZero = std::all_of(result.pixels.begin(), result.pixels.end(),
+                    [](uint8_t value) { return value == 0; });
+            }
+            else {
+                result.pixels.clear();
+            }
+        }
+        DeleteObject(bitmap);
+    }
+
+    provider->Release();
+    initializer->Release();
+    return result;
+}
+
+// 已知解不出来的，连同原因。登记在这里而不是把素材从清单里删掉：
+// 删掉等于以后谁都想不起这个缺口；登记着的话，哪天某个缺口被补上了，
+// 测试会提醒把这一条拿掉。
+struct ThumbnailKnownGap {
+    std::string_view fileName;
+    std::string_view reason;
+};
+
+constexpr std::array thumbnailKnownGaps{
+    ThumbnailKnownGap{ "opencv-float.exr",
+        "组件里没有 EXR 解码器：主程序靠 OpenCV 的 imgcodecs 解，而这个 DLL 不链 OpenCV。"
+        "WIC 也不认 OpenEXR。" },
+    ThumbnailKnownGap{ "exr_color.exr", "同上" },
+    ThumbnailKnownGap{ "exr_alpha.exr", "同上" },
+    ThumbnailKnownGap{ "common.jp2",
+        "组件里没有 JPEG 2000 解码器：jasper.lib 虽然链进来了，但仓库里没有它的头文件；"
+        "WIC 默认也不带 JP2 解码器。" },
+};
+
+bool isKnownThumbnailGap(const std::string& fileName, std::string_view& reason) {
+    for (const auto& gap : thumbnailKnownGaps) {
+        if (gap.fileName == fileName) {
+            reason = gap.reason;
+            return true;
+        }
+    }
+    return false;
+}
+
+void expectThumbnailProvider(const std::string& dllPath, const std::vector<std::string>& fixtures) {
+    ThumbnailModule module;
+    if (!loadThumbnailModule(dllPath, module)) {
+        ++failedTests;
+        std::cerr << "FAIL thumbnail provider could not be loaded from " << dllPath << '\n';
+        return;
+    }
+    passOrFail("the thumbnail provider DLL exports the COM entry points", true);
+
+    for (const auto& fixture : fixtures) {
+        const auto bytes = readFile(fixture);
+        const auto name = std::filesystem::path(fixture).filename().string();
+        if (bytes.empty()) {
+            ++failedTests;
+            std::cerr << "FAIL thumbnail fixture is missing or empty: " << fixture << '\n';
+            continue;
+        }
+
+        const auto rendered = renderThumbnail(module, bytes, 256);
+        // 不放大是对的：资源管理器要的是「最长边不超过 cx」，一张 8x8 的图
+        // 拉成 256 只会糊。所以这里只要求不超限、不空、不是全零像素。
+        const bool usable = SUCCEEDED(rendered.hr) &&
+            rendered.width > 0 && rendered.height > 0 &&
+            rendered.width <= 256 && rendered.height <= 256 &&
+            !rendered.allZero;
+
+        std::string_view reason;
+        if (isKnownThumbnailGap(name, reason)) {
+            if (usable) {
+                ++failedTests;
+                std::cerr << "FAIL " << name << " now renders a thumbnail; remove it from "
+                    << "thumbnailKnownGaps so the gap list stays honest\n";
+            }
+            else {
+                ++passedTests;
+                std::cout << "PASS " << name << " has no thumbnail, as documented ("
+                    << reason << ")\n";
+            }
+            continue;
+        }
+
+        if (!usable) {
+            ++failedTests;
+            std::cerr << "FAIL the thumbnail provider renders " << name
+                << ": hr=0x" << std::hex << static_cast<unsigned>(rendered.hr) << std::dec
+                << " size=" << rendered.width << 'x' << rendered.height
+                << " blank=" << (rendered.allZero ? "yes" : "no") << '\n';
+        }
+        else {
+            ++passedTests;
+            std::cout << "PASS the thumbnail provider renders " << name
+                << " at " << rendered.width << 'x' << rendered.height << '\n';
+        }
+    }
+
+    // 「出图了」不等于「出对了」。format corpus 里的 common.* 都是同一张 160x80 参考图
+    // 导出的不同格式，无损的那几种解出来应当几乎一模一样。拿 PNG（走 WIC，最可信）
+    // 当基准，逐个比较——通道顺序搞反这种错，只看「有没有图」是看不出来的。
+    //
+    // 比之前要先还原预乘：参考图有一半区域是 50% 透明，交出去的位图是预乘过的，
+    // 而 Sun raster 压根没有透明通道，直接比会差出 127（第一次写这条测试就是这么
+    // 误判成「解码错了」的，实际是在拿预乘值和不透明值做比较）。
+    {
+        const auto referencePath = std::find_if(fixtures.begin(), fixtures.end(),
+            [](const std::string& path) {
+                return std::filesystem::path(path).filename() == "common.png";
+            });
+
+        if (referencePath == fixtures.end()) {
+            ++failedTests;
+            std::cerr << "FAIL common.png was not provided as the pixel reference\n";
+        }
+        else {
+            const auto reference = renderThumbnail(module, readFile(*referencePath), 160);
+            for (const char* lossless : { "common.tga", "common.ras", "common.sr", "common.pcx" }) {
+                const auto candidatePath = std::find_if(fixtures.begin(), fixtures.end(),
+                    [lossless](const std::string& path) {
+                        return std::filesystem::path(path).filename() == lossless;
+                    });
+                if (candidatePath == fixtures.end()) {
+                    ++failedTests;
+                    std::cerr << "FAIL lossless comparison fixture was not provided: " << lossless << '\n';
+                    continue;
+                }
+
+                const auto candidate = renderThumbnail(module, readFile(*candidatePath), 160);
+                if (candidate.pixels.size() != reference.pixels.size() ||
+                    reference.pixels.empty()) {
+                    ++failedTests;
+                    std::cerr << "FAIL " << lossless << " does not decode to the reference size\n";
+                    continue;
+                }
+
+                // 还原预乘后再比 B/G/R；全透明的像素没有颜色可比，跳过
+                const auto straighten = [](int premultiplied, int alpha) {
+                    return alpha <= 0 ? 0 :
+                        std::clamp(premultiplied * 255 / alpha, 0, 255);
+                };
+
+                uint64_t total = 0;
+                int worst = 0;
+                size_t compared = 0;
+                for (size_t offset = 0; offset + 3 < reference.pixels.size(); offset += 4) {
+                    const int referenceAlpha = reference.pixels[offset + 3];
+                    const int candidateAlpha = candidate.pixels[offset + 3];
+                    if (referenceAlpha <= 8 || candidateAlpha <= 8) {
+                        continue;
+                    }
+                    for (int channel = 0; channel < 3; ++channel) {
+                        const int difference = std::abs(
+                            straighten(reference.pixels[offset + channel], referenceAlpha) -
+                            straighten(candidate.pixels[offset + channel], candidateAlpha));
+                        total += static_cast<uint64_t>(difference);
+                        worst = std::max(worst, difference);
+                        ++compared;
+                    }
+                }
+
+                if (compared == 0) {
+                    ++failedTests;
+                    std::cerr << "FAIL " << lossless << " had no comparable opaque pixels\n";
+                    continue;
+                }
+
+                const double mean = static_cast<double>(total) / compared;
+                if (mean > 2.0 || worst > 24) {
+                    ++failedTests;
+                    std::cerr << "FAIL " << lossless << " does not match the PNG reference"
+                        << " (mean " << mean << ", worst " << worst << ")\n";
+                }
+                else {
+                    ++passedTests;
+                    std::cout << "PASS " << lossless << " decodes to the same picture as the PNG"
+                        << " reference (mean " << mean << ", worst " << worst << ")\n";
+                }
+            }
+        }
+    }
+
+    const auto& first = fixtures.front();
+
+    // 请求一个很小的尺寸也要出图：资源管理器的「小图标」视图就是这么要的
+    {
+        const auto small = renderThumbnail(module, readFile(first), 32);
+        passOrFail("a 32-pixel request is honoured",
+            SUCCEEDED(small.hr) && small.width > 0 && small.height > 0 &&
+            small.width <= 32 && small.height <= 32 && !small.allZero);
+    }
+
+    // cx 为 0 必须失败而不是除零
+    passOrFail("a zero-size request is rejected", FAILED(renderThumbnail(module, readFile(first), 0).hr));
+
+    // 没 Initialize 就 GetThumbnail 要失败
+    {
+        IInitializeWithStream* initializer = createThumbnailProvider(module);
+        IThumbnailProvider* provider = nullptr;
+        HRESULT hr = S_OK;
+        if (initializer && SUCCEEDED(initializer->QueryInterface(IID_IThumbnailProvider,
+            reinterpret_cast<void**>(&provider))) && provider) {
+            HBITMAP bitmap = nullptr;
+            WTS_ALPHATYPE alpha = WTSAT_UNKNOWN;
+            hr = provider->GetThumbnail(256, &bitmap, &alpha);
+            if (bitmap)
+                DeleteObject(bitmap);
+            provider->Release();
+        }
+        if (initializer)
+            initializer->Release();
+        passOrFail("GetThumbnail before Initialize fails instead of reading uninitialized data",
+            FAILED(hr));
+    }
+
+    // 同一个对象 Initialize 两次要被拒绝（COM 契约）
+    {
+        const auto bytes = readFile(first);
+        IInitializeWithStream* initializer = createThumbnailProvider(module);
+        HRESULT second = S_OK;
+        if (initializer) {
+            IStream* once = SHCreateMemStream(bytes.data(), static_cast<UINT>(bytes.size()));
+            IStream* again = SHCreateMemStream(bytes.data(), static_cast<UINT>(bytes.size()));
+            if (once && again) {
+                initializer->Initialize(once, STGM_READ);
+                second = initializer->Initialize(again, STGM_READ);
+            }
+            if (once) once->Release();
+            if (again) again->Release();
+            initializer->Release();
+        }
+        passOrFail("initializing twice is refused", FAILED(second));
+    }
+
+    // 空流和坏数据都要干净地失败，不能崩、不能返回一张空图
+    {
+        IInitializeWithStream* initializer = createThumbnailProvider(module);
+        HRESULT hr = S_OK;
+        if (initializer) {
+            IStream* stream = SHCreateMemStream(nullptr, 0);
+            if (stream) {
+                hr = initializer->Initialize(stream, STGM_READ);
+                stream->Release();
+            }
+            initializer->Release();
+        }
+        passOrFail("an empty stream is refused", FAILED(hr));
+    }
+    {
+        std::vector<uint8_t> garbage(4096);
+        for (size_t index = 0; index < garbage.size(); ++index)
+            garbage[index] = static_cast<uint8_t>(index * 31 + 7);
+        passOrFail("random bytes fail cleanly instead of producing a blank thumbnail",
+            FAILED(renderThumbnail(module, garbage, 256).hr));
+    }
+
+    // 截断的文件同样不能崩。资源管理器会对正在下载的文件调缩略图。
+    {
+        auto truncated = readFile(first);
+        truncated.resize(truncated.size() / 3);
+        const auto rendered = renderThumbnail(module, truncated, 256);
+        passOrFail("a truncated file is handled without crashing",
+            FAILED(rendered.hr) || (rendered.width > 0 && rendered.height > 0));
+    }
+
+    // 不认识的接口要返回 E_NOINTERFACE，而不是硬塞一个指针回去
+    {
+        IInitializeWithStream* initializer = createThumbnailProvider(module);
+        void* unexpected = reinterpret_cast<void*>(static_cast<uintptr_t>(0xDEAD));
+        HRESULT hr = S_OK;
+        if (initializer) {
+            hr = initializer->QueryInterface(IID_IPersistFile, &unexpected);
+            initializer->Release();
+        }
+        passOrFail("an unsupported interface is refused and the out pointer is cleared",
+            hr == E_NOINTERFACE && unexpected == nullptr);
+    }
+
+    // 所有对象都放掉之后 DllCanUnloadNow 要说「可以卸了」，否则资源管理器
+    // 会一直占着这个 DLL，升级时文件被锁住
+    passOrFail("the module reports it can be unloaded once every object is released",
+        module.canUnloadNow() == S_OK);
+}
+
 }
 
 int main(int argc, char* argv[]) {
+    // 缩略图组件内部会用到 COM 对象，和资源管理器一样先把 COM 起起来
+    const HRESULT comReady = CoInitializeEx(nullptr,
+        COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+
     expectVideoSize("no motion-photo metadata", "Exif.Image.Make: DJI", 0);
     expectVideoSize("legacy offset followed by metadata", "Xmp.GCamera.MicroVideoOffset: 12345\nExif.Image.Make: DJI", 12345);
     expectVideoSize("legacy offset at end", "Xmp.GCamera.MicroVideoOffset: 12345", 12345);
@@ -3184,6 +3584,20 @@ int main(int argc, char* argv[]) {
         ++failedTests;
         std::cerr << "FAIL application icon paths were not provided\n";
     }
+
+    if (argc >= 28) {
+        std::vector<std::string> thumbnailFixtures;
+        for (int index = 27; index < argc; ++index)
+            thumbnailFixtures.emplace_back(argv[index]);
+        expectThumbnailProvider(argv[26], thumbnailFixtures);
+    }
+    else {
+        ++failedTests;
+        std::cerr << "FAIL thumbnail provider DLL and fixture paths were not provided\n";
+    }
+
+    if (SUCCEEDED(comReady))
+        CoUninitialize();
 
     std::cout << passedTests << " passed, " << failedTests << " failed\n";
     return failedTests == 0 ? 0 : 1;
