@@ -97,6 +97,17 @@ $cases = @(
         Old = "        stopPreloadWorker();" + $lf
         New = ""
         Expect = "does not call stopPreloadWorker"
+    },
+    @{
+        Name = "PSD 的解码顺序被改回 stb 优先"
+        File = "YeImageViewer\src\ImageDatabase.cpp"
+        Old = "        img = loadPSD(path, fileBuf);" + $lf +
+            "        if (img.empty())" + $lf +
+            "            img = loadSTB(path, fileBuf);"
+        New = "        img = loadSTB(path, fileBuf);" + $lf +
+            "        if (img.empty())" + $lf +
+            "            img = loadPSD(path, fileBuf);"
+        Expect = "loadSTB runs before loadPSD"
     }
 )
 
