@@ -411,6 +411,12 @@ struct ImageAsset {
     std::vector<uint8_t> iccProfile;         // 图像内嵌ICC配置文件
     std::shared_ptr<SvgRenderer> svgRenderer; // SVG文档，用于按当前视口重新渲染
     bool isLoading = false;                  // 占位图：真图仍在后台解码
+    // 这是预览图时，真图的像素尺寸（取自系统属性）。0 表示不是预览，或系统报不出来。
+    // 预览用的是系统缩略图，它的像素尺寸和真图可以毫无关系——一张 280x288 的 SVG，
+    // 系统给的缩略图是 995x1024。不按真图尺寸算缩放的话，换成真图的那一刻画面会
+    // 突然缩小三倍。标题里的尺寸也要用它，否则加载期间显示的是缩略图的尺寸。
+    int sourceWidth = 0;
+    int sourceHeight = 0;
     std::shared_ptr<const AudioClip> audio;  // 实况照片随视频录下的声音，没有则为空
 };
 

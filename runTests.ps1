@@ -744,6 +744,221 @@ finally {
     }
 }
 
+Write-Host "Checking the zoom and window commands in a real window..."
+# 这四个命令（适应窗口 / 实际大小 / 适应图片 / 沉浸显示）的规则在 ZoomPolicy.h 里
+# 有单元测试，但「窗口和画面对不对得上」只能在真窗口里量。踩过的坑：
+#   适应图片只改了窗口没改缩放，窗口放大了画面没跟上，四周露出一圈棋盘格；
+#   预览图按缩略图尺寸算缩放，换成真图那一刻画面突然缩小三倍（SVG 上差三倍）。
+$zoomTestDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Zoom-" + [Guid]::NewGuid().ToString("N"))
+$zoomProcess = $null
+try {
+    [void](New-Item -ItemType Directory -Path $zoomTestDirectory)
+    $zoomViewer = Join-Path $zoomTestDirectory "YeImageViewer.exe"
+    Copy-Item -LiteralPath $viewer -Destination $zoomViewer
+
+    # 用一张比屏幕还大的图：「适应图片」要把窗口按图片的宽高比撑到工作区上限，
+    # 缩放同时定成同一个比例，客户区正好等于画面，一个空白像素都不该有。
+    #
+    # 不能拿小图验这一条：窗口有 400x300 的最小尺寸（见 D3D11App 的
+    # WM_GETMINMAXINFO），比它还小的图无论如何也贴合不到那么小，剩下的地方
+    # 必然是背景——那是约束的正确表现，不是留白缺陷。
+    $zoomImage = Join-Path $zoomTestDirectory "fit.png"
+    Copy-Item -LiteralPath (Join-Path $repoRoot "test\corpus\13-dimensions\4095x4097.png") `
+        -Destination $zoomImage
+
+    $zoomProcess = Start-Process -FilePath $zoomViewer -ArgumentList ('"' + $zoomImage + '"') -PassThru
+    $zoomDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 150
+        $zoomProcess.Refresh()
+    } while (-not $zoomProcess.HasExited -and $zoomProcess.MainWindowHandle -eq 0 -and
+        [DateTime]::UtcNow -lt $zoomDeadline)
+    if ($zoomProcess.HasExited -or $zoomProcess.MainWindowHandle -eq 0) {
+        throw "Zoom-command regression failed: the viewer did not open a window."
+    }
+    $zoomWindow = [IntPtr]$zoomProcess.MainWindowHandle
+    Start-Sleep -Milliseconds 1200
+
+    # 先退回带边框窗口（启动默认是沉浸预览），工具栏才量得到
+    $zoomClient = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($zoomWindow, [ref]$zoomClient)
+    $zoomBackground = [IntPtr](((($zoomClient.Bottom - $zoomClient.Top) / 2) -shl 16) -bor 4)
+    foreach ($message in @(0x0200, 0x0201, 0x0202)) {
+        [void][YeImageViewerTestNativeV1365]::SendMessage($zoomWindow, $message,
+            [UIntPtr]([int]($message -eq 0x0201)), $zoomBackground)
+    }
+    $framedDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    do {
+        Start-Sleep -Milliseconds 120
+        $zoomStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($zoomWindow, -16).ToInt64()
+    } while (($zoomStyle -band 0x00C00000) -eq 0 -and [DateTime]::UtcNow -lt $framedDeadline)
+    if (($zoomStyle -band 0x00C00000) -eq 0) {
+        throw "Zoom-command regression failed: could not get back to a framed window."
+    }
+
+    # 点工具栏上的「适应图片」。坐标用和别处一样的换算：工具栏宽 615、高 50、
+    # 底边距 20，适应图片的按钮在基准偏移 385、宽 34（见 OverlayLayout.h）。
+    # 工具栏缩放不只看 DPI 还看窗口宽度，所以必须用 Get-ToolbarScale，
+    # 自己按 DPI 乘一下在窄窗口上会算偏。
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($zoomWindow, [ref]$zoomClient)
+    $zoomClientWidth = $zoomClient.Right - $zoomClient.Left
+    $zoomClientHeight = $zoomClient.Bottom - $zoomClient.Top
+    $zoomDpi = [YeImageViewerTestNativeV1365]::GetDpiForWindow($zoomWindow)
+    $zoomScale = Get-ToolbarScale -CanvasWidth $zoomClientWidth -Dpi $zoomDpi
+    $zoomToolbarWidth = Get-ScaledValue -Value 615 -Scale $zoomScale
+    $zoomToolbarHeight = Get-ScaledValue -Value 50 -Scale $zoomScale
+    $zoomToolbarBottom = Get-ScaledValue -Value 20 -Scale $zoomScale
+    $zoomToolbarLeft = [int][Math]::Floor(($zoomClientWidth - $zoomToolbarWidth) / 2.0)
+    $zoomPadding = Get-ScaledValue -Value 8 -Scale $zoomScale
+    $zoomButton = Get-ScaledValue -Value 34 -Scale $zoomScale
+    $fitImageX = $zoomToolbarLeft + $zoomPadding +
+        (Get-ScaledValue -Value 385 -Scale $zoomScale) + [int]($zoomButton / 2)
+    $fitImageY = $zoomClientHeight - $zoomToolbarBottom - [int]($zoomToolbarHeight / 2)
+
+    # 工具栏是悬停才显示的，先把鼠标移上去，再点
+    $fitImagePosition = [IntPtr](($fitImageY -shl 16) -bor ($fitImageX -band 0xFFFF))
+    [void][YeImageViewerTestNativeV1365]::SendMessage($zoomWindow, 0x0200, [UIntPtr]::Zero, $fitImagePosition)
+    Start-Sleep -Milliseconds 250
+    [void][YeImageViewerTestNativeV1365]::SendMessage($zoomWindow, 0x0201, [UIntPtr]1, $fitImagePosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($zoomWindow, 0x0202, [UIntPtr]::Zero, $fitImagePosition)
+
+    # 点击进的是操作队列，等窗口真的变过去（尺寸不再变化）为止
+    $fitDeadline = [DateTime]::UtcNow.AddSeconds(6)
+    $fitLastSize = ""
+    $fitStableCount = 0
+    do {
+        Start-Sleep -Milliseconds 150
+        [void][YeImageViewerTestNativeV1365]::GetClientRect($zoomWindow, [ref]$zoomClient)
+        $fitNowSize = "$($zoomClient.Right - $zoomClient.Left)x$($zoomClient.Bottom - $zoomClient.Top)"
+        if ($fitNowSize -eq $fitLastSize) { $fitStableCount++ } else { $fitStableCount = 0 }
+        $fitLastSize = $fitNowSize
+    } while ($fitStableCount -lt 3 -and [DateTime]::UtcNow -lt $fitDeadline)
+
+    # 客户区必须正好等于「图片尺寸 × 缩放」，差出来的就是四周的留白
+    $fitTitle = New-Object Text.StringBuilder 1024
+    [void][YeImageViewerTestNativeV1365]::GetWindowText($zoomWindow, $fitTitle, $fitTitle.Capacity)
+    $fitTitleText = $fitTitle.ToString()
+    if ($fitTitleText -notmatch "(\d+)x(\d+)\([^)]*\)\s+(\d+)%") {
+        throw "Zoom-command regression failed: could not read size and zoom from the title '$fitTitleText'."
+    }
+    $fitImageWidth = [int]$matches[1]
+    $fitImageHeight = [int]$matches[2]
+    $fitPercent = [int]$matches[3]
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($zoomWindow, [ref]$zoomClient)
+    $fitClientWidth = $zoomClient.Right - $zoomClient.Left
+    $fitClientHeight = $zoomClient.Bottom - $zoomClient.Top
+    # 标题里的百分比是取整后的（真实缩放可能是 19.795%，显示成 20%），
+    # 所以按「取整前的区间」来判：真实缩放落在 [p-0.5, p+0.5] 之间，
+    # 画面尺寸就该落在对应的区间里。留白的 bug 差的是几十上百像素，照样抓得住。
+    $fitLowWidth = [Math]::Floor($fitImageWidth * ($fitPercent - 0.5) / 100.0) - 1
+    $fitHighWidth = [Math]::Ceiling($fitImageWidth * ($fitPercent + 0.5) / 100.0) + 1
+    $fitLowHeight = [Math]::Floor($fitImageHeight * ($fitPercent - 0.5) / 100.0) - 1
+    $fitHighHeight = [Math]::Ceiling($fitImageHeight * ($fitPercent + 0.5) / 100.0) + 1
+    if ($fitClientWidth -lt $fitLowWidth -or $fitClientWidth -gt $fitHighWidth -or
+        $fitClientHeight -lt $fitLowHeight -or $fitClientHeight -gt $fitHighHeight) {
+        throw ("Zoom-command regression failed: fit-window-to-image left a border. " +
+            "client=${fitClientWidth}x${fitClientHeight} image=${fitImageWidth}x${fitImageHeight} " +
+            "zoom=${fitPercent}% expected width ${fitLowWidth}..${fitHighWidth} " +
+            "height ${fitLowHeight}..${fitHighHeight}")
+    }
+    # 这张图比屏幕大，贴合之后必然小于 100%
+    if ($fitPercent -ge 100) {
+        throw "Zoom-command regression failed: an image larger than the screen should shrink, got ${fitPercent}%."
+    }
+    # 窗口要保持图片的宽高比，不能被工作区的宽高比带偏
+    $fitSourceAspect = $fitImageWidth / $fitImageHeight
+    $fitWindowAspect = $fitClientWidth / $fitClientHeight
+    if ([Math]::Abs($fitSourceAspect - $fitWindowAspect) / $fitSourceAspect -gt 0.03) {
+        throw ("Zoom-command regression failed: the fitted window lost the image aspect ratio. " +
+            "image=${fitImageWidth}x${fitImageHeight} client=${fitClientWidth}x${fitClientHeight}")
+    }
+    Write-Host "PASS fit-window-to-image leaves no border (client ${fitClientWidth}x${fitClientHeight} at ${fitPercent}%)."
+
+    [void]$zoomProcess.CloseMainWindow()
+    if (-not $zoomProcess.WaitForExit(4000)) { Stop-Process -Id $zoomProcess.Id -Force }
+    $zoomProcess = $null
+
+    # ── 预览换真图时画面不能跳 ───────────────────────────────────────────
+    # SVG 是最容易暴露的：系统给的缩略图是 995x1024，而 SVG 自己是 280x288。
+    # 按缩略图尺寸算缩放的话，换成真图那一刻画面会突然缩小三倍。
+    if (Test-Path -LiteralPath $sharpSvgFixture -PathType Leaf) {
+        $flashProcess = Start-Process -FilePath $zoomViewer -ArgumentList ('"' + $sharpSvgFixture + '"') -PassThru
+        $flashTitles = New-Object Collections.ArrayList
+        $flashWatch = [Diagnostics.Stopwatch]::StartNew()
+        $flashLast = ""
+        while ($flashWatch.Elapsed.TotalSeconds -lt 5) {
+            $flashProcess.Refresh()
+            if (-not $flashProcess.HasExited -and $flashProcess.MainWindowHandle -ne 0) {
+                $flashTitle = New-Object Text.StringBuilder 1024
+                [void][YeImageViewerTestNativeV1365]::GetWindowText(
+                    [IntPtr]$flashProcess.MainWindowHandle, $flashTitle, $flashTitle.Capacity)
+                $flashText = $flashTitle.ToString()
+                if ($flashText -ne "" -and $flashText -ne $flashLast) {
+                    [void]$flashTitles.Add($flashText)
+                    $flashLast = $flashText
+                }
+            }
+            Start-Sleep -Milliseconds 15
+        }
+        if (-not $flashProcess.HasExited) { Stop-Process -Id $flashProcess.Id -Force }
+
+        # 1x1 是还没拿到任何画面时的占位，不参与比较
+        $flashPercents = [System.Collections.ArrayList]::new()
+        foreach ($entry in $flashTitles) {
+            if ($entry -match "(\d+)x(\d+)" -and $matches[1] -ne "1" -and
+                $entry -match "(\d+)%") {
+                [void]$flashPercents.Add([int]$matches[1])
+            }
+        }
+        if ($flashPercents.Count -lt 1) {
+            throw "Zoom-command regression failed: the SVG never reported a zoom percentage. titles=$($flashTitles -join ' | ')"
+        }
+        # 用 @() 包起来：Sort-Object -Unique 只剩一项时返回的是标量，没有 Count
+        $distinctPercents = @($flashPercents | Sort-Object -Unique)
+        if ($distinctPercents.Count -gt 1) {
+            throw ("Zoom-command regression failed: the picture jumped while loading " +
+                "(zoom went $($distinctPercents -join ' -> ')). titles=$($flashTitles -join ' | ')")
+        }
+        Write-Host "PASS the picture does not jump when the preview is replaced by the real image."
+    }
+
+    # ── 加载期间标题报的是真图尺寸，不是缩略图的 ─────────────────────────
+    $bigImage = Join-Path $repoRoot "test\bigimage\moon_81M.png"
+    if (Test-Path -LiteralPath $bigImage -PathType Leaf) {
+        $sizeProcess = Start-Process -FilePath $zoomViewer -ArgumentList ('"' + $bigImage + '"') -PassThru
+        $sizeWatch = [Diagnostics.Stopwatch]::StartNew()
+        $firstRealTitle = ""
+        while ($sizeWatch.Elapsed.TotalSeconds -lt 6 -and $firstRealTitle -eq "") {
+            $sizeProcess.Refresh()
+            if (-not $sizeProcess.HasExited -and $sizeProcess.MainWindowHandle -ne 0) {
+                $sizeTitle = New-Object Text.StringBuilder 1024
+                [void][YeImageViewerTestNativeV1365]::GetWindowText(
+                    [IntPtr]$sizeProcess.MainWindowHandle, $sizeTitle, $sizeTitle.Capacity)
+                $sizeText = $sizeTitle.ToString()
+                if ($sizeText -match "(\d+)x(\d+)" -and $matches[1] -ne "1") {
+                    $firstRealTitle = $sizeText
+                }
+            }
+            Start-Sleep -Milliseconds 15
+        }
+        if (-not $sizeProcess.HasExited) { Stop-Process -Id $sizeProcess.Id -Force }
+        if ($firstRealTitle -notmatch "9000x9000") {
+            throw ("Zoom-command regression failed: while loading, the title reported the " +
+                "thumbnail size instead of the real one. title=$firstRealTitle")
+        }
+        Write-Host "PASS the title reports the real pixel size from the very first frame."
+    }
+}
+finally {
+    if ($null -ne $zoomProcess -and -not $zoomProcess.HasExited) {
+        Stop-Process -Id $zoomProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    Get-Process -Name "YeImageViewer" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -eq $zoomViewer } | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 300
+    Remove-Item -LiteralPath $zoomTestDirectory -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "Checking the PNG fast path against OpenCV..."
 # 大 PNG 走的是自己写的快路径（整块解压 + 一趟去滤波并写进 Mat），
 # 解错了不会崩也不会报错，只会把图画歪。所以拿同一批文件两条路都解一遍，
