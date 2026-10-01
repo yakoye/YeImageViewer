@@ -1,4 +1,5 @@
 #include "LRU.h"
+#include "PrintAdjustments.h"
 #include "PrintLayout.h"
 #include "SVGPreprocessor.h"
 #include "YeThumbnailProviderGuids.h"
@@ -3496,6 +3497,237 @@ void expectThumbnailProvider(const std::string& dllPath, const std::vector<std::
         module.canUnloadNow() == S_OK);
 }
 
+// ===== 打印的逐像素处理（PrintAdjustments.h）=====
+// 这类错只有纸出来才看得见：界面不报错，预览图又小，偏一点根本看不出来。
+// 以前 100% 的对比度配 50% 的亮度会让暗部算出 NaN（pow(负数, 非整数)），
+// 转成字节的结果是平台说了算的——这里把每条边界都钉住。
+
+void expectPrintAdjustments() {
+    using namespace PrintAdjustments;
+
+    // 100 / 100 是「不增不减」，必须一个像素都不动
+    {
+        const double contrast = contrastFactor(100);
+        const double exponent = brightnessExponent(100);
+        bool identity = true;
+        for (int sample = 0; sample < 256; ++sample) {
+            if (adjustSample(static_cast<uint8_t>(sample), contrast, exponent) != sample) {
+                identity = false;
+                break;
+            }
+        }
+        passOrFail("brightness 100 and contrast 100 leave every sample untouched", identity);
+    }
+
+    // 扫一遍全部 201x201 种滑块组合：系数要有限，曲线要单调不降。
+    // 曲线不单调意味着某一段被算坏了——以前暗部会经过 pow(负数, 非整数) = NaN，
+    // 虽然 NaN 转整数正好也落到 0、结果看起来没变，但那是靠运气，换平台就不一定。
+    // 现在先夹到 0~255 再做伽马，整条曲线都有定义。
+    {
+        bool healthy = true;
+        for (uint32_t brightness = 0; brightness <= 200 && healthy; ++brightness) {
+            for (uint32_t contrast = 0; contrast <= 200 && healthy; ++contrast) {
+                const double contrastValue = contrastFactor(contrast);
+                const double exponent = brightnessExponent(brightness);
+                if (!std::isfinite(contrastValue) || !std::isfinite(exponent)) {
+                    healthy = false;
+                    break;
+                }
+                uint8_t previous = adjustSample(0, contrastValue, exponent);
+                for (int sample = 1; sample < 256; ++sample) {
+                    const uint8_t current = adjustSample(static_cast<uint8_t>(sample),
+                        contrastValue, exponent);
+                    if (current < previous) {
+                        healthy = false;
+                        break;
+                    }
+                    previous = current;
+                }
+            }
+        }
+        passOrFail("every slider combination yields a finite, non-decreasing curve", healthy);
+    }
+
+    // 对比度拉满、亮度压低，这正是以前会算出 NaN 的那一格。
+    // 纯黑要留在黑，纯白要留在白，中灰不能塌成 0。
+    {
+        const double contrast = contrastFactor(200);
+        const double exponent = brightnessExponent(50);
+        const uint8_t black = adjustSample(0, contrast, exponent);
+        const uint8_t white = adjustSample(255, contrast, exponent);
+        const uint8_t light = adjustSample(200, contrast, exponent);
+        passOrFail("maximum contrast with low brightness keeps black black and white white",
+            black == 0 && white == 255 && light > 0);
+    }
+
+    // 对比度为 0 时整张图塌成中灰（128 对应的那个值），这是定义行为
+    {
+        const double contrast = contrastFactor(0);
+        const double exponent = brightnessExponent(100);
+        const uint8_t dark = adjustSample(0, contrast, exponent);
+        const uint8_t bright = adjustSample(255, contrast, exponent);
+        passOrFail("zero contrast collapses every sample to the same value", dark == bright);
+    }
+
+    // 亮度在合法区间内单调：数值大的输入出来不会更暗
+    {
+        bool monotonic = true;
+        for (uint32_t brightness : { 1u, 50u, 100u, 150u, 199u }) {
+            const double contrast = contrastFactor(100);
+            const double exponent = brightnessExponent(brightness);
+            for (int sample = 1; sample < 256 && monotonic; ++sample) {
+                if (adjustSample(static_cast<uint8_t>(sample), contrast, exponent) <
+                    adjustSample(static_cast<uint8_t>(sample - 1), contrast, exponent)) {
+                    monotonic = false;
+                }
+            }
+        }
+        passOrFail("the brightness curve never makes a lighter sample darker", monotonic);
+    }
+
+    // 亮度越高整体越亮
+    {
+        const double contrast = contrastFactor(100);
+        const uint8_t dim = adjustSample(128, contrast, brightnessExponent(50));
+        const uint8_t normal = adjustSample(128, contrast, brightnessExponent(100));
+        const uint8_t bright = adjustSample(128, contrast, brightnessExponent(150));
+        passOrFail("raising the brightness slider brightens mid gray", dim < normal && normal < bright);
+    }
+
+    // 越界参数按文档回落（亮度夹到 1~199，对比度夹到 0~200），不能除零也不能爆
+    passOrFail("out-of-range sliders fall back to the clamped ends",
+        brightnessExponent(0) == brightnessExponent(1) &&
+        brightnessExponent(1000) == brightnessExponent(199) &&
+        contrastFactor(1000) == contrastFactor(200));
+
+    // 整块像素：alpha 不能被动
+    {
+        std::vector<uint8_t> pixels{
+            10, 20, 30, 77,
+            200, 210, 220, 88
+        };
+        applyBrightnessContrast(pixels.data(), 2, 1, 4, 8, 180, 160);
+        passOrFail("brightness and contrast leave the alpha channel alone",
+            pixels[3] == 77 && pixels[7] == 88);
+    }
+
+    // 带步长（Mat 的 ROI 或者有行填充）时不能越过行尾去改别人的数据
+    {
+        constexpr int width = 2;
+        constexpr int height = 2;
+        constexpr size_t stride = 10;      // 每行 6 字节有效 + 4 字节填充
+        std::vector<uint8_t> pixels(stride * height, 0xAA);
+        applyBrightnessContrast(pixels.data(), width, height, 3, stride, 1, 200);
+        bool paddingIntact = true;
+        for (int y = 0; y < height; ++y) {
+            for (size_t offset = width * 3; offset < stride; ++offset) {
+                if (pixels[y * stride + offset] != 0xAA) {
+                    paddingIntact = false;
+                }
+            }
+        }
+        passOrFail("row padding is not touched", paddingIntact);
+    }
+
+    // 烂输入不能崩
+    {
+        std::vector<uint8_t> pixels(12, 128);
+        applyBrightnessContrast(nullptr, 2, 2, 3, 6, 100, 100);
+        applyBrightnessContrast(pixels.data(), 0, 2, 3, 6, 100, 100);
+        applyBrightnessContrast(pixels.data(), 2, 0, 3, 6, 100, 100);
+        applyBrightnessContrast(pixels.data(), 2, 2, 1, 2, 100, 100);   // 单通道不处理
+        passOrFail("degenerate buffers are ignored instead of crashing", pixels[0] == 128);
+    }
+
+    // 反相
+    {
+        std::vector<uint8_t> pixels{ 0, 128, 255, 40 };
+        invertColors(pixels.data(), 1, 1, 4, 4);
+        passOrFail("inverting flips BGR and keeps alpha",
+            pixels[0] == 255 && pixels[1] == 127 && pixels[2] == 0 && pixels[3] == 40);
+    }
+    {
+        std::vector<uint8_t> pixels{ 1, 2, 3 };
+        invertColors(pixels.data(), 1, 1, 3, 3);
+        invertColors(pixels.data(), 1, 1, 3, 3);
+        passOrFail("inverting twice returns the original",
+            pixels[0] == 1 && pixels[1] == 2 && pixels[2] == 3);
+    }
+
+    // 抖动：输出只能是 0 或 255
+    {
+        constexpr int width = 32;
+        constexpr int height = 32;
+        std::vector<uint8_t> gray(static_cast<size_t>(width) * height);
+        for (int y = 0; y < height; ++y)
+            for (int x = 0; x < width; ++x)
+                gray[static_cast<size_t>(y) * width + x] = static_cast<uint8_t>(x * 255 / (width - 1));
+
+        floydSteinbergDither(gray.data(), width, height, width);
+        const bool binary = std::all_of(gray.begin(), gray.end(),
+            [](uint8_t value) { return value == 0 || value == 255; });
+        passOrFail("dithering leaves only pure black and pure white", binary);
+    }
+
+    // 抖动要保住整体明暗：一张 50% 灰应当出来大约一半黑一半白
+    {
+        constexpr int width = 64;
+        constexpr int height = 64;
+        std::vector<uint8_t> gray(static_cast<size_t>(width) * height, 128);
+        floydSteinbergDither(gray.data(), width, height, width);
+        const size_t white = static_cast<size_t>(std::count(gray.begin(), gray.end(), 255));
+        const double ratio = static_cast<double>(white) / gray.size();
+        passOrFail("dithering a 50% gray keeps about half the dots white",
+            ratio > 0.35 && ratio < 0.65);
+    }
+
+    // 纯黑和纯白不该被抖出噪点
+    {
+        constexpr int width = 16;
+        constexpr int height = 16;
+        std::vector<uint8_t> black(static_cast<size_t>(width) * height, 0);
+        std::vector<uint8_t> white(static_cast<size_t>(width) * height, 255);
+        floydSteinbergDither(black.data(), width, height, width);
+        floydSteinbergDither(white.data(), width, height, width);
+        passOrFail("dithering a flat black or white image adds no speckles",
+            std::all_of(black.begin(), black.end(), [](uint8_t v) { return v == 0; }) &&
+            std::all_of(white.begin(), white.end(), [](uint8_t v) { return v == 255; }));
+    }
+
+    // 抖动也要尊重步长，不能踩到行填充
+    {
+        constexpr int width = 8;
+        constexpr int height = 8;
+        constexpr size_t stride = 12;
+        std::vector<uint8_t> gray(stride * height, 0x5A);
+        for (int y = 0; y < height; ++y)
+            for (int x = 0; x < width; ++x)
+                gray[y * stride + x] = 128;
+
+        floydSteinbergDither(gray.data(), width, height, stride);
+        bool paddingIntact = true;
+        for (int y = 0; y < height; ++y)
+            for (size_t offset = width; offset < stride; ++offset)
+                if (gray[y * stride + offset] != 0x5A)
+                    paddingIntact = false;
+        passOrFail("dithering respects the row stride", paddingIntact);
+    }
+
+    // 单像素、单行、单列都不能越界
+    {
+        std::vector<uint8_t> one{ 130 };
+        floydSteinbergDither(one.data(), 1, 1, 1);
+        std::vector<uint8_t> row(5, 130);
+        floydSteinbergDither(row.data(), 5, 1, 5);
+        std::vector<uint8_t> column(5, 130);
+        floydSteinbergDither(column.data(), 1, 5, 1);
+        floydSteinbergDither(nullptr, 4, 4, 4);
+        passOrFail("dithering handles single pixels, rows, and columns",
+            one[0] == 255 &&
+            std::all_of(row.begin(), row.end(), [](uint8_t v) { return v == 0 || v == 255; }) &&
+            std::all_of(column.begin(), column.end(), [](uint8_t v) { return v == 0 || v == 255; }));
+    }
+}
 }
 
 int main(int argc, char* argv[]) {
@@ -3551,6 +3783,7 @@ int main(int argc, char* argv[]) {
     expectRenamePolicy();
     expectFileAssociationNaming();
     expectPrintLayout();
+    expectPrintAdjustments();
     expectSvgPreprocessor();
     expectLruCache();
     if (argc >= 2) {

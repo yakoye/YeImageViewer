@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MatWindow.h"
+#include "PrintAdjustments.h"
 #include "PrintLayout.h"
 #include "TextDrawer.h"
 
@@ -244,43 +245,14 @@ public:
         return hBitmap;
     }
 
+    // 算法在 PrintAdjustments.h，那边有单元测试。这里只负责把 Mat 的数据
+    // 指针和步长交过去。
     static void adjustBrightnessContrast(cv::Mat& src, uint32_t brightnessInt, uint32_t contrastInt) {
         if (src.empty() || src.type() != CV_8UC3)
             return;
 
-        // 取值不能极端
-        if (brightnessInt < 1)
-            brightnessInt = 1;
-        else if (brightnessInt > 199)
-            brightnessInt = 199;
-
-        if (contrastInt > 200)
-            contrastInt = 200;
-
-        // brightness: 0 ~ 200 映射到 0 ~ 2.0
-        // contrast:   0 ~ 200 映射到 0 ~ 2.0
-        double brightness = brightnessInt / 100.0;
-        double contrast = contrastInt / 100.0;
-
-        brightness = pow(2.0 - brightness, 3); // 增大对比度比例
-        contrast = pow(contrast, 3); // 增大对比度比例
-
-        for (int y = 0; y < src.rows; y++) {
-            for (int x = 0; x < src.cols; x++) {
-                cv::Vec3b pixel = src.at<cv::Vec3b>(y, x);
-                for (int c = 0; c < 3; c++) {
-                    // 以128为中心进行对比度调整
-                    double adjusted = (pixel[c] - 128.0) * contrast + 128.0;
-
-                    // 添加亮度偏移
-                    adjusted = pow(adjusted / 255.0, brightness) * 255;
-
-                    // 确保值在0-255范围内
-                    pixel[c] = cv::saturate_cast<uchar>(adjusted);
-                }
-                src.at<cv::Vec3b>(y, x) = pixel;
-            }
-        }
+        PrintAdjustments::applyBrightnessContrast(src.data, src.cols, src.rows, 3,
+            src.step, brightnessInt, contrastInt);
     }
 
     // 图像处理 调整对比度 彩色 黑白
@@ -303,51 +275,16 @@ public:
             floydSteinbergDithering(image);
 
         if (invertColors) {
-            cv::bitwise_not(image, image);
+            // 走 PrintAdjustments 那一份：出图用的和测过的是同一段代码
+            PrintAdjustments::invertColors(image.data, image.cols, image.rows,
+                image.channels(), image.step);
         }
     }
 
-    // 误差扩散抖动算法
+    // 误差扩散抖动算法。算法在 PrintAdjustments.h，那边有单元测试。
     static void floydSteinbergDithering(cv::Mat& image) {
         cv::cvtColor(image, image, cv::COLOR_BGR2GRAY);
-
-        int height = image.rows;
-        int width = image.cols;
-
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                // 获取当前像素值
-                uchar oldVal = image.at<uchar>(y, x);
-                // 二值化：大于阈值设为255（白），否则0（黑）
-                uchar newVal = (oldVal < 128) ? 0 : 255;
-                image.at<uchar>(y, x) = newVal;
-
-                // 计算误差
-                int error = oldVal - newVal;
-
-                // 将误差按比例分配到周围像素（Floyd-Steinberg权重）
-                if (x + 1 < width) {
-                    image.at<uchar>(y, x + 1) = cv::saturate_cast<uchar>(
-                        image.at<uchar>(y, x + 1) + error * 7 / 16
-                    );
-                }
-                if (y + 1 < height) {
-                    if (x - 1 >= 0) {
-                        image.at<uchar>(y + 1, x - 1) = cv::saturate_cast<uchar>(
-                            image.at<uchar>(y + 1, x - 1) + error * 3 / 16
-                        );
-                    }
-                    image.at<uchar>(y + 1, x) = cv::saturate_cast<uchar>(
-                        image.at<uchar>(y + 1, x) + error * 5 / 16
-                    );
-                    if (x + 1 < width) {
-                        image.at<uchar>(y + 1, x + 1) = cv::saturate_cast<uchar>(
-                            image.at<uchar>(y + 1, x + 1) + error * 1 / 16
-                        );
-                    }
-                }
-            }
-        }
+        PrintAdjustments::floydSteinbergDither(image.data, image.cols, image.rows, image.step);
         cv::cvtColor(image, image, cv::COLOR_GRAY2BGR);
     }
 
