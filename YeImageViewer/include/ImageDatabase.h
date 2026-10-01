@@ -276,6 +276,11 @@ public:
     }
 
     ~ImageDatabase() override {
+        // 必须先停 LRU 的预读线程：它跑的是本类的 loader()，用的是本类的成员
+        // （colorManager、错误提示图等）。等基类析构才停就晚了——那时派生部分
+        // 已经销毁，在途的那一次解码正访问已释放的内存。
+        stopPreloadWorker();
+
         previewStop = true;
         previewCv.notify_all();
         if (previewThread.joinable())

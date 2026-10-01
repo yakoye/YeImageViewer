@@ -1,3 +1,5 @@
+#include "LRU.h"
+#include "FileAssociationNaming.h"
 #include "MotionPhotoUtils.h"
 #include "MonitorPlacement.h"
 #include "BackgroundRenderer.h"
@@ -44,6 +46,10 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <atomic>
+#include <functional>
+#include <mutex>
+#include <thread>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -2463,6 +2469,335 @@ void expectDrawioTextFallback(std::string_view path) {
         !enlarged.empty() && nativeTextDifferences > enlarged.bgra.size() / 100);
 }
 
+// ===== 图片缓存（LRU.h）=====
+// 这是整个看图流程的中枢：当前图、预读、翻页、删除后失效都压在它身上。
+// 它自带一个后台预读线程，线程跑的是派生类的 loader()，所以除了容量/淘汰
+// 这些常规语义，还要盯住「生命周期」和「在途任务作废」两件事。
+
+class CountingCache : public LRU<int, std::string> {
+public:
+    std::atomic<int> loadCount{ 0 };
+    std::atomic<int> delayMs{ 0 };
+
+    ~CountingCache() override { stopPreloadWorker(); }
+
+    std::string loader(const int& key) override {
+        const int wait = delayMs.load();
+        if (wait > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(wait));
+        ++loadCount;
+        {
+            std::lock_guard<std::mutex> lock(orderMutex);
+            loadOrder.push_back(key);
+        }
+        return "v" + std::to_string(key);
+    }
+
+    std::vector<int> takeLoadOrder() {
+        std::lock_guard<std::mutex> lock(orderMutex);
+        return loadOrder;
+    }
+
+private:
+    std::mutex orderMutex;
+    std::vector<int> loadOrder;
+};
+
+// 等到谓词成立，最多等 timeoutMs。用轮询而不是固定 sleep：机器忙的时候
+// 固定等待会假失败，等够了又白等。
+bool waitUntil(const std::function<bool()>& ready, int timeoutMs = 3000) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (ready())
+            return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return ready();
+}
+
+// 析构顺序的探针：成员的析构发生在派生类析构函数体「之后」，所以这个成员
+// 看到的必须已经是「预读线程停了」的状态。谁把 stopPreloadWorker() 从派生类的
+// 析构里删掉，这一条立刻变红。
+struct WorkerStoppedProbe {
+    std::function<bool()> workerRunning;
+    bool* violated = nullptr;
+
+    ~WorkerStoppedProbe() {
+        if (workerRunning && workerRunning() && violated != nullptr)
+            *violated = true;
+    }
+};
+
+class ShutdownOrderCache : public LRU<int, std::string> {
+public:
+    explicit ShutdownOrderCache(bool* violated) {
+        probe.workerRunning = [this] { return preloadWorkerRunning(); };
+        probe.violated = violated;
+    }
+
+    ~ShutdownOrderCache() override { stopPreloadWorker(); }
+
+    std::string loader(const int& key) override {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        return "v" + std::to_string(key);
+    }
+
+private:
+    WorkerStoppedProbe probe;
+};
+
+void expectLruCache() {
+    // 存进去就能原样取出来
+    {
+        CountingCache cache;
+        cache.put(1, "one");
+        const auto hit = cache.tryGetPtr(1);
+        passOrFail("LRU stores and returns a value", hit && *hit == "one" && cache.size() == 1);
+        passOrFail("LRU reports a miss without loading", cache.tryGetPtr(2) == nullptr && cache.loadCount == 0);
+    }
+
+    // 超出容量淘汰最久没用的那个
+    {
+        CountingCache cache;
+        cache.setCapacity(3);
+        for (int key = 1; key <= 4; ++key)
+            cache.put(key, "v" + std::to_string(key));
+        passOrFail("LRU evicts the least recently used entry",
+            cache.size() == 3 && cache.tryGetPtr(1) == nullptr && cache.tryGetPtr(4) != nullptr);
+    }
+
+    // 容量下限 3、上限 4096，越界一律回落到 3。
+    // 下限不是随手定的：翻页时同时要留住「上一张、当前、下一张」，少于 3 会自己打自己。
+    {
+        CountingCache cache;
+        cache.setCapacity(2);
+        for (int key = 1; key <= 5; ++key)
+            cache.put(key, "x");
+        passOrFail("LRU clamps a too-small capacity up to 3", cache.size() == 3);
+    }
+    {
+        CountingCache cache;
+        cache.setCapacity(99999);
+        for (int key = 1; key <= 5; ++key)
+            cache.put(key, "x");
+        passOrFail("LRU clamps an absurd capacity back to 3", cache.size() == 3);
+    }
+
+    // 调小容量要立刻裁掉多出来的，不能等下一次写入才裁
+    {
+        CountingCache cache;
+        cache.setCapacity(10);
+        for (int key = 1; key <= 8; ++key)
+            cache.put(key, "x");
+        cache.setCapacity(3);
+        passOrFail("LRU trims immediately when the capacity shrinks", cache.size() == 3);
+    }
+
+    // 命中要刷新「最近使用」，否则正在看的那张图会被预读挤掉
+    {
+        CountingCache cache;
+        cache.setCapacity(3);
+        cache.put(1, "a");
+        cache.put(2, "b");
+        cache.put(3, "c");
+        const auto refreshed = cache.getDataPtr(1);   // 1 重新变成最新
+        cache.put(4, "d");                            // 该淘汰的是 2
+        passOrFail("a cache hit refreshes recency",
+            refreshed != nullptr && cache.tryGetPtr(1) != nullptr && cache.tryGetPtr(2) == nullptr);
+    }
+
+    // 同一个 key 再写一次是替换，不是新增
+    {
+        CountingCache cache;
+        cache.put(7, "old");
+        cache.put(7, "new");
+        const auto hit = cache.tryGetPtr(7);
+        passOrFail("writing the same key replaces the value", cache.size() == 1 && hit && *hit == "new");
+    }
+
+    // 缺的 key 由 getSafePtr 触发解码并等到结果
+    {
+        CountingCache cache;
+        const auto loaded = cache.getSafePtr(42);
+        passOrFail("getSafePtr loads a missing key",
+            loaded && *loaded == "v42" && cache.loadCount == 1 && cache.tryGetPtr(42) != nullptr);
+    }
+
+    // 命中不该再解一次
+    {
+        CountingCache cache;
+        cache.put(5, "cached");
+        const auto hit = cache.getSafePtr(5);
+        passOrFail("getSafePtr does not reload a cached key", hit && *hit == "cached" && cache.loadCount == 0);
+    }
+
+    // tryGetPtr 绝不等待：首次打开大图时主线程靠它先把窗口显示出来
+    {
+        CountingCache cache;
+        cache.delayMs = 400;
+        cache.requestPreload(3);
+        const auto start = std::chrono::steady_clock::now();
+        const auto missing = cache.tryGetPtr(3);
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        passOrFail("tryGetPtr never waits for a decode in flight", missing == nullptr && elapsedMs < 100);
+        passOrFail("the in-flight decode still lands in the cache",
+            waitUntil([&] { return cache.tryGetPtr(3) != nullptr; }));
+    }
+
+    // 同一个 key 排队期间重复请求只解一次
+    {
+        CountingCache cache;
+        cache.delayMs = 150;
+        for (int repeat = 0; repeat < 5; ++repeat)
+            cache.requestPreload(9);
+        passOrFail("a key queued twice is decoded once",
+            waitUntil([&] { return cache.tryGetPtr(9) != nullptr; }) && cache.loadCount == 1);
+    }
+
+    // 当前要显示的那张插队首：快速翻页时它不能排在旧的预读任务后面
+    {
+        CountingCache cache;
+        cache.setCapacity(10);
+        cache.delayMs = 120;
+        cache.requestPreloadBatch({ 1, 2, 3 });               // 工作线程开始解 1
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        cache.requestPreload(99, true);                       // 队列变成 [99, 2, 3]
+        const bool done = waitUntil([&] { return cache.tryGetPtr(3) != nullptr; }, 5000);
+        const auto order = cache.takeLoadOrder();
+        passOrFail("an urgent request jumps the preload queue",
+            done && order.size() == 4 && order[0] == 1 && order[1] == 99);
+    }
+
+    // 批量预读把整批都解出来
+    {
+        CountingCache cache;
+        cache.setCapacity(10);
+        cache.requestPreloadBatch({ 11, 12, 13 });
+        passOrFail("a preload batch decodes every key",
+            waitUntil([&] { return cache.size() == 3; }) && cache.loadCount == 3);
+    }
+
+    // 翻页那一对：当前图要等到，下一张只预读
+    {
+        CountingCache cache;
+        cache.setCapacity(10);
+        const auto current = cache.getSafePtr(20, 21);
+        passOrFail("getSafePtr returns the current image and preloads the next",
+            current && *current == "v20" && waitUntil([&] { return cache.tryGetPtr(21) != nullptr; }));
+    }
+
+    // 删除/重命名之后必须失效，否则之后出现的同名文件会命中过期内容
+    {
+        CountingCache cache;
+        cache.put(4, "stale");
+        cache.erase(4);
+        passOrFail("erase drops the cached entry", cache.tryGetPtr(4) == nullptr && cache.size() == 0);
+    }
+
+    // erase 还要作废在途的那次解码，否则它会把刚删掉的内容又写回来
+    {
+        CountingCache cache;
+        cache.delayMs = 250;
+        cache.requestPreload(6);
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));  // 确保线程已经进了 loader
+        cache.erase(6);
+        std::this_thread::sleep_for(std::chrono::milliseconds(400)); // 等那次解码跑完
+        passOrFail("erase invalidates a decode already in flight",
+            cache.loadCount == 1 && cache.tryGetPtr(6) == nullptr);
+    }
+
+    // clear 清空缓存并丢掉排队的任务（启动那一次要靠 keepWarmCache 绕开它）
+    {
+        CountingCache cache;
+        cache.setCapacity(10);
+        cache.delayMs = 200;
+        cache.put(1, "a");
+        cache.requestPreloadBatch({ 31, 32, 33 });
+        cache.clear();
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        passOrFail("clear empties the cache and cancels queued preloads",
+            cache.size() == 0 && cache.loadCount <= 1);
+    }
+
+    // 关键的生命周期约定：预读线程跑的是派生类的 loader()，用的是派生类的成员。
+    // 停线程必须发生在派生部分销毁之前，否则在途那次解码就在访问已释放的内存
+    // ——打开大图后立刻退出程序曾经就是这样崩的。
+    {
+        bool violated = false;
+        {
+            ShutdownOrderCache cache(&violated);
+            cache.requestPreload(1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        }
+        passOrFail("the preload worker stops before the derived members die", !violated);
+    }
+
+    // 重复停线程无害：基类析构里还会再调一次
+    {
+        CountingCache cache;
+        cache.stopPreloadWorker();
+        cache.stopPreloadWorker();
+        cache.put(1, "a");
+        passOrFail("stopping the preload worker twice is harmless",
+            !cache.preloadWorkerRunning() && cache.tryGetPtr(1) != nullptr);
+    }
+
+    // 线程停了之后排队的请求不再解码，但缓存照样可读可写
+    {
+        CountingCache cache;
+        cache.stopPreloadWorker();
+        cache.requestPreload(8);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        passOrFail("no key is decoded after the worker stops",
+            cache.loadCount == 0 && cache.tryGetPtr(8) == nullptr);
+    }
+}
+
+// ===== 文件关联的注册表键名（FileAssociationNaming.h）=====
+// 写错一个字就是「关联了但右键里没有」或者把别人的键覆盖掉，而且出错时
+// 很难从界面上看出来，所以逐条钉死。
+
+void expectFileAssociationNaming() {
+    using namespace FileAssociationNaming;
+
+    passOrFail("extension normalization strips the dot and lowercases",
+        NormalizeExtension(L".PNG") == L"png" && NormalizeExtension(L"JpEg") == L"jpeg");
+    passOrFail("extension normalization strips repeated dots",
+        NormalizeExtension(L"...tif") == L"tif");
+    passOrFail("extension normalization tolerates an empty input",
+        NormalizeExtension(L"").empty() && NormalizeExtension(L".").empty());
+
+    passOrFail("the ProgID is per extension",
+        BuildProgId(L".PNG") == L"YeImageViewer.ImageFile.png" &&
+        BuildProgId(L"webp") == L"YeImageViewer.ImageFile.webp");
+    passOrFail("the type name carries the extension",
+        BuildTypeName(L".Jxl") == L"YeImageViewer jxl 图像");
+    passOrFail("the type name falls back when there is no extension",
+        BuildTypeName(L"") == L"YeImageViewer 图像");
+
+    // 默认程序写在扩展名键的默认值上，「打开方式」列表读的是它下面的
+    // OpenWithProgids——两回事，键名写串了就会动到用户的默认程序。
+    passOrFail("the extension key lives under Software Classes",
+        BuildExtensionKey(L"PNG") == L"Software\\Classes\\.png");
+    passOrFail("the ProgID key lives under Software Classes",
+        BuildProgIdKey(L"png") == L"Software\\Classes\\YeImageViewer.ImageFile.png");
+    passOrFail("the open-with list hangs off the extension key",
+        BuildOpenWithProgidsKey(L".png") == L"Software\\Classes\\.png\\OpenWithProgids");
+
+    // Windows 按 exe 的文件名在 Applications 下找程序，路径不参与
+    passOrFail("the application key uses the executable file name only",
+        BuildApplicationKey(L"D:\\tools\\YeImageViewer.exe") ==
+            L"Software\\Classes\\Applications\\YeImageViewer.exe");
+    passOrFail("the application key accepts forward slashes",
+        BuildApplicationKey(L"D:/tools/YeImageViewer.exe") ==
+            L"Software\\Classes\\Applications\\YeImageViewer.exe");
+    passOrFail("a bare executable name needs no splitting",
+        BuildApplicationKey(L"YeImageViewer.exe") ==
+            L"Software\\Classes\\Applications\\YeImageViewer.exe");
+    passOrFail("the executable file name survives spaces in the path",
+        ExecutableFileName(L"C:\\Program Files\\Ye Image\\YeImageViewer.exe") == L"YeImageViewer.exe");
+}
 }
 
 int main(int argc, char* argv[]) {
@@ -2512,6 +2847,8 @@ int main(int argc, char* argv[]) {
     expectExternalEditorConfig();
     expectRotationPersistence();
     expectRenamePolicy();
+    expectFileAssociationNaming();
+    expectLruCache();
     if (argc >= 2) {
         expectRealHdrChannelOrder(argv[1]);
     }
