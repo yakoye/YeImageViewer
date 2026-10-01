@@ -2,6 +2,8 @@
 
 #include "jarkUtils.h"
 
+#include "PrintLayout.h"
+
 namespace {
 
 struct FullScreenState {
@@ -307,12 +309,17 @@ bool jarkUtils::copyToClipboard(wstring_view text) {
 }
 
 bool jarkUtils::limitSizeTo16K(cv::Mat& image) {
-    // 检查并缩放图像（保持宽高比）
-    if (image.cols > 16384 || image.rows > 16384) {
-        double scale = std::min(16384.0 / image.cols, 16384.0 / image.rows);
-        int newWidth = static_cast<int>(image.cols * scale);
-        int newHeight = static_cast<int>(image.rows * scale);
-        cv::resize(image, image, cv::Size(newWidth, newHeight), 0, 0, cv::INTER_LINEAR);
+    if (image.empty())
+        return false;
+
+    // 边长由 PrintLayout::cappedSize 算，它保证至少 1 像素：极端长宽比下
+    // 直接用缩放系数会把短边算成 0，接下来的 cv::resize 要么抛要么给出空图。
+    const auto capped = PrintLayout::cappedSize(image.cols, image.rows, 16384);
+    if (!capped.valid)
+        return false;
+
+    if (capped.width != image.cols || capped.height != image.rows) {
+        cv::resize(image, image, cv::Size(capped.width, capped.height), 0, 0, cv::INTER_LINEAR);
         MessageBoxW(nullptr, std::format(L"{} {}x{}", getUIStringW(16), image.cols, image.rows).c_str(), getUIStringW(15), MB_OK | MB_ICONWARNING);
     }
     return true;

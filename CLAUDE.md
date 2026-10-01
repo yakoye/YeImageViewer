@@ -129,6 +129,11 @@ RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 3
   `scripts/verify-source-invariant-checks.ps1`：逐条制造该抓的错误，确认真会报错，
   跑完按原字节还原（不用 `git checkout --`，那会连未提交的改动一起抹掉）。
   新增一条检查就在它里面加一条对应的破坏。
+- 打印路径上的尺寸都走 `PrintLayout.h`（有配套单元测试），它保证算出来的边长至少 1 像素、
+  排好的矩形完整落在页内。这里犯过一个只在极端长宽比下才露出来的错：按比例缩放只算缩放
+  系数、不看算出来的边长，一张 10000x1 的图缩到 800 宽，高就成了 `round(1 * 0.08) = 0`，
+  预览窗口建不起来——点「打印」什么都不发生，也没有任何提示。`limitSizeTo16K` 是同一个毛病。
+  打印线程是 detach 的且没有 try/catch，这类退化尺寸一旦让 OpenCV 抛出来就是整个进程没了。
 - 查「打开一张图为什么慢」用 `YEIMAGEVIEWER_STARTUP_TRACE=<文件路径>` 环境变量（见 `StartupTrace.h`），会记下 CRT 静态初始化、建窗口、建 D3D 设备、解码、格式转换、色彩管理、首帧绘制各段的时刻。没设环境变量时一个字节都不写。
 - 建 D3D 设备要七十多毫秒，建窗口只要五毫秒。图片解码在 `onWindowCreated()` 里就派出去了，和建设备并行跑；启动那一次的 `initOpenFile` 要传 `keepWarmCache = true`，否则 `imgDB.clear()` 会把在途的解码作废。
 - 别再去给 libpng 的去滤波写 SIMD。做过一轮完整的：libpng 自带的 SSE2 只覆盖 3 和 4 字节像素（`intel/intel_init.c` 里 `if (bpp == 3) ... else if (bpp == 4)`），16 位图是 6 或 8 字节像素，确实掉回标量。补齐 6/8 字节的 SSE2 实现之后，自检确认结果与规范逐字节一致，解码耗时却一点没变——A/B 各跑四轮：原版 1506/1513/1513/1523 ms，SIMD 版 1512/1524/1594/1608 ms。

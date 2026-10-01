@@ -2687,4 +2687,139 @@ finally {
     }
 }
 
+Write-Host "Checking the print preview on extreme aspect ratios..."
+# 打印预览的缩放以前只算缩放系数，不管算出来的边长：一张 10000x1 的图缩到 800 宽，
+# 高就成了 round(1 * 0.08) = 0，预览窗口压根建不起来——点「打印」什么都不发生，
+# 也没有任何提示。单元测试盯住了算法（PrintLayout），这里盯住真窗口真的开得起来。
+#
+# 顺带把超过 16384 的那条路也盯上：那条路会先弹一个「尺寸过大，已缩小到 ...」的提示框，
+# 提示框会挡住预览线程，关掉之后预览才出来。少了这一步测试会误判成「预览没开」。
+$printFixtureDir = Join-Path $repoRoot "test\corpus\13-dimensions"
+$printFixtures = @(
+    @{ Name = "101x99.png"; ExpectsOversizeWarning = $false },
+    @{ Name = "1x1.png"; ExpectsOversizeWarning = $false },
+    @{ Name = "10000x1.png"; ExpectsOversizeWarning = $false },
+    @{ Name = "1x10000.png"; ExpectsOversizeWarning = $false },
+    @{ Name = "19200x200.png"; ExpectsOversizeWarning = $true }
+)
+
+function Dismiss-ProcessDialog([int]$ProcessId) {
+    $dialog = [YeImageViewerTestNativeV1365]::FindProcessWindow([uint32]$ProcessId, "#32770")
+    if ($dialog -eq [IntPtr]::Zero) {
+        return $false
+    }
+    # WM_CLOSE。给 MessageBox 发 WM_COMMAND/IDOK 关不掉（实测提示框还在原地），
+    # 只有一个确定按钮的提示框收到 WM_CLOSE 就当按了确定。
+    [void][YeImageViewerTestNativeV1365]::PostMessage($dialog, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
+    return $true
+}
+
+foreach ($printFixture in $printFixtures) {
+    $printFixtureName = $printFixture.Name
+    $printFixturePath = Join-Path $printFixtureDir $printFixtureName
+    if (-not (Test-Path -LiteralPath $printFixturePath -PathType Leaf)) {
+        throw "Print regression failed: fixture is missing: $printFixturePath"
+    }
+
+    $printProcess = $null
+    try {
+        $printProcess = Start-Process -FilePath $viewer -ArgumentList ('"' + $printFixturePath + '"') -PassThru
+        $printDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        do {
+            Start-Sleep -Milliseconds 200
+            $printProcess.Refresh()
+        } while (-not $printProcess.HasExited -and $printProcess.MainWindowHandle -eq 0 -and
+            [DateTime]::UtcNow -lt $printDeadline)
+
+        if ($printProcess.HasExited -or $printProcess.MainWindowHandle -eq 0) {
+            throw "Print regression failed: the viewer did not open $printFixtureName."
+        }
+
+        # 右键菜单的「打印」= ContextMenu::printImage。预览窗口建在另一个线程上，
+        # 用 PostMessage 把命令丢进去就不管了，下面轮询等窗口出现。
+        [void][YeImageViewerTestNativeV1365]::PostMessage($printProcess.MainWindowHandle,
+            0x0111, [UIntPtr]1008, [IntPtr]::Zero)
+
+        $printerWindow = [IntPtr]::Zero
+        $sawOversizeWarning = $false
+        $printerDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        do {
+            Start-Sleep -Milliseconds 200
+            $printProcess.Refresh()
+            if ($printProcess.HasExited) { break }
+            if (Dismiss-ProcessDialog $printProcess.Id) {
+                $sawOversizeWarning = $true
+                continue
+            }
+            $printerWindow = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+                [uint32]$printProcess.Id, "YeImageViewerPrinterWnd")
+        } while ($printerWindow -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $printerDeadline)
+
+        if ($printProcess.HasExited) {
+            $printExitCode = [BitConverter]::ToUInt32(
+                [BitConverter]::GetBytes([int]$printProcess.ExitCode), 0)
+            throw ("Print regression failed: printing ${printFixtureName} killed the viewer " +
+                "(0x$('{0:X8}' -f $printExitCode)).")
+        }
+        if ($printerWindow -eq [IntPtr]::Zero) {
+            throw ("Print regression failed: no print preview opened for ${printFixtureName}. " +
+                "An extreme aspect ratio must still produce a preview at least one pixel thick, " +
+                "not a silent no-op.")
+        }
+        if ($printFixture.ExpectsOversizeWarning -and -not $sawOversizeWarning) {
+            throw ("Print regression failed: ${printFixtureName} is wider than the 16384 limit, " +
+                "so printing it should warn that the image was scaled down.")
+        }
+        if (-not $printFixture.ExpectsOversizeWarning -and $sawOversizeWarning) {
+            throw ("Print regression failed: ${printFixtureName} is within the 16384 limit, " +
+                "so printing it must not warn about resizing.")
+        }
+
+        # 预览窗口要真的在跑消息泵，而不只是有个句柄
+        $printerResult = [UIntPtr]::Zero
+        $printerAnswered = [YeImageViewerTestNativeV1365]::SendMessageTimeout($printerWindow,
+            0x0000, [UIntPtr]::Zero, [IntPtr]::Zero, 0x0002, 5000, [ref]$printerResult)
+        if ($printerAnswered -eq [IntPtr]::Zero) {
+            throw ("Print regression failed: the print preview for ${printFixtureName} does not " +
+                "answer messages.")
+        }
+
+        # Esc 关预览，主窗口要恢复可用
+        [void][YeImageViewerTestNativeV1365]::PostMessage($printerWindow, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+        $closeDeadline = [DateTime]::UtcNow.AddSeconds(8)
+        do {
+            Start-Sleep -Milliseconds 200
+            $printProcess.Refresh()
+            $printerWindow = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+                [uint32]$printProcess.Id, "YeImageViewerPrinterWnd")
+        } while ($printerWindow -ne [IntPtr]::Zero -and -not $printProcess.HasExited -and
+            [DateTime]::UtcNow -lt $closeDeadline)
+
+        if ($printerWindow -ne [IntPtr]::Zero) {
+            throw "Print regression failed: Escape did not close the print preview for ${printFixtureName}."
+        }
+        if ($printProcess.HasExited) {
+            throw ("Print regression failed: closing the print preview for ${printFixtureName} " +
+                "also closed the viewer.")
+        }
+        if (-not [YeImageViewerTestNativeV1365]::IsWindowEnabled($printProcess.MainWindowHandle)) {
+            throw ("Print regression failed: the viewer stayed disabled after the print preview " +
+                "for ${printFixtureName} closed.")
+        }
+    }
+    finally {
+        if ($printProcess -and -not $printProcess.HasExited) {
+            # 可能还有提示框挡着，先关掉它主窗口才收得到 WM_CLOSE
+            [void](Dismiss-ProcessDialog $printProcess.Id)
+            [void]$printProcess.CloseMainWindow()
+            if (-not $printProcess.WaitForExit(3000)) {
+                Stop-Process -Id $printProcess.Id -Force
+                $printProcess.WaitForExit()
+            }
+        }
+    }
+}
+Write-Host ("PASS print preview opens, answers messages, and closes cleanly for all " +
+    "$($printFixtures.Count) aspect ratios including 10000x1, 1x10000 and an over-16K panorama.")
+
 Write-Host "All regression tests passed."
