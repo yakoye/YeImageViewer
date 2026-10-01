@@ -1,4 +1,6 @@
 #include "LRU.h"
+#include "PrintLayout.h"
+#include "SVGPreprocessor.h"
 #include "FileAssociationNaming.h"
 #include "MotionPhotoUtils.h"
 #include "MonitorPlacement.h"
@@ -55,6 +57,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -2798,6 +2801,305 @@ void expectFileAssociationNaming() {
     passOrFail("the executable file name survives spaces in the path",
         ExecutableFileName(L"C:\\Program Files\\Ye Image\\YeImageViewer.exe") == L"YeImageViewer.exe");
 }
+// ===== 打印路径的尺寸计算（PrintLayout.h）=====
+// 打印是「做错了才知道」的功能：预览不出来没有提示，排版算歪了要等纸出来才发现。
+// 这里把每种退化输入都钉住，尤其是极端长宽比——那是真出过事的一类。
+
+void expectPrintLayout() {
+    using namespace PrintLayout;
+
+    // 普通图：按最长边贴合方形预览画布，另一边等比缩
+    {
+        const auto fitted = previewSize(1600, 1200, 800);
+        passOrFail("preview fits the longest side to the box",
+            fitted.valid && fitted.width == 800 && fitted.height == 600);
+    }
+    {
+        const auto fitted = previewSize(1200, 1600, 800);
+        passOrFail("a portrait image fits by its height",
+            fitted.valid && fitted.width == 600 && fitted.height == 800);
+    }
+    {
+        const auto fitted = previewSize(500, 500, 800);
+        passOrFail("a small square is still scaled up to the box",
+            fitted.valid && fitted.width == 800 && fitted.height == 800);
+    }
+
+    // 极端长宽比：短边等比算下来是 0，必须抬到 1，否则预览窗口压根建不起来，
+    // 用户点「打印」什么都不发生（这正是修掉的那个缺陷）
+    {
+        const auto wide = previewSize(10000, 1, 800);
+        passOrFail("a 10000x1 image still gets a visible preview height",
+            wide.valid && wide.width == 800 && wide.height == 1);
+    }
+    {
+        const auto tall = previewSize(1, 10000, 800);
+        passOrFail("a 1x10000 image still gets a visible preview width",
+            tall.valid && tall.width == 1 && tall.height == 800);
+    }
+    {
+        const auto wide = previewSize(19200, 200, 800);
+        passOrFail("a 19200x200 panorama keeps a height of at least one pixel",
+            wide.valid && wide.width == 800 && wide.height >= 1 && wide.height <= 800);
+    }
+
+    // 永远不超出方形画布，否则 ROI 会越界
+    for (const auto& pair : std::vector<std::pair<int, int>>{
+            {10000, 1}, {1, 10000}, {19200, 200}, {200, 19200}, {8191, 8193}, {1, 1}, {3, 7} }) {
+        const auto fitted = previewSize(pair.first, pair.second, 800);
+        if (!fitted.valid || fitted.width < 1 || fitted.height < 1 ||
+            fitted.width > 800 || fitted.height > 800) {
+            passOrFail("every preview size stays inside the square canvas", false);
+            break;
+        }
+        if (pair == std::pair<int, int>{3, 7}) {
+            passOrFail("every preview size stays inside the square canvas", true);
+        }
+    }
+
+    // 烂输入要明确说不行，而不是返回一个会让下游崩掉的尺寸
+    passOrFail("preview rejects a degenerate image",
+        !previewSize(0, 100, 800).valid && !previewSize(100, 0, 800).valid &&
+        !previewSize(-5, 100, 800).valid && !previewSize(100, 100, 0).valid);
+
+    // 页面排版：0.9 留 5% 白边，居中
+    {
+        const auto page = pagePlacement(1000, 1000, 4960, 7016, 0.9);
+        const int expected = static_cast<int>(std::lround(1000 * 0.9 * 4960.0 / 1000));
+        passOrFail("the page keeps a 5% margin on the limiting side",
+            page.valid && page.width == expected && page.height == expected);
+        passOrFail("the page centers the image",
+            page.offsetX == (4960 - page.width + 1) / 2 &&
+            page.offsetY == (7016 - page.height + 1) / 2);
+    }
+
+    // 排好的矩形必须完整落在页内——它会直接拿去建 ROI
+    for (const auto& pair : std::vector<std::pair<int, int>>{
+            {10000, 1}, {1, 10000}, {19200, 200}, {200, 19200},
+            {16384, 16384}, {1, 1}, {4095, 4097} }) {
+        const auto page = pagePlacement(pair.first, pair.second, 4960, 7016, 0.9);
+        const bool inside = page.valid && page.width >= 1 && page.height >= 1 &&
+            page.offsetX >= 0 && page.offsetY >= 0 &&
+            page.offsetX + page.width <= 4960 && page.offsetY + page.height <= 7016;
+        if (!inside) {
+            passOrFail("every page placement fits inside the sheet", false);
+            break;
+        }
+        if (pair == std::pair<int, int>{4095, 4097}) {
+            passOrFail("every page placement fits inside the sheet", true);
+        }
+    }
+
+    // 很小的纸张（标签打印机）也不能算出 0 边长
+    {
+        const auto page = pagePlacement(10000, 1, 200, 100, 0.9);
+        passOrFail("a tiny sheet still gets a one-pixel-tall placement",
+            page.valid && page.height == 1 && page.width >= 1 && page.width <= 200 &&
+            page.offsetX + page.width <= 200 && page.offsetY + page.height <= 100);
+    }
+
+    // fillRatio 1.0 就是铺满，不留白边
+    {
+        const auto page = pagePlacement(100, 100, 400, 800, 1.0);
+        passOrFail("a fill ratio of 1 uses the whole limiting side",
+            page.valid && page.width == 400 && page.height == 400 && page.offsetX == 0);
+    }
+
+    passOrFail("page placement rejects degenerate input",
+        !pagePlacement(0, 100, 400, 400, 0.9).valid &&
+        !pagePlacement(100, 100, 0, 400, 0.9).valid &&
+        !pagePlacement(100, 100, 400, 0, 0.9).valid &&
+        !pagePlacement(100, 100, 400, 400, 0.0).valid &&
+        !pagePlacement(100, 100, 400, 400, -1.0).valid);
+
+    // 16K 上限：没超就一个像素都不动，省掉一次没必要的重采样
+    {
+        const auto capped = cappedSize(4000, 3000, 16384);
+        passOrFail("an image under the cap is returned untouched",
+            capped.valid && capped.width == 4000 && capped.height == 3000);
+    }
+    {
+        const auto capped = cappedSize(32768, 16384, 16384);
+        passOrFail("an oversized image is scaled down proportionally",
+            capped.valid && capped.width == 16384 && capped.height == 8192);
+    }
+    {
+        // 这是 limitSizeTo16K 以前会算出 0 的那种：极宽且超限
+        const auto capped = cappedSize(200000, 1, 16384);
+        passOrFail("capping a 200000x1 image keeps at least one row",
+            capped.valid && capped.width == 16384 && capped.height == 1);
+    }
+    passOrFail("capping rejects degenerate input",
+        !cappedSize(0, 10, 16384).valid && !cappedSize(10, 0, 16384).valid &&
+        !cappedSize(10, 10, 0).valid);
+}
+// ===== SVG 预处理（SVGPreprocessor.h）=====
+// lunaSVG 不认 <switch>，也不认 light-dark() 这类新 CSS 函数。预处理把它们
+// 变成 lunaSVG 认得的形式。挑错了子元素就是「图显示成了另一种语言」或者
+// 「整块内容不见了」，而这两种都不会报错，所以得逐条钉住。
+
+void expectSvgPreprocessor() {
+    SVGPreprocessor preprocessor;
+
+    const auto process = [&preprocessor](std::string_view svg, const std::string& language) {
+        return preprocessor.preprocessSVG(svg.data(), svg.size(), language);
+    };
+
+    // switch 选第一个条件匹配的子元素，没选上的要被丢掉
+    {
+        constexpr std::string_view svg =
+            R"svg(<svg xmlns="http://www.w3.org/2000/svg"><switch>)svg"
+            R"svg(<text systemLanguage="zh">中文</text>)svg"
+            R"svg(<text systemLanguage="en">English</text>)svg"
+            R"svg(<text>fallback</text>)svg"
+            R"svg(</switch></svg>)svg";
+
+        const auto chinese = process(svg, "zh");
+        const auto english = process(svg, "en");
+        passOrFail("a switch keeps the branch matching the requested language",
+            chinese.find("中文") != std::string::npos &&
+            chinese.find("English") == std::string::npos &&
+            english.find("English") != std::string::npos &&
+            english.find("中文") == std::string::npos);
+        passOrFail("a switch drops the untaken branches entirely",
+            chinese.find("fallback") == std::string::npos &&
+            chinese.find("<switch") == std::string::npos);
+    }
+
+    // 带地区的语言标签也要能对上：systemLanguage="en-GB" 对请求 "en" 算匹配
+    {
+        constexpr std::string_view svg =
+            R"svg(<svg xmlns="http://www.w3.org/2000/svg"><switch>)svg"
+            R"svg(<text systemLanguage="en-GB">British</text>)svg"
+            R"svg(<text>fallback</text>)svg"
+            R"svg(</switch></svg>)svg";
+        const auto result = process(svg, "en");
+        passOrFail("a regional language tag matches the base language",
+            result.find("British") != std::string::npos);
+    }
+
+    // 一个都对不上时退回没有条件属性的那一支
+    {
+        constexpr std::string_view svg =
+            R"svg(<svg xmlns="http://www.w3.org/2000/svg"><switch>)svg"
+            R"svg(<text systemLanguage="ja">日本語</text>)svg"
+            R"svg(<text>fallback</text>)svg"
+            R"svg(</switch></svg>)svg";
+        const auto result = process(svg, "en");
+        passOrFail("an unconditional branch is the fallback",
+            result.find("fallback") != std::string::npos &&
+            result.find("日本語") == std::string::npos);
+    }
+
+    // requiredFeatures / requiredExtensions 一律不选：lunaSVG 没有这些能力，
+    // 谎称支持的后果是那一支画不出来，而且不会有任何提示
+    {
+        constexpr std::string_view svg =
+            R"svg(<svg xmlns="http://www.w3.org/2000/svg"><switch>)svg"
+            R"svg(<text requiredFeatures="http://example.invalid/Filter">filtered</text>)svg"
+            R"svg(<text requiredExtensions="http://example.invalid/ext">extended</text>)svg"
+            R"svg(<text>plain</text>)svg"
+            R"svg(</switch></svg>)svg";
+        const auto result = process(svg, "en");
+        passOrFail("branches requiring unknown features or extensions are never taken",
+            result.find("plain") != std::string::npos &&
+            result.find("filtered") == std::string::npos &&
+            result.find("extended") == std::string::npos);
+    }
+
+    // foreignObject 要跳过：lunaSVG 不实现它，draw.io 在它后面紧跟一份图片兜底
+    {
+        constexpr std::string_view svg =
+            R"svg(<svg xmlns="http://www.w3.org/2000/svg"><switch>)svg"
+            R"svg(<foreignObject width="10" height="10"><div>html</div></foreignObject>)svg"
+            R"svg(<text>svgfallback</text>)svg"
+            R"svg(</switch></svg>)svg";
+        const auto result = process(svg, "en");
+        passOrFail("a foreignObject branch is skipped for the SVG fallback after it",
+            result.find("svgfallback") != std::string::npos &&
+            result.find("foreignObject") == std::string::npos);
+    }
+
+    // 嵌套的 switch 也要处理掉，外层选中的那支里面不能再留 switch
+    {
+        constexpr std::string_view svg =
+            R"svg(<svg xmlns="http://www.w3.org/2000/svg"><switch><g>)svg"
+            R"svg(<switch><text systemLanguage="zh">内层中文</text><text>inner</text></switch>)svg"
+            R"svg(</g></switch></svg>)svg";
+        const auto result = process(svg, "zh");
+        passOrFail("nested switches are resolved too",
+            result.find("内层中文") != std::string::npos &&
+            result.find("<switch") == std::string::npos &&
+            result.find("inner") == std::string::npos);
+    }
+
+    // light-dark() 取浅色那个参数。lunaSVG 不认这个函数，整条声明会被丢掉，
+    // 于是该有颜色的地方变成默认黑。
+    {
+        constexpr std::string_view svg =
+            R"svg(<svg xmlns="http://www.w3.org/2000/svg">)svg"
+            R"svg(<rect style="fill: light-dark(#ff0000, #00ff00); stroke: blue"/></svg>)svg";
+        const auto result = process(svg, "en");
+        passOrFail("light-dark() collapses to its light value",
+            result.find("#ff0000") != std::string::npos &&
+            result.find("#00ff00") == std::string::npos &&
+            result.find("light-dark") == std::string::npos &&
+            result.find("stroke: blue") != std::string::npos);
+    }
+
+    // 参数里还有函数调用（嵌套括号）时也要截对
+    {
+        constexpr std::string_view svg =
+            R"svg(<svg xmlns="http://www.w3.org/2000/svg">)svg"
+            R"svg(<rect style="fill: light-dark(rgb(255, 0, 0), rgb(0, 255, 0))"/></svg>)svg";
+        const auto result = process(svg, "en");
+        passOrFail("light-dark() handles nested parentheses in its arguments",
+            result.find("rgb(255, 0, 0)") != std::string::npos &&
+            result.find("rgb(0, 255, 0)") == std::string::npos &&
+            result.find("light-dark") == std::string::npos);
+    }
+
+    // 同一个 style 里出现多次要全换掉
+    {
+        constexpr std::string_view svg =
+            R"svg(<svg xmlns="http://www.w3.org/2000/svg">)svg"
+            R"svg(<rect style="fill: light-dark(#111, #222); stroke: light-dark(#333, #444)"/></svg>)svg";
+        const auto result = process(svg, "en");
+        passOrFail("every light-dark() in one style is replaced",
+            result.find("#111") != std::string::npos &&
+            result.find("#333") != std::string::npos &&
+            result.find("light-dark") == std::string::npos);
+    }
+
+    // 嵌在子元素里的 style 也要处理，不能只看根节点
+    {
+        constexpr std::string_view svg =
+            R"svg(<svg xmlns="http://www.w3.org/2000/svg"><g><g>)svg"
+            R"svg(<rect style="fill: light-dark(#abcdef, #fedcba)"/></g></g></svg>)svg";
+        const auto result = process(svg, "en");
+        passOrFail("light-dark() is replaced at any nesting depth",
+            result.find("#abcdef") != std::string::npos &&
+            result.find("light-dark") == std::string::npos);
+    }
+
+    // 没有 switch、没有 light-dark 的图要原样留着（结构不变）
+    {
+        constexpr std::string_view svg =
+            R"svg(<svg xmlns="http://www.w3.org/2000/svg"><rect fill="red" width="4" height="4"/></svg>)svg";
+        const auto result = process(svg, "en");
+        passOrFail("an ordinary SVG passes through unchanged in substance",
+            result.find("<rect") != std::string::npos &&
+            result.find("red") != std::string::npos);
+    }
+
+    // 解析不了的内容要明确返回空，不能把半截 XML 交给 lunaSVG
+    {
+        constexpr std::string_view broken = "<svg><rect";
+        passOrFail("unparseable SVG yields nothing rather than half a document",
+            process(broken, "en").empty());
+        passOrFail("empty input yields nothing", process("", "en").empty());
+    }
+}
 }
 
 int main(int argc, char* argv[]) {
@@ -2848,6 +3150,8 @@ int main(int argc, char* argv[]) {
     expectRotationPersistence();
     expectRenamePolicy();
     expectFileAssociationNaming();
+    expectPrintLayout();
+    expectSvgPreprocessor();
     expectLruCache();
     if (argc >= 2) {
         expectRealHdrChannelOrder(argv[1]);

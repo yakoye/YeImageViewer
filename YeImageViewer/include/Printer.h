@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MatWindow.h"
+#include "PrintLayout.h"
 #include "TextDrawer.h"
 
 // 全局变量存储UI状态
@@ -566,10 +567,15 @@ public:
             return false;
         }
 
-        double scale = (double)winWidth / std::max(m_inputBgrMat.rows, m_inputBgrMat.cols);
-        cv::resize(m_inputBgrMat, params.previewImage, cv::Size(), scale, scale);
+        // 按最长边缩进 winWidth 见方的预览画布。边长由 PrintLayout 算并保证至少 1 像素：
+        // 以前这里只算缩放系数，一张 10000x1 的图高度会算成 0，预览窗口建不起来，
+        // 点「打印」什么都不发生，也没有任何提示。
+        const auto preview = PrintLayout::previewSize(m_inputBgrMat.cols, m_inputBgrMat.rows, winWidth);
+        if (!preview.valid)
+            return false;
 
-        // 若长宽差距很极端，超长或超宽，缩放可能异常
+        cv::resize(m_inputBgrMat, params.previewImage, cv::Size(preview.width, preview.height));
+
         if (params.previewImage.empty() || params.previewImage.rows <= 0 || params.previewImage.cols <= 0) {
             return false;
         }
@@ -643,23 +649,27 @@ public:
         int pageWidth = GetDeviceCaps(pd.hDC, HORZRES);
         int pageHeight = GetDeviceCaps(pd.hDC, VERTRES);
 
-        // 0.9 留5%边距
-        double scale = 0.9 * std::min(static_cast<double>(pageWidth) / m_inputBgrMat.cols,
-            static_cast<double>(pageHeight) / m_inputBgrMat.rows);
-        int newWidth = static_cast<int>(std::round(m_inputBgrMat.cols * scale));
-        int newHeight = static_cast<int>(std::round(m_inputBgrMat.rows * scale));
+        // 0.9 留 5% 边距。边长和居中偏移都由 PrintLayout 算，它保证至少 1 像素
+        // 且整块完整落在页内——直接拿来建 ROI 不会越界。
+        const auto placement = PrintLayout::pagePlacement(
+            m_inputBgrMat.cols, m_inputBgrMat.rows, pageWidth, pageHeight, 0.9);
+        if (!placement.valid) {
+            EndPage(pd.hDC);
+            EndDoc(pd.hDC);
+            DeleteDC(pd.hDC);
+            MessageBoxW(nullptr, L"无法为该图像尺寸排版打印页面", getUIStringW(14), MB_OK | MB_ICONERROR);
+            return;
+        }
 
         // 缩放图像
         cv::Mat resized;
-        cv::resize(m_inputBgrMat, resized, cv::Size(newWidth, newHeight), 0, 0);
+        cv::resize(m_inputBgrMat, resized, cv::Size(placement.width, placement.height));
         // 使用之前调整的参数处理图像
         ApplyImageAdjustments(resized, params.brightness, params.contrast, params.colorMode, params.invertColors);
 
         cv::Mat output(pageHeight, pageWidth, m_inputBgrMat.type(), cv::Scalar(255, 255, 255));
-        int offsetX = (pageWidth - newWidth + 1) / 2;  // +1确保偶数差时居中
-        int offsetY = (pageHeight - newHeight + 1) / 2;
-
-        cv::Mat roi(output, cv::Rect(offsetX, offsetY, newWidth, newHeight));
+        cv::Mat roi(output, cv::Rect(placement.offsetX, placement.offsetY,
+            placement.width, placement.height));
         resized.copyTo(roi);
 
         HBITMAP hBitmap = MatToHBITMAP(output);
