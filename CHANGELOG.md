@@ -1,6 +1,9 @@
 # YeImageViewer 修改记录
 
-## 未发布
+## v1.37.3 - 2026-10-01
+
+打开大图又快了一截：PNG 解压换 zlib-ng，大的静态 PNG 改走自己的解码快路径。
+在真正解出全分辨率的看图软件里，这一版的打开速度已经全面领先。
 
 - PNG 解压换成 zlib-ng，打开大图明显变快。`libopencv/zlib.lib` 换成 zlib-ng 的 compat 构建即可，不必重建 OpenCV——仓库里只有这一份 zlib，opencv_world 是在最终链接时才解析 `inflate` 这些符号的。重建脚本是 `scripts/build-zlib-ng.ps1`。
 
