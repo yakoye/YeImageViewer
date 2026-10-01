@@ -744,6 +744,39 @@ finally {
     }
 }
 
+Write-Host "Checking the PNG fast path against OpenCV..."
+# 大 PNG 走的是自己写的快路径（整块解压 + 一趟去滤波并写进 Mat），
+# 解错了不会崩也不会报错，只会把图画歪。所以拿同一批文件两条路都解一遍，
+# 逐字节比对；自检会绕过文件大小门槛，好让语料里的小 PNG 也进来一起比。
+$pngSelfTestResult = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-PngFast-" + [Guid]::NewGuid().ToString("N") + ".txt")
+try {
+    $pngCompared = 0
+    foreach ($pngDirectory in @(
+        (Join-Path $repoRoot "test\format corpus\files"),
+        (Join-Path $repoRoot "test\bigimage"),
+        (Join-Path $repoRoot "test\corpus\_local\07-extreme-png"))) {
+        if (-not (Test-Path -LiteralPath $pngDirectory -PathType Container)) { continue }
+        $pngProcess = Start-Process -FilePath $viewer `
+            -ArgumentList @("--png-decode-selftest", ('"' + $pngDirectory + '"'), ('"' + $pngSelfTestResult + '"')) `
+            -Wait -PassThru -WindowStyle Hidden
+        if ($pngProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $pngSelfTestResult)) {
+            throw "PNG fast-path regression failed in $pngDirectory (exit code $($pngProcess.ExitCode))."
+        }
+        $pngLine = (Get-Content -LiteralPath $pngSelfTestResult -Raw).Trim()
+        if (-not ($pngLine.StartsWith("OK") -or $pngLine.StartsWith("SKIPPED"))) {
+            throw "PNG fast-path regression failed in $($pngDirectory): $pngLine"
+        }
+        if ($pngLine -match "compared=(\d+)") { $pngCompared += [int]$matches[1] }
+    }
+    if ($pngCompared -lt 1) {
+        throw "PNG fast-path regression failed: no file exercised the fast path, so nothing was verified."
+    }
+    Write-Host "PASS the PNG fast path matches OpenCV byte for byte on $pngCompared files."
+}
+finally {
+    Remove-Item -LiteralPath $pngSelfTestResult -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "Checking the color-management fast paths..."
 # 色彩管理这一步排在解码之后，直接顶在出图时间上，所以做了两件提速：
 # 源和目标同色彩空间时整步跳过，大图按行分块并行。两件事都可能改坏画面，
