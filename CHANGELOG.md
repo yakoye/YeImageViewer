@@ -2,15 +2,21 @@
 
 ## 未发布
 
-- PNG 解压换成 zlib-ng，打开大图再快 0.22~0.47 秒。`libopencv/zlib.lib` 换成 zlib-ng 的 compat 构建即可，不必重建 OpenCV——仓库里只有这一份 zlib，opencv_world 是在最终链接时才解析 `inflate` 这些符号的。重建脚本是 `scripts/build-zlib-ng.ps1`。
+- PNG 解压换成 zlib-ng，打开大图明显变快。`libopencv/zlib.lib` 换成 zlib-ng 的 compat 构建即可，不必重建 OpenCV——仓库里只有这一份 zlib，opencv_world 是在最终链接时才解析 `inflate` 这些符号的。重建脚本是 `scripts/build-zlib-ng.ps1`。
+
+  双击到清晰图（各跑 5 轮取中位数）：
 
   | 图 | v1.37.2 | 换 zlib-ng 后 |
   | --- | ---: | ---: |
-  | Gradestr 103 MB | 877 ms | **653 ms** |
-  | Mandelbrot 124 MB | 1140 ms | **874 ms** |
-  | moon 291 MB / 9000×9000 | 2450 ms | **1978 ms** |
+  | Gradestr 103 MB | 877 ms | **609 ms** |
+  | Mandelbrot 124 MB | 1140 ms | **875 ms** |
+  | moon 291 MB / 9000×9000 | 2450 ms | **1730 ms** |
 
-  纯解码耗时 2185 → 1733 / 914 → 681 / 714 → 549 毫秒。程序体积 +0.11 MiB（26.47 → 26.58）。
+  moon 的纯解码从 2185 降到 1513 毫秒。程序体积 +0.11 MiB（26.47 → 26.58）。
+
+  同一轮还试过给 libpng 补 6/8 字节像素的 SIMD 去滤波（16 位图走的是那条路），
+  写完验完发现解码耗时一点没变——那一步受内存带宽限制而非计算限制，已整个撤回，
+  原因记在 CLAUDE.md 里，省得以后再试一遍。
 
 ## v1.37.2 - 2026-09-25
 

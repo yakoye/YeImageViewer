@@ -70,6 +70,9 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 - 不要提交 `.vcxproj.user`、`.vs/` 或机器相关的本地库路径。
 - 查「打开一张图为什么慢」用 `YEIMAGEVIEWER_STARTUP_TRACE=<文件路径>` 环境变量（见 `StartupTrace.h`），会记下 CRT 静态初始化、建窗口、建 D3D 设备、解码、格式转换、色彩管理、首帧绘制各段的时刻。没设环境变量时一个字节都不写。
 - 建 D3D 设备要七十多毫秒，建窗口只要五毫秒。图片解码在 `onWindowCreated()` 里就派出去了，和建设备并行跑；启动那一次的 `initOpenFile` 要传 `keepWarmCache = true`，否则 `imgDB.clear()` 会把在途的解码作废。
+- 别再去给 libpng 的去滤波写 SIMD。做过一轮完整的：libpng 自带的 SSE2 只覆盖 3 和 4 字节像素（`intel/intel_init.c` 里 `if (bpp == 3) ... else if (bpp == 4)`），16 位图是 6 或 8 字节像素，确实掉回标量。补齐 6/8 字节的 SSE2 实现之后，自检确认结果与规范逐字节一致，解码耗时却一点没变——A/B 各跑四轮：原版 1506/1513/1513/1523 ms，SIMD 版 1512/1524/1594/1608 ms。
+  原因是这一步受内存带宽限制，不受计算限制：SIMD 版每行（9000 像素 × 6 字节）25.4 µs，期间读 row、读 prev、写 row 共 162 KB，折合 6.4 GB/s，正好顶在单线程内存带宽上。libpng 原本的标量实现早就撞在同一堵墙上了。
+  顺带记两件事：量性能必须多跑几轮取中位数，这次先后被两个单次测量（1733、1646）误导过；另外别拿「按规范直写的参考实现」当标量基线去算加速比，libpng 自己那份优化过的 C 比参考实现快十倍。
 - 色彩管理排在解码之后，直接顶在出图时间上：源和目标同色彩空间时整步跳过（绝大多数图都是这种情况），大图按行分块并行。改 `ColorManager::applyToMat` 之后要跑 `./x64/Release/YeImageViewer.exe --color-selftest <文件>`，它用生产代码验证恒等真被跳过、并行结果和串行逐字节相同。
 - 主窗口渲染路径以 OpenCV `cv::Mat` 作为 CPU 画布，再交给 Direct3D 显示；避免在高频绘制路径中引入阻塞 I/O 或昂贵同步操作。
 - Debug 构建会分配控制台并启用 `JARK_LOG`；Release 下日志宏为空。
