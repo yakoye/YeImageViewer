@@ -279,6 +279,167 @@ if (-not $viewerAscii.Contains($expectedCommitId)) {
 }
 Write-Host "PASS viewer embeds current commit ID $expectedCommitId."
 
+Write-Host "Checking source-level invariants that no runtime test can catch..."
+
+# 一、三语字符串表。
+# 这两张表的索引是硬编码的，中间插一条就把后面全错位；而漏填一列会让界面
+# 当场显示空白。两样都不会让程序崩，所以只能在源码上盯。
+$stringResPath = Join-Path $repoRoot "YeImageViewer\src\stringRes.cpp"
+$stringResLines = Get-Content -LiteralPath $stringResPath -Encoding UTF8
+$stringLiteral = [regex]'"(?:[^"\\]|\\.)*"'
+$indexMarker = [regex]'//\s*(\d+)\s*$'
+$maxEntries = 0
+foreach ($line in $stringResLines) {
+    if ($line -match 'constexpr uint32_t STRING_MAX_NUM\s*=\s*(\d+)') {
+        $maxEntries = [int]$Matches[1]
+        break
+    }
+}
+if ($maxEntries -le 0) {
+    throw "String table regression failed: STRING_MAX_NUM was not found in stringRes.cpp."
+}
+
+$currentTable = ""
+$entryIndex = 0
+$tableCounts = @{}
+for ($lineNo = 0; $lineNo -lt $stringResLines.Count; $lineNo++) {
+    $line = $stringResLines[$lineNo]
+    $humanLine = $lineNo + 1
+
+    if ($line -match '^std::(?:w)?string_view (UIStringTable\w*)\[') {
+        $currentTable = $Matches[1]
+        $entryIndex = 0
+        continue
+    }
+    if ($currentTable -ne "" -and $line.StartsWith("};")) {
+        $tableCounts[$currentTable] = $entryIndex
+        $currentTable = ""
+        continue
+    }
+    if ($currentTable -eq "" -or -not $line.StartsWith("    {")) {
+        continue
+    }
+
+    $columns = @($stringLiteral.Matches($line) | ForEach-Object { $_.Value })
+    if ($columns.Count -ne 3) {
+        throw ("String table regression failed: ${currentTable} entry ${entryIndex} " +
+            "(stringRes.cpp:${humanLine}) has $($columns.Count) columns, expected 3 " +
+            "(0 简体中文 / 1 English / 2 繁體中文).")
+    }
+
+    $texts = @($columns | ForEach-Object {
+        $raw = $_
+        if ($raw.StartsWith("L")) { $raw = $raw.Substring(1) }
+        $raw.Trim('"')
+    })
+    for ($column = 0; $column -lt 3; $column++) {
+        if ($texts[$column] -eq "") {
+            throw ("String table regression failed: ${currentTable} entry ${entryIndex} " +
+                "(stringRes.cpp:${humanLine}) leaves column ${column} empty; the UI would " +
+                "show nothing there.")
+        }
+    }
+
+    # 繁體列照抄英文是最常见的漏填方式：界面不空、不崩，但繁體用户看到英文。
+    # 三列全同是正常的（YeImageViewer、English 这类专有名词），所以只在
+    # 简体和英文确实不同时才判。
+    if ($texts[0] -ne $texts[1] -and $texts[2] -eq $texts[1]) {
+        throw ("String table regression failed: ${currentTable} entry ${entryIndex} " +
+            "(stringRes.cpp:${humanLine}) fills the 繁體中文 column with the English text " +
+            "'$($texts[1])'.")
+    }
+
+    # 表里每 10 条有一个 `// N` 索引标注。它和实际序号不符，说明有人在中间
+    # 插/删了条目——那会把所有硬编码的 stringID 整体错位。
+    $markerMatch = $indexMarker.Match($line)
+    if ($markerMatch.Success) {
+        $declared = [int]$markerMatch.Groups[1].Value
+        if ($declared -ne $entryIndex) {
+            throw ("String table regression failed: ${currentTable} marks " +
+                "stringRes.cpp:${humanLine} as index ${declared} but it is actually " +
+                "${entryIndex}; an entry was inserted or removed mid-table and every " +
+                "hard-coded stringID after it now points at the wrong text.")
+        }
+    }
+
+    $entryIndex++
+}
+
+if ($currentTable -ne "") {
+    throw "String table regression failed: ${currentTable} was never closed in stringRes.cpp."
+}
+foreach ($expectedTable in @("UIStringTable", "UIStringTableW")) {
+    if (-not $tableCounts.ContainsKey($expectedTable)) {
+        throw "String table regression failed: ${expectedTable} was not found in stringRes.cpp."
+    }
+    if ($tableCounts[$expectedTable] -gt $maxEntries) {
+        throw ("String table regression failed: ${expectedTable} holds " +
+            "$($tableCounts[$expectedTable]) entries but STRING_MAX_NUM is ${maxEntries}.")
+    }
+}
+Write-Host ("PASS both string tables are complete in all three languages " +
+    "($($tableCounts['UIStringTable']) + $($tableCounts['UIStringTableW']) entries).")
+
+# 二、「当前界面是不是中文」不能写成 UI_LANG == 0。
+# 繁體是 2，写成 == 0 会让繁體界面掉进英文分支。判繁體专属文案用 == 2 是对的，
+# 所以只拦 0。
+$languageOffenders = @()
+foreach ($source in Get-ChildItem -Path (Join-Path $repoRoot "YeImageViewer") -Recurse `
+        -Include *.cpp, *.h -File) {
+    # 第三方库的头文件目录不参与
+    if ($source.FullName -match '\\include\\(opencv2|exiv2|ffmpeg|libraw|libheif|libwebp2|jxl|aom|dav1d|libde265|libyuv|minizip|psdsdk)\\') {
+        continue
+    }
+    $languageHits = Select-String -LiteralPath $source.FullName -Pattern 'UI_LANG\s*(==|!=)\s*0' -AllMatches
+    foreach ($hit in $languageHits) {
+        # 注释里写出这个反例是为了解释为什么不能这么写，不算违规
+        $trimmed = $hit.Line.Trim()
+        if ($trimmed.StartsWith("//") -or $trimmed.StartsWith("*") -or $trimmed.StartsWith("/*")) {
+            continue
+        }
+        $languageOffenders += "$($source.Name):$($hit.LineNumber): $trimmed"
+    }
+}
+if ($languageOffenders.Count -gt 0) {
+    throw ("Language regression failed: compare against UI_LANG == 0 drops 繁體中文 into the " +
+        "English branch. Use isChineseUI() / tr() / UiLanguage::pick() instead.`n" +
+        ($languageOffenders -join "`n"))
+}
+Write-Host "PASS no code decides 'is the UI Chinese' by comparing UI_LANG against 0."
+
+# 三、继承 LRU 的类必须在自己的析构函数里先停预读线程。
+# 预读线程跑的是派生类的 loader()，用的是派生类的成员。等基类析构才停就晚了：
+# 派生部分已经销毁，在途那次解码正访问已释放的内存。打开大图后立刻退出曾这样崩过。
+$lruDerived = @()
+foreach ($source in Get-ChildItem -Path (Join-Path $repoRoot "YeImageViewer") -Recurse `
+        -Include *.cpp, *.h -File) {
+    $text = Get-Content -LiteralPath $source.FullName -Raw -Encoding UTF8
+    foreach ($hit in [regex]::Matches($text, 'class\s+(\w+)\s*:\s*(?:public\s+)?LRU\s*<')) {
+        $lruDerived += [pscustomobject]@{ Name = $hit.Groups[1].Value; File = $source; Text = $text }
+    }
+}
+if ($lruDerived.Count -eq 0) {
+    throw "LRU shutdown regression failed: no class deriving from LRU<> was found; the check went stale."
+}
+foreach ($derived in $lruDerived) {
+    $destructor = [regex]::Match($derived.Text, "~$($derived.Name)\s*\(\s*\)\s*(?:override\s*)?\{")
+    if (-not $destructor.Success) {
+        throw ("LRU shutdown regression failed: $($derived.Name) derives from LRU<> but has no " +
+            "destructor of its own, so the preload worker only stops in ~LRU() — after the " +
+            "derived members are already gone.")
+    }
+    $bodyStart = $destructor.Index + $destructor.Length
+    $body = $derived.Text.Substring($bodyStart, [Math]::Min(600, $derived.Text.Length - $bodyStart))
+    if ($body -notmatch 'stopPreloadWorker\s*\(\s*\)') {
+        throw ("LRU shutdown regression failed: ~$($derived.Name) does not call " +
+            "stopPreloadWorker(). The preload worker runs $($derived.Name)::loader() against " +
+            "$($derived.Name) members; stopping it only in ~LRU() is a use-after-free when a " +
+            "decode is still in flight at exit.")
+    }
+}
+Write-Host ("PASS every LRU-derived cache stops its preload worker before its own members die " +
+    "($($lruDerived.Count) class(es)).")
+
 Write-Host "Running unit regression tests..."
 $expectedHdrHash = "1A1A661E0A22BECBE019B6C095004315351F28600D9BD7600BD933BEB351E5D5"
 $actualHdrHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $hdrFixture).Hash

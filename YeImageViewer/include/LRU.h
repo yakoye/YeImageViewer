@@ -110,6 +110,16 @@ public:
     }
 
     virtual ~LRU() {
+        // 派生类应当在自己的析构函数里先调一次；这里兜底，重复调用无害。
+        stopPreloadWorker();
+    }
+
+    // 停掉预读线程并等它退出。派生类的析构函数**必须**在最开头调用它：
+    // 预读线程跑的是 loader()，那是派生类的虚函数，访问的是派生类的成员。
+    // 若等到 ~LRU() 才停，派生部分已经销毁完了，在途的那一次 loader() 就在
+    // 访问已经释放的成员——打开大图后立刻退出程序曾经就是这样崩的。
+    // 可重复调用。
+    void stopPreloadWorker() {
         stop_preload = true;
         preload_cv.notify_all();
         if (preload_thread.joinable()) {
@@ -270,6 +280,11 @@ public:
     size_t size() const {
         std::shared_lock<std::shared_mutex> lock(cache_mutex);
         return cache_map.size();
+    }
+
+    // 预读线程是否还活着。派生类可以拿它断言「析构时确实先停了线程」。
+    bool preloadWorkerRunning() const {
+        return preload_thread.joinable() && !stop_preload.load();
     }
 
     void setCapacity(size_t capacity) {

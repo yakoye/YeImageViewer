@@ -14,6 +14,9 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 # Release x64 构建
 ./buildRelease.ps1
 
+# 需要带符号排查时
+./buildRelease.ps1 -Configuration Debug
+
 # Release x64 构建并运行全部自动化回归测试
 ./runTests.ps1
 
@@ -77,6 +80,12 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
   「适应窗口」只缩不放：图片比窗口小就停在 100%。
   `applyImageFittedWindowSize()` 必须在动窗口**之前**关掉 `framedWindowAnchored`：`SetWindowPos` 会同步派发 WM_SIZE，而锚定那条路径会按工作区重算缩放，把刚算好的覆盖掉。
 - 预览图（系统缩略图）的像素尺寸和真图可以毫无关系——一张 280x288 的 SVG，系统给的缩略图是 995x1024。所以：缩放要按真图尺寸算再折算回缩略图像素（`ZoomPolicy::previewZoom`），标题报的尺寸和百分比也要按真图口径（`ZoomPolicy::reportedPercent`），否则换成真图那一刻画面和数字都会跳。系统报不出真图尺寸时（SVG 就报不出）干脆不显示预览，直接等真图。
+- `runTests.ps1` 里有一段「源码不变量检查」，查的是跑起来也看不出来的三件事：三语
+  字符串表三列齐全且 `// N` 索引标注没错位（中间插一条会让所有硬编码 stringID 整体
+  错位）、没有谁把「界面是不是中文」写成 `UI_LANG == 0`、继承 `LRU<>` 的类都在自己的
+  析构函数里先调了 `stopPreloadWorker()`。
+  最后那条是条真 bug 的护栏：预读线程跑的是派生类的 `loader()`、用的是派生类的成员，
+  等 `~LRU()` 才停线程时派生部分已经销毁，在途那次解码正访问已释放的内存。
 - 查「打开一张图为什么慢」用 `YEIMAGEVIEWER_STARTUP_TRACE=<文件路径>` 环境变量（见 `StartupTrace.h`），会记下 CRT 静态初始化、建窗口、建 D3D 设备、解码、格式转换、色彩管理、首帧绘制各段的时刻。没设环境变量时一个字节都不写。
 - 建 D3D 设备要七十多毫秒，建窗口只要五毫秒。图片解码在 `onWindowCreated()` 里就派出去了，和建设备并行跑；启动那一次的 `initOpenFile` 要传 `keepWarmCache = true`，否则 `imgDB.clear()` 会把在途的解码作废。
 - 别再去给 libpng 的去滤波写 SIMD。做过一轮完整的：libpng 自带的 SSE2 只覆盖 3 和 4 字节像素（`intel/intel_init.c` 里 `if (bpp == 3) ... else if (bpp == 4)`），16 位图是 6 或 8 字节像素，确实掉回标量。补齐 6/8 字节的 SSE2 实现之后，自检确认结果与规范逐字节一致，解码耗时却一点没变——A/B 各跑四轮：原版 1506/1513/1513/1523 ms，SIMD 版 1512/1524/1594/1608 ms。
