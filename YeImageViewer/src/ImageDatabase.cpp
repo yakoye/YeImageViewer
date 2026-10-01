@@ -1,4 +1,5 @@
 #include "ImageDatabase.h"
+#include "PngFastDecode.h"
 #include "StartupTrace.h"
 #include "MotionPhotoUtils.h"
 #include "StbImageDecoder.h"
@@ -2253,6 +2254,16 @@ static void convertImageAssetToCV_8U(ImageAsset& imageAsset) {
 ImageAsset ImageDatabase::loadAnimation(wstring_view path, std::span<const uint8_t> buf) {
     cv::Animation animation;
     ImageAsset imageAsset;
+
+    // 大的静态 PNG 走自己的快路径：整块解压、去滤波时顺手写进 Mat，
+    // 比 OpenCV 的逐行流式路径省将近一半时间（见 PngFastDecode.h）。
+    // 它只认那几类拿得准的 PNG，其余（APNG、调色板、交错、tRNS、小文件）
+    // 一律在这里返回 false，照原样走下面的 OpenCV。
+    if (cv::Mat fastFrame; PngFastDecode::decode(buf, fastFrame)) {
+        imageAsset.format = ImageFormat::Still;
+        imageAsset.primaryFrame = std::move(fastFrame);
+        return imageAsset;
+    }
 
     bool success = cv::imdecodeanimation(
         cv::Mat(1, static_cast<int>(buf.size()), CV_8UC1, const_cast<uint8_t*>(buf.data())),

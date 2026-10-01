@@ -62,6 +62,7 @@ RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 3
 - `YeImageViewer.vcxproj` 中 `VcpkgEnabled=false`，默认使用仓库内的静态库目录：`YeImageViewer/lib*`、`YeImageViewer/libffmpeg`、`YeImageViewer/include`。
 - README 说明第三方静态库需从 release 的 `static_lib` 包准备；如果改为 vcpkg，需要在项目属性中启用并补齐依赖。
 - `avif.lib` 与 `heif.lib` 不能直接用上游 `static_lib` 包里的：本仓库去掉了它们携带的 aom / x265 编码器（看图软件只解码），主程序也不再链接 `x265-static.lib`。新环境先跑 `./scripts/build-thirdparty-slim.ps1 -Install` 重建，否则链接失败。
+- `lib/libdeflate.lib` 由 `./scripts/build-libdeflate.ps1 -Install` 生成，大 PNG 的快路径要用它整块解压。缺了会链接失败。
 - `libopencv/zlib.lib` 换成了 zlib-ng 的 compat 构建（`./scripts/build-zlib-ng.ps1 -Install`）。不换也能链接能跑，只是 PNG 解压慢约 1.4 倍——一张 291 MB 的 16 位 PNG 差 0.45 秒。`include/` 下的 zlib 头文件已经是 zlib-ng 的，compat 模式不改符号名（`zlib_name_mangling.h` 是空的），和原版 zlib.lib 混用也不会出问题。
 - Release 输出程序位于 `x64/Release/YeImageViewer.exe`，中间文件位于 `YeImageViewer/x64/<Configuration>/YeImageViewer`。
 
@@ -100,6 +101,10 @@ RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 3
 - OpenCV 用的是自己重建的精简版：只含 core / imgproc / imgcodecs，去掉了 IPP、contrib、videoio 和 highgui（主程序一次 highgui 调用都没有）。重建脚本是 `scripts/build-opencv-slim.ps1`，换版本或换机器都用它，别直接拿官方全功能包。
 - `imgcodecs` 的分辨率上限仍然必须改 OpenCV 源码，`build-opencv-slim.ps1` 里有这一步。不能改成在程序里设 `OPENCV_IO_MAX_IMAGE_*` 环境变量：那三个上限是 `loadsave.cpp` 里的命名空间作用域 `static const`，CRT 在进入 `wWinMain` 之前就初始化完了，设了也没用（曾经这样改过，结果 240MP 以上的 PNG 全被拒绝）。上游 README 提到的 HighGUI 光标改动（`IDC_CROSS` → `IDC_ARROW`）随 highgui 一起不再需要。
 - 不要提交 `.vcxproj.user`、`.vs/` 或机器相关的本地库路径。
+- 大的静态 PNG 不走 OpenCV，走 `PngFastDecode.h`：拼好 IDAT 用 libdeflate 一次解完，再一趟去滤波并直接写进目标 Mat。比 libpng 的逐行流式路径快不少（9000×9000 的 16 位图解码 1513 → 1270 毫秒），省下来的大头不是解压更快，而是少扫了好几百 MB——行刚去完滤波还在缓存里，顺手就转好写出去了。
+  适用范围刻意收得很窄：非交错、位深 8 或 16、色彩类型 0/2/6、没有 tRNS、文件 ≥ 4 MiB、内存宽裕。调色板、交错、1/2/4 位、灰+alpha、APNG 一律退回 OpenCV。
+  代价是内存：整块解压要解压缓冲和 Mat 同时在手，峰值比流式路径高约一倍（291 MB 的图 1.3 GB 对 0.85 GB），所以可用物理内存不够一半时会主动让开。
+  **改这条路之后必须跑 `--png-decode-selftest <目录> <结果文件>`**（发布闸门里已有这一环，比了 143 个文件）：它拿同一批文件两条路都解一遍逐字节比对。解码错了不会崩也不会报错，只会把图画歪，没有这个自检根本发现不了。
 - 查「打开一张图为什么慢」用 `YEIMAGEVIEWER_STARTUP_TRACE=<文件路径>` 环境变量（见 `StartupTrace.h`），会记下 CRT 静态初始化、建窗口、建 D3D 设备、解码、格式转换、色彩管理、首帧绘制各段的时刻。没设环境变量时一个字节都不写。
 - 建 D3D 设备要七十多毫秒，建窗口只要五毫秒。图片解码在 `onWindowCreated()` 里就派出去了，和建设备并行跑；启动那一次的 `initOpenFile` 要传 `keepWarmCache = true`，否则 `imgDB.clear()` 会把在途的解码作废。
 - 别再去给 libpng 的去滤波写 SIMD。做过一轮完整的：libpng 自带的 SSE2 只覆盖 3 和 4 字节像素（`intel/intel_init.c` 里 `if (bpp == 3) ... else if (bpp == 4)`），16 位图是 6 或 8 字节像素，确实掉回标量。补齐 6/8 字节的 SSE2 实现之后，自检确认结果与规范逐字节一致，解码耗时却一点没变——A/B 各跑四轮：原版 1506/1513/1513/1523 ms，SIMD 版 1512/1524/1594/1608 ms。

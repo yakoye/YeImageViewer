@@ -9,7 +9,7 @@
       切换速度  按一次「→」，到画面首次变化、再到画面稳定各用了多久。
 
     为什么靠读屏幕像素而不是读窗口标题：只有一部分软件把文件名写在标题里
-    （JarkViewer、GuoheView、YeImageViewer 写了，ImageGlass 和 2345看图王 没写），
+    （JarkViewer、GuoheView、YeImageViewer 写了，ImageGlass 没写），
     靠标题就没法把五个软件放在同一把尺子上量。像素判定对所有软件一视同仁，
     量到的也正是用户真正看到画面的那一刻。
 
@@ -34,8 +34,7 @@ param(
         (Join-Path $PSScriptRoot "..\..\x64\Release\YeImageViewer.exe"),
         "D:\software\JarkViewer.exe",
         "C:\Program Files\GuoheView\GuoheView.exe",
-        "C:\Program Files\ImageGlass\ImageGlass.exe",
-        "C:\Program Files\2345Soft\2345Pic\2345PicViewer.exe"
+        "C:\Program Files\ImageGlass\ImageGlass.exe"
     ),
     [string]$OutputCsv = (Join-Path $PSScriptRoot "..\..\artifacts\release-gate\viewer-comparison.csv"),
     [double]$OpenTimeoutSeconds = 20.0,

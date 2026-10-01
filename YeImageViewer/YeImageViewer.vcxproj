@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -185,6 +185,7 @@
     <ClInclude Include="include\OverlayLayout.h" />
     <ClInclude Include="include\SlideshowPolicy.h" />
     <ClInclude Include="include\PresentationLayout.h" />
+    <ClInclude Include="include\PngFastDecode.h" />
     <ClInclude Include="include\Printer.h" />
     <ClInclude Include="include\RenamePolicy.h" />
     <ClInclude Include="include\RotationStore.h" />
@@ -218,6 +219,7 @@
     <ClCompile Include="src\exifParse.cpp" />
     <ClCompile Include="src\ImageDatabase.cpp" />
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\PngFastDecode.cpp" />
     <ClCompile Include="src\RotationStore.cpp" />
     <ClCompile Include="src\jarkUtils.cpp" />
     <ClCompile Include="src\stringRes.cpp" />

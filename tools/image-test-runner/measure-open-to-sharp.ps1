@@ -43,8 +43,7 @@ param(
         (Join-Path $PSScriptRoot "..\..\x64\Release\YeImageViewer.exe"),
         "D:\software\JarkViewer.exe",
         "C:\Program Files\GuoheView\GuoheView.exe",
-        "C:\Program Files\ImageGlass\ImageGlass.exe",
-        "C:\Program Files\2345Soft\2345Pic\2345PicViewer.exe"
+        "C:\Program Files\ImageGlass\ImageGlass.exe"
     ),
     [int]$Repeats = 3,
     [int]$QuietMs = 2500,

@@ -2,6 +2,7 @@
 
 #include "TextDrawer.h"
 #include "lcms2.h"
+#include "PngFastDecode.h"
 #include "StartupTrace.h"
 #include "ImageDatabase.h"
 #include "ImageInterpolation.h"
@@ -5328,6 +5329,103 @@ static void dumpMotionForProbe(const ImageAsset& asset, const std::filesystem::p
 // 而测试工程没有链接 OpenCV，为这一条把 OpenCV 引进去代价太大。
 // 这里用的是和正式路径完全相同的那份代码。
 
+// PNG 快路径自检：对同一批文件，快路径和 OpenCV 必须给出逐字节相同的结果。
+//
+// 这是整条快路径唯一的安全网。PNG 的边角多（滤波器组合、行尾、16 位字节序、
+// 通道顺序、奇数宽度），解错了不会崩也不会报错，只会把图画歪。
+// 所以比的是「和生产路径完全一样的那个调用」——cv::imdecodeanimation，
+// 而不是 cv::imdecode：静态 PNG 在产品里走的就是前者。
+//
+// 自检会绕过快路径的文件大小门槛，好让语料里那些小 PNG 也进来一起比。
+static int runPngDecodeSelfTest(const std::wstring& directory, const std::wstring& resultPath) {
+    std::ofstream result(std::filesystem::path(resultPath), std::ios::trunc);
+    if (!result)
+        return 3;
+
+    std::error_code error;
+    if (!std::filesystem::is_directory(directory, error)) {
+        result << "SKIPPED\t目录不存在：" << jarkUtils::wstringToUtf8(directory) << '\n';
+        return 0;
+    }
+
+    int compared = 0, skipped = 0, failed = 0;
+    std::wstring firstFailure;
+
+    for (std::filesystem::recursive_directory_iterator it(directory,
+             std::filesystem::directory_options::skip_permission_denied, error), end;
+         it != end; it.increment(error)) {
+        if (error)
+            break;
+        if (!it->is_regular_file(error))
+            continue;
+        auto extension = it->path().extension().wstring();
+        std::transform(extension.begin(), extension.end(), extension.begin(), ::towlower);
+        if (extension != L".png" && extension != L".apng")
+            continue;
+
+        std::ifstream file(it->path(), std::ios::binary | std::ios::ate);
+        if (!file)
+            continue;
+        const auto size = static_cast<std::size_t>(file.tellg());
+        if (size == 0 || size > (512u << 20))
+            continue;
+        std::vector<std::uint8_t> bytes(size);
+        file.seekg(0);
+        if (!file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size)))
+            continue;
+
+        if (!PngFastDecode::isSupported(bytes, /*ignoreSizeLimit*/ true)) {
+            ++skipped;
+            continue;
+        }
+
+        cv::Mat fast;
+        if (!PngFastDecode::decode(bytes, fast, /*ignoreSizeLimit*/ true)) {
+            // isSupported 说行、decode 说不行，这本身就是个要查的不一致
+            ++failed;
+            if (firstFailure.empty())
+                firstFailure = it->path().wstring() + L"：isSupported 通过但 decode 失败";
+            continue;
+        }
+
+        cv::Animation animation;
+        if (!cv::imdecodeanimation(
+                cv::Mat(1, static_cast<int>(bytes.size()), CV_8UC1, bytes.data()), animation) ||
+            animation.frames.empty()) {
+            ++skipped;      // OpenCV 自己都解不了，没有可比的基准
+            continue;
+        }
+        const cv::Mat& reference = animation.frames.front();
+
+        const bool sameShape = fast.rows == reference.rows && fast.cols == reference.cols &&
+            fast.type() == reference.type();
+        bool samePixels = sameShape;
+        if (sameShape) {
+            const std::size_t rowBytes = static_cast<std::size_t>(fast.cols) * fast.elemSize();
+            for (int y = 0; y < fast.rows && samePixels; ++y) {
+                samePixels = std::memcmp(fast.ptr(y), reference.ptr(y), rowBytes) == 0;
+            }
+        }
+
+        if (!sameShape || !samePixels) {
+            ++failed;
+            if (firstFailure.empty()) {
+                firstFailure = it->path().wstring() +
+                    (sameShape ? L"：像素不一致" : L"：尺寸或类型不一致");
+            }
+        }
+        ++compared;
+    }
+
+    if (failed > 0) {
+        result << "ERROR\tcompared=" << compared << "\tfailed=" << failed
+            << "\tfirst=" << jarkUtils::wstringToUtf8(firstFailure) << '\n';
+        return 2;
+    }
+    result << "OK\tcompared=" << compared << "\tskipped=" << skipped << '\n';
+    return 0;
+}
+
 static int runColorSelfTest(const std::wstring& resultPath) {
     // 造一张有层次的图。纯色看不出变换有没有生效，也掩盖得了分块错位。
     const int width = 1920;
@@ -5597,6 +5695,13 @@ int WINAPI wWinMain(
 
     int argumentCount = 0;
     LPWSTR* arguments = ::CommandLineToArgvW(::GetCommandLineW(), &argumentCount);
+    if (arguments != nullptr && argumentCount == 4
+        && std::wstring_view(arguments[1]) == L"--png-decode-selftest") {
+        const int selfTestResult = runPngDecodeSelfTest(arguments[2], arguments[3]);
+        ::LocalFree(arguments);
+        ::CoUninitialize();
+        return selfTestResult;
+    }
     if (arguments != nullptr && argumentCount == 3
         && std::wstring_view(arguments[1]) == L"--color-selftest") {
         const int selfTestResult = runColorSelfTest(arguments[2]);
