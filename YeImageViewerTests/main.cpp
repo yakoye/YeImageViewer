@@ -497,6 +497,141 @@ void expectOverlayLayout() {
         zoomIndicator.height == OverlayLayout::ZOOM_INDICATOR_HEIGHT);
 }
 
+// 四个缩放/窗口命令的规则。它们以前散在 main.cpp 里，既测不到又容易改漏一处——
+// 「适应图片」就曾经只改了窗口没改缩放，窗口放大了画面没跟上，四周露出一圈背景。
+void expectZoomCommands() {
+    constexpr int64_t base = 10000;   // 与 CurImageParameter::ZOOM_BASE 一致
+
+    // ── 适应窗口：大图缩进窗口 ─────────────────────────────────────────
+    // 9000x9000 的图放进 800x600 的窗口，短边说了算：600/9000
+    passOrFail("fit-to-window shrinks a large image until the short side fits",
+        ZoomPolicy::fitWindowZoom(9000, 9000, 800, 600, base) == 600 * base / 9000 &&
+        ZoomPolicy::fitWindowZoom(4000, 1000, 800, 600, base) == 800 * base / 4000);
+
+    // ── 适应窗口：小图不放大 ───────────────────────────────────────────
+    // 这是这次改的规矩：把 100x100 撑满 2000 像素宽的窗口只会糊成一片
+    passOrFail("fit-to-window never upscales an image smaller than the window",
+        ZoomPolicy::fitWindowZoom(100, 100, 2000, 1500, base) == base &&
+        ZoomPolicy::fitWindowZoom(799, 599, 800, 600, base) == base &&
+        // 正好一样大也是 100%，不多不少
+        ZoomPolicy::fitWindowZoom(800, 600, 800, 600, base) == base);
+
+    // 一边比窗口大、另一边比窗口小时仍然要缩，只是以大的那边为准
+    passOrFail("fit-to-window still shrinks when only one side overflows",
+        ZoomPolicy::fitWindowZoom(4000, 100, 800, 600, base) == 800 * base / 4000);
+
+    // ── 适应窗口：旋转后按旋转的样子算 ─────────────────────────────────
+    // 4000x1000 竖过来是 1000x4000，该按高度算
+    passOrFail("fit-to-window measures the rotated shape, not the stored one",
+        ZoomPolicy::fitWindowZoomRotated(4000, 1000, 0, 800, 600, base) ==
+            ZoomPolicy::fitWindowZoom(4000, 1000, 800, 600, base) &&
+        ZoomPolicy::fitWindowZoomRotated(4000, 1000, 1, 800, 600, base) ==
+            ZoomPolicy::fitWindowZoom(1000, 4000, 800, 600, base) &&
+        ZoomPolicy::fitWindowZoomRotated(4000, 1000, 2, 800, 600, base) ==
+            ZoomPolicy::fitWindowZoom(4000, 1000, 800, 600, base) &&
+        ZoomPolicy::fitWindowZoomRotated(4000, 1000, 3, 800, 600, base) ==
+            ZoomPolicy::fitWindowZoom(1000, 4000, 800, 600, base));
+
+    // ── 适应窗口：烂输入不能把程序带崩 ─────────────────────────────────
+    // 解码失败、窗口还没就绪时这些值真的会是 0
+    passOrFail("fit-to-window falls back to 100% instead of dividing by zero",
+        ZoomPolicy::fitWindowZoom(0, 100, 800, 600, base) == base &&
+        ZoomPolicy::fitWindowZoom(100, 0, 800, 600, base) == base &&
+        ZoomPolicy::fitWindowZoom(100, 100, 0, 600, base) == base &&
+        ZoomPolicy::fitWindowZoom(100, 100, 800, 0, base) == base &&
+        ZoomPolicy::fitWindowZoom(-1, -1, -1, -1, base) == base);
+
+    // 极端比例也不能算出 0 —— 0 会让画面彻底消失
+    passOrFail("fit-to-window never returns a zoom of zero",
+        ZoomPolicy::fitWindowZoom(4000000, 10, 800, 600, base) >= 1);
+
+    // ── 适应图片：客户区正好等于图片，四边零留白 ───────────────────────
+    // 这是「适应图片」零留白的根据：窗口按 scale 定，缩放也必须是同一个 scale
+    {
+        const auto small = InitialWindowLayout::calculateFitImage(640, 480, 2560, 1392);
+        const bool exactlyImage = small.clientWidth == 640 && small.clientHeight == 480 &&
+            std::abs(small.scale - 1.0) < 1e-9;
+
+        const auto huge = InitialWindowLayout::calculateFitImage(9000, 9000, 2560, 1392);
+        // 客户区必须等于「图片 × scale」，否则按 scale 设缩放就会和窗口对不上
+        const bool matchesScale =
+            huge.clientWidth == static_cast<int>(std::lround(9000 * huge.scale)) &&
+            huge.clientHeight == static_cast<int>(std::lround(9000 * huge.scale));
+        // 不能超出工作区的 90%
+        const bool withinWorkArea = huge.clientWidth <= 2560 * 90 / 100 + 1 &&
+            huge.clientHeight <= 1392 * 90 / 100 + 1;
+        // 正方形图片得到正方形窗口，不是 4:3
+        const bool keepsAspect = huge.clientWidth == huge.clientHeight;
+
+        passOrFail("fit-window-to-image sizes the client area to the image itself",
+            exactlyImage && matchesScale && withinWorkArea && keepsAspect && huge.scale < 1.0);
+    }
+
+    // 极扁的图也要保持比例，别被工作区的宽高比带偏
+    {
+        const auto wide = InitialWindowLayout::calculateFitImage(8000, 500, 2560, 1392);
+        const double sourceAspect = 8000.0 / 500.0;
+        const double windowAspect = static_cast<double>(wide.clientWidth) / wide.clientHeight;
+        passOrFail("fit-window-to-image keeps the aspect ratio of a very wide image",
+            std::abs(sourceAspect - windowAspect) / sourceAspect < 0.02);
+    }
+
+    // ── 预览：缩略图要画在真图将要占据的那个矩形里 ─────────────────────
+    // 系统给 SVG 的缩略图是 995x1024，而 SVG 自己是 280x288，尺寸毫无关系。
+    // 不折算的话，换成真图的那一刻画面会突然缩小三倍。
+    {
+        const int sourceWidth = 9000;
+        const int previewWidth = 1024;
+        const int64_t zoomForSource = ZoomPolicy::fitWindowZoom(9000, 9000, 750, 750, base);
+        const int64_t zoomForPreview =
+            ZoomPolicy::previewZoom(zoomForSource, sourceWidth, previewWidth);
+
+        // 两者画出来的宽度必须一致（允许一个像素的取整误差）
+        const double sourceOnScreen = sourceWidth * static_cast<double>(zoomForSource) / base;
+        const double previewOnScreen = previewWidth * static_cast<double>(zoomForPreview) / base;
+        passOrFail("a preview thumbnail is drawn in the rectangle the real image will occupy",
+            std::abs(sourceOnScreen - previewOnScreen) <= 1.0);
+    }
+
+    // 缩略图比真图大（SVG 那种）同样要成立
+    {
+        const int64_t zoomForSource = ZoomPolicy::fitWindowZoom(280, 288, 750, 750, base);
+        const int64_t zoomForPreview = ZoomPolicy::previewZoom(zoomForSource, 280, 995);
+        const double sourceOnScreen = 280 * static_cast<double>(zoomForSource) / base;
+        const double previewOnScreen = 995 * static_cast<double>(zoomForPreview) / base;
+        passOrFail("the same holds when the thumbnail is larger than the real image",
+            std::abs(sourceOnScreen - previewOnScreen) <= 1.0);
+    }
+
+    passOrFail("preview folding leaves a normal image untouched",
+        ZoomPolicy::previewZoom(1234, 0, 100) == 1234 &&
+        ZoomPolicy::previewZoom(1234, 100, 0) == 1234 &&
+        ZoomPolicy::previewZoom(1234, 500, 500) == 1234);
+
+    // ── 报给用户的百分比：预览期间要按真图口径 ─────────────────────────
+    // 否则标题上会先显示 73% 再跳到 8%，而画面其实一动没动
+    {
+        const int64_t zoomForSource = ZoomPolicy::fitWindowZoom(9000, 9000, 750, 750, base);
+        const double previewToSource = 9000.0 / 1024.0;
+        const int64_t zoomForPreview = ZoomPolicy::previewZoom(zoomForSource, 9000, 1024);
+        passOrFail("the reported percentage stays the same across the preview-to-real swap",
+            ZoomPolicy::reportedPercent(zoomForPreview, previewToSource, base) ==
+            ZoomPolicy::reportedPercent(zoomForSource, 1.0, base));
+    }
+
+    passOrFail("the reported percentage is unchanged when there is no preview",
+        ZoomPolicy::reportedPercent(base, 1.0, base) == 100 &&
+        ZoomPolicy::reportedPercent(base / 2, 1.0, base) == 50 &&
+        // 折算系数非法时按原值报，不能报出 0 或负数
+        ZoomPolicy::reportedPercent(base, 0.0, base) == 100 &&
+        ZoomPolicy::reportedPercent(base, -1.0, base) == 100);
+
+    // ── 实际大小：永远是 100%，与窗口无关 ──────────────────────────────
+    // 这条没有专门的函数，用显示百分比把契约钉住：ZOOM_BASE 就是 100%
+    passOrFail("actual size means exactly one hundred percent",
+        ZoomPolicy::displayPercent(base, base) == 100);
+}
+
 void expectZoomPolicy() {
     constexpr int64_t zoomBase = 1 << 16;
     const auto levels = ZoomPolicy::buildLevels(zoomBase);
@@ -2344,6 +2479,7 @@ int main(int argc, char* argv[]) {
     expectBilinearEnlargement();
     expectBackgroundRendering();
     expectOverlayLayout();
+    expectZoomCommands();
     expectZoomPolicy();
     expectZoomEditPolicy();
     expectSlideshowPolicy();

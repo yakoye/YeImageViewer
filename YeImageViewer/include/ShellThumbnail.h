@@ -85,30 +85,39 @@ namespace ShellThumbnail {
         if (path.empty())
             return dims;
 
-        IPropertyStore* store = nullptr;
-        // FASTPROPERTIESONLY 只读已缓存的属性，拿不到时再退回完整查询
-        HRESULT hr = SHGetPropertyStoreFromParsingName(
-            path.c_str(), nullptr, GPS_FASTPROPERTIESONLY, IID_PPV_ARGS(&store));
-        if (FAILED(hr))
-            hr = SHGetPropertyStoreFromParsingName(
-                path.c_str(), nullptr, GPS_DEFAULT, IID_PPV_ARGS(&store));
-        if (FAILED(hr) || !store)
-            return dims;
+        // 先试只读缓存的快查询，缓存里没有再做完整查询。
+        //
+        // 关键：快查询会「成功但返回空值」——属性没进过缓存时 GetValue 返回 S_OK，
+        // 值却是空的。只看 HRESULT 判断失败是不够的，必须看真的拿到尺寸没有，
+        // 否则第一次打开的文件永远报 0×0。尺寸拿不到会直接影响预览能不能用
+        // （见 ImageDatabase::tryMakePreviewAsset），不能将就。
+        const auto query = [&path](GETPROPERTYSTOREFLAGS flags) -> Dimensions {
+            Dimensions result;
+            IPropertyStore* store = nullptr;
+            if (FAILED(SHGetPropertyStoreFromParsingName(
+                    path.c_str(), nullptr, flags, IID_PPV_ARGS(&store))) || !store)
+                return result;
 
-        const auto readUInt = [store](REFPROPERTYKEY key) -> int64_t {
-            PROPVARIANT value;
-            PropVariantInit(&value);
-            ULONGLONG number = 0;
-            if (SUCCEEDED(store->GetValue(key, &value)))
-                PropVariantToUInt64(value, &number);
-            PropVariantClear(&value);
-            return static_cast<int64_t>(number);
+            const auto readUInt = [store](REFPROPERTYKEY key) -> int64_t {
+                PROPVARIANT value;
+                PropVariantInit(&value);
+                ULONGLONG number = 0;
+                if (SUCCEEDED(store->GetValue(key, &value)))
+                    PropVariantToUInt64(value, &number);
+                PropVariantClear(&value);
+                return static_cast<int64_t>(number);
+            };
+
+            result.width = readUInt(PKEY_Image_HorizontalSize);
+            result.height = readUInt(PKEY_Image_VerticalSize);
+            result.bitsPerPixel = readUInt(PKEY_Image_BitDepth);
+            store->Release();
+            return result;
         };
 
-        dims.width = readUInt(PKEY_Image_HorizontalSize);
-        dims.height = readUInt(PKEY_Image_VerticalSize);
-        dims.bitsPerPixel = readUInt(PKEY_Image_BitDepth);
-        store->Release();
+        dims = query(GPS_FASTPROPERTIESONLY);
+        if (dims.width <= 0 || dims.height <= 0)
+            dims = query(GPS_DEFAULT);
         return dims;
     }
 

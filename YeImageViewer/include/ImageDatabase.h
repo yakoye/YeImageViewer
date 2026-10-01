@@ -348,16 +348,27 @@ public:
     // 把已取到的系统缩略图包成一张可显示的图。还没取到或该文件没有缩略图时返回空。
     std::shared_ptr<ImageAsset> tryMakePreviewAsset(const wstring& key) {
         cv::Mat thumb;
+        int sourceWidth = 0;
+        int sourceHeight = 0;
         {
             std::lock_guard<std::mutex> lock(previewMutex);
             auto it = previewReady.find(key);
             if (it == previewReady.end() || it->second.thumb.empty())
                 return nullptr;
+            // 系统报不出真图尺寸（SVG 这类就报不出）时不给预览：缩略图的尺寸和真图
+            // 没有关系，照它算出来的画面位置和真图对不上，换图那一刻会跳一下，
+            // 还不如直接等真图——报不出尺寸的格式通常也解得快。
+            if (it->second.sourceWidth <= 0 || it->second.sourceHeight <= 0)
+                return nullptr;
             thumb = it->second.thumb;
+            sourceWidth = it->second.sourceWidth;
+            sourceHeight = it->second.sourceHeight;
         }
 
         ImageAsset asset{ ImageFormat::Still, std::move(thumb), {}, {}, "" };
         asset.isLoading = true;
+        asset.sourceWidth = sourceWidth;
+        asset.sourceHeight = sourceHeight;
         return std::make_shared<ImageAsset>(std::move(asset));
     }
 
@@ -707,6 +718,11 @@ private:
     struct PreviewEntry {
         cv::Mat thumb;            // 取不到缩略图时为空
         int64_t estimatedMs = 0;  // 0 表示估不出来或短到不值得显示
+        // 真图尺寸，取自系统属性。系统报不出来时为 0，那种情况下不提供预览——
+        // 缩略图的尺寸和真图可以毫无关系（SVG 上系统给 995x1024，真图 280x288），
+        // 不知道真尺寸就没法让预览画在真图将要占据的位置，换图时必然跳一下。
+        int sourceWidth = 0;
+        int sourceHeight = 0;
     };
 
     DecodeEstimate::Model decodeEstimate;
@@ -750,7 +766,8 @@ private:
             {
                 std::lock_guard<std::mutex> lock(previewMutex);
                 previewQueued.erase(key);
-                previewReady[key] = PreviewEntry{ std::move(thumb), estimated };
+                previewReady[key] = PreviewEntry{ std::move(thumb), estimated,
+                static_cast<int>(dims.width), static_cast<int>(dims.height) };
                 previewOrder.push_back(key);
 
                 while (previewOrder.size() > PREVIEW_CACHE_MAX) {

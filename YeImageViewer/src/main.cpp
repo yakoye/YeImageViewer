@@ -301,8 +301,14 @@ struct CurImageParameter {
     bool isAnimationPause = false;
     bool flipHorizontal = false;
     bool flipVertical = false;
-    int width = 0;
+    int width = 0;    // 正在画的那张 Mat 的尺寸，几何计算都按它来
     int height = 0;
+    // 显示预览图时，真图的尺寸（标题要显示真图的尺寸，不是缩略图的）。0 表示不是预览。
+    int sourceWidth = 0;
+    int sourceHeight = 0;
+    // 缩略图像素 → 真图像素的倍数。zoomCur 是相对缩略图的，报给用户要除以它，
+    // 否则标题上会先显示 73% 再跳到 8%，而画面其实一动没动。
+    double previewToSource = 1.0;
     int rotation = 0; // 旋转： 0正常， 1逆90度， 2：180度， 3顺90度
 
     CurImageParameter() {
@@ -346,9 +352,19 @@ struct CurImageParameter {
                 height = imageAssetPtr->primaryFrame.rows;
             }
 
+            // 预览图的像素尺寸和真图无关，缩放要按真图尺寸算，否则换成真图时画面会跳。
+            // 算完再按两者的比例折算回缩略图的像素——curPar.width/height 必须始终是
+            // 正在画的那张 Mat 的尺寸，drawCanvas 和实况标记的几何都依赖它。
+            sourceWidth = imageAssetPtr->sourceWidth;
+            sourceHeight = imageAssetPtr->sourceHeight;
+            const bool usingPreviewSize =
+                sourceWidth > 0 && sourceHeight > 0 && width > 0 && height > 0;
+            const int logicalWidth = usingPreviewSize ? sourceWidth : width;
+            const int logicalHeight = usingPreviewSize ? sourceHeight : height;
+
             //适应显示窗口宽高的缩放比例
-            const int displayWidth = (rotation == 0 || rotation == 2) ? width : height;
-            const int displayHeight = (rotation == 0 || rotation == 2) ? height : width;
+            const int displayWidth = (rotation == 0 || rotation == 2) ? logicalWidth : logicalHeight;
+            const int displayHeight = (rotation == 0 || rotation == 2) ? logicalHeight : logicalWidth;
             // 解码失败或空图时 displayWidth/displayHeight 可能为 0，直接相除会整数除零崩溃
             // 解码失败或空图时 displayWidth/displayHeight 可能为 0，直接相除会整数除零崩溃。
             // 仅在这一种情况下回落，其余路径保持原有取值，避免影响窗口尺寸未就绪时的缩放行为。
@@ -358,6 +374,14 @@ struct CurImageParameter {
             zoomTarget = (displayHeight > winHeight || displayWidth > winWidth || forceFitWindow) ?
                 zoomFitWindow :
                 ((preventUpscale || GlobalVar::settingParameter.isOneToOnePreferred) ? ZOOM_BASE : zoomFitWindow);
+
+            // 折算：缩略图要画在真图将要占据的那个矩形里
+            previewToSource = 1.0;
+            if (usingPreviewSize) {
+                previewToSource = static_cast<double>(logicalWidth) / width;
+                zoomTarget = ZoomPolicy::previewZoom(zoomTarget, logicalWidth, width);
+                zoomFitWindow = ZoomPolicy::previewZoom(zoomFitWindow, logicalWidth, width);
+            }
             zoomCur = zoomTarget;
 
             zoomList = std::vector<int64_t>(ZOOM_LIST.begin(), ZOOM_LIST.end());
@@ -378,6 +402,9 @@ struct CurImageParameter {
             curFrameIdxMax = 0;
             width = 0;
             height = 0;
+            sourceWidth = 0;
+            sourceHeight = 0;
+            previewToSource = 1.0;
 
             zoomList = std::vector<int64_t>(ZOOM_LIST.begin(), ZOOM_LIST.end());
             zoomIndex = (int)(ZOOM_LIST.size() / 2);
@@ -445,15 +472,16 @@ struct CurImageParameter {
     // updateZoomList 都会重建并重新排序），索引跟着指偏；而 setZoom 里还有一句
     // zoomIndexFix = zoomIndex，等于把「适合窗口」的目标改成了当前缩放。
     // 实测把窗口拉扁后点「适合窗口」，19% 跳成 100%，整张图反而被切掉。
+    // 报给用户看的缩放百分比。显示预览图时 zoomCur 是相对缩略图像素的，
+    // 要折回真图口径，否则换成真图那一刻百分比会跳，而画面其实没动。
+    int displayZoomPercent() const {
+        return ZoomPolicy::reportedPercent(zoomCur, previewToSource, ZOOM_BASE);
+    }
+
+    // 规则本身在 ZoomPolicy.h，那边有配套的用例；这里只做转发，免得两处走偏。
     int64_t fitWindowZoom(int windowWidth, int windowHeight) const {
-        const bool upright = (rotation == 0 || rotation == 2);
-        const int sourceWidth = upright ? width : height;
-        const int sourceHeight = upright ? height : width;
-        if (sourceWidth <= 0 || sourceHeight <= 0 || windowWidth <= 0 || windowHeight <= 0)
-            return ZOOM_BASE;
-        return std::max<int64_t>(1, std::min(
-            static_cast<int64_t>(windowWidth) * ZOOM_BASE / sourceWidth,
-            static_cast<int64_t>(windowHeight) * ZOOM_BASE / sourceHeight));
+        return ZoomPolicy::fitWindowZoomRotated(width, height, rotation,
+            windowWidth, windowHeight, ZOOM_BASE);
     }
 
     void slideTargetRotateLeft() {
@@ -1028,6 +1056,14 @@ public:
             applyImageFittedWindowSize();
         // RememberLastSize 不用做任何事：窗口创建时已经用了上次保存的 rect。
 
+        // 「窗口适应图片」和下面的「图片适应窗口」一样不能锚定：
+        // 锚定会按工作区重算缩放，把贴合好的那一对关系覆盖掉。
+        if (mode == ViewerOptions::OpenMode::FitImage) {
+            framedWindowAnchored = false;
+            operateQueue.push({ ActionENUM::refresh });
+            return;
+        }
+
         // 图片适应窗口：窗口不动，把图片整张缩进去，一眼看完，不用拖。
         // 这一种不能锚定窗口——锚定那条路径会按工作区重算缩放，把这里算好的覆盖掉。
         if (mode == ViewerOptions::OpenMode::FitImageInWindow) {
@@ -1041,7 +1077,14 @@ public:
         operateQueue.push({ ActionENUM::refresh });
     }
 
+    // 把窗口撑成贴合图片，并把缩放定成同一个比例，四边零留白。
+    //
+    // 必须在动窗口之前就把锚定关掉：下面 SetWindowPos 会同步派发 WM_SIZE，
+    // 而锚定那条路径（applyAnchoredWindowImageLayout）会按工作区重算缩放，
+    // 把这里刚算好的覆盖掉——窗口变了、画面没跟上，于是四周露出一圈背景。
     void applyImageFittedWindowSize() {
+        framedWindowAnchored = false;
+
         MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
         if (!GetMonitorInfoW(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST), &monitorInfo))
             return;
@@ -1057,6 +1100,20 @@ public:
             imageWidth, imageHeight, workWidth, workHeight);
         if (layout.clientWidth <= 0 || layout.clientHeight <= 0)
             return;
+
+        // 窗口撑到贴合图片之后，缩放必须跟着一起定。只改窗口不改缩放的话，
+        // 画面还停在上一个比例上，窗口却按新比例放大了，四周就露出一圈背景
+        // （透明背景下是棋盘格）——这正是之前「适应图片」看着不贴合的原因。
+        // layout.scale 的含义就是「图片按这个比例显示时，客户区正好等于图片」。
+        const int64_t fittedZoom = std::max<int64_t>(1,
+            static_cast<int64_t>(std::llround(layout.scale * CurImageParameter::ZOOM_BASE)));
+        curPar.selectZoomTarget(fittedZoom);
+        curPar.zoomCur = fittedZoom;
+        curPar.zoomUserAdjusted = true;
+        // 贴合之后图片正好占满客户区，任何平移都会把边缘推出去
+        curPar.slideTarget = Cood{};
+        curPar.slideCur = Cood{};
+
 
         RECT outerRect{ 0, 0, layout.clientWidth, layout.clientHeight };
         const auto style = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_STYLE));
@@ -1783,7 +1840,10 @@ public:
                 if (presentationMode)
                     exitPresentationMode();
                 applyImageFittedWindowSize();
-                framedWindowAnchored = true;
+                // 不能锚定：锚定那条路径（applyAnchoredWindowImageLayout）会按工作区
+                // 重算缩放，把刚刚贴合好的窗口与缩放这一对关系覆盖掉，窗口和画面就
+                // 又对不上了。这是用户明确指定的尺寸，不该再被自动重算。
+                framedWindowAnchored = false;
                 operateQueue.push({ ActionENUM::refresh });
                 break;
             case ToolbarCommand::Command::ZoomActual: operateQueue.push({ ActionENUM::zoomActual }); break;
@@ -4316,8 +4376,7 @@ public:
         textDrawer.setSize(OverlayLayout::scaled(OverlayLayout::TOOLBAR_TEXT_SIZE, scale));
         const std::string zoomText = zoomTextEditing ?
             std::format("{}%", zoomEditText) :
-            std::format("{}%",
-                ZoomPolicy::displayPercent(curPar.zoomCur, CurImageParameter::ZOOM_BASE));
+            std::format("{}%", curPar.displayZoomPercent());
         const auto zoomTextRect = toCvRect(zoomTextLayout);
         textDrawer.putAlignCenter(canvas, zoomTextRect,
             zoomText.c_str(), zoomTextEditing ? 0xFFFFFFFFu : 0xFFDDE1E9u);
@@ -5195,13 +5254,23 @@ public:
                 break;
             }
         }
+        // 显示预览图期间，像素尺寸要报真图的，不是缩略图的；
+        // 文件大小此时还没解析出来，直接问文件系统拿。
+        const bool showingPreviewSize = curPar.sourceWidth > 0 && curPar.sourceHeight > 0;
+        if (showingPreviewSize && fileSize.empty() && hasCurrentImagePath()) {
+            std::error_code sizeError;
+            const auto bytes = std::filesystem::file_size(imgFileList[curFileIdx], sizeError);
+            if (!sizeError)
+                fileSize = jarkUtils::utf8ToWstring(jarkUtils::size2Str(bytes));
+        }
+
         WindowTitlePresentation::Model titleModel{
             .state = pausedAnimation ? std::wstring(getUIStringW(9)) : std::wstring{},
             .current = pausedAnimation ? curPar.curFrameIdx + 1 : curFileIdx + 1,
             .total = pausedAnimation ? curPar.curFrameIdxMax + 1 : static_cast<int>(imgFileList.size()),
-            .zoomPercent = ZoomPolicy::displayPercent(curPar.zoomCur, curPar.ZOOM_BASE),
-            .pixelWidth = curPar.width,
-            .pixelHeight = curPar.height,
+            .zoomPercent = curPar.displayZoomPercent(),
+            .pixelWidth = showingPreviewSize ? curPar.sourceWidth : curPar.width,
+            .pixelHeight = showingPreviewSize ? curPar.sourceHeight : curPar.height,
             .fileSize = std::move(fileSize),
             .fileName = hasCurrentImagePath() ?
                 std::filesystem::path(imgFileList[curFileIdx]).filename().wstring() : m_wndCaption,
