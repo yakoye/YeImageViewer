@@ -41,8 +41,9 @@ Clicking the background outside the image or pressing `Esc` returns to a framed 
 
 ## Format support
 
-- Still: `apng avif avifs blp bmp dib exr gif hdr heic heif ico icon jfif jp2 jpe jpeg jpg jxl jxr livp pbm pfm pgm pic png pnm ppm psd pxm qoi ras sr svg tga tif tiff webp wp2`
+- Still: `apng avif avifs blp bmp dds dib exr gif hdr heic heif ico icon jfif jp2 jpe jpeg jpg jxl jxr lep livp pbm pcx pfm pgm pic png pnm ppm psd psdt pxm qoi ras sr svg tga tif tiff webm webp wp2`
 - Animated: `gif webp png apng jxl avif`
+- Video (decoded only when opened directly, as an animation of the first frames; never listed while paging through a folder): `3gp avi evo flv m2ts m4v mkv mov mp4 mts mxf ts vob wmv`
 - Live: LivePhoto, MicroVideo, and MotionPhoto in `livp`, `jpg`, `heic`, or `heif` files, including the audio recorded with the clip (autoplay is muted by default; hover the LIVE badge to replay with sound)
 - RAW: `3fr ari arw bay cap cr2 cr3 crw dcr dcs dng drf eip erf fff gpr iiq k25 kdc mdc mef mos mrw nef nrw orf pef ptx r3d raf raw rw2 rwl rwz sr2 srf srw x3f`
 
