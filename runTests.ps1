@@ -323,7 +323,64 @@ foreach ($appIcon in $appIcons) {
     }
 }
 
-& $unitTests $hdrFixture $sharpSvgFixture $textSvgFixture @toolbarIcons @appIcons
+# 缩略图组件（随程序交付的三个文件之一）直接 LoadLibrary 构建产物里那份 DLL 来测，
+# 不依赖注册表也不受 shell 缩略图缓存干扰。素材挑的是「Windows 自己不认、只能靠我们」
+# 的那些格式——这些才是装了本程序才看得到缩略图的。
+$thumbnailProviderDll = Join-Path $releaseDir "YeThumbnailProvider.dll"
+if (-not (Test-Path -LiteralPath $thumbnailProviderDll -PathType Leaf)) {
+    throw "Thumbnail provider DLL is missing: $thumbnailProviderDll"
+}
+$thumbnailFixtures = @(
+    # 和 common.png 同源的 160x80 参考图，用来逐像素比对（通道顺序搞反这种错，
+    # 只看「有没有出图」是看不出来的）
+    (Join-Path $formatCorpusRoot "files\common.png"),
+    (Join-Path $formatCorpusRoot "files\common.tga"),
+    (Join-Path $formatCorpusRoot "files\common.ras"),
+    (Join-Path $formatCorpusRoot "files\common.sr"),
+    (Join-Path $formatCorpusRoot "files\common.pcx"),
+    # 其余有仓库内素材的注册扩展，一个不落
+    (Join-Path $formatCorpusRoot "files\common.qoi"),
+    (Join-Path $formatCorpusRoot "files\common.pbm"),
+    (Join-Path $formatCorpusRoot "files\common.pgm"),
+    (Join-Path $formatCorpusRoot "files\common.ppm"),
+    (Join-Path $formatCorpusRoot "files\common.pnm"),
+    (Join-Path $formatCorpusRoot "files\common.pxm"),
+    (Join-Path $formatCorpusRoot "files\common.pfm"),
+    (Join-Path $formatCorpusRoot "files\common.pic"),
+    (Join-Path $formatCorpusRoot "files\common.hdr"),
+    (Join-Path $formatCorpusRoot "files\common.dds"),
+    (Join-Path $formatCorpusRoot "files\common.jxr"),
+    (Join-Path $formatCorpusRoot "files\common.psdt"),
+    (Join-Path $formatCorpusRoot "files\libavif-static.avif"),
+    (Join-Path $formatCorpusRoot "files\libavif-animated.avifs"),
+    (Join-Path $formatCorpusRoot "files\libheif-rainbow.heic"),
+    (Join-Path $formatCorpusRoot "files\libheif-rainbow.heif"),
+    (Join-Path $formatCorpusRoot "files\libjxl-static.jxl"),
+    (Join-Path $formatCorpusRoot "files\libjxl-animated.jxl"),
+    (Join-Path $formatCorpusRoot "files\bundled-codec.wp2"),
+    (Join-Path $formatCorpusRoot "files\blp-dxt1.blp"),
+    (Join-Path $formatCorpusRoot "files\animated.apng"),
+    (Join-Path $formatCorpusRoot "files\generated-live-photo.livp"),
+    (Join-Path $repoRoot "test\corpus\02-professional\psd_8bit.psd"),
+    (Join-Path $repoRoot "test\corpus\02-professional\psd_alpha.psd"),
+    (Join-Path $repoRoot "test\corpus\02-professional\psd_16bit.psd"),
+    (Join-Path $repoRoot "test\corpus\02-professional\pfm_gray.pfm"),
+    # 已知解不出来的也要留在清单里：测试会确认它们仍然「按文档那样不出图」，
+    # 哪天补上了解码器，测试会提醒把记录删掉（见 main.cpp 的 thumbnailKnownGaps）
+    (Join-Path $formatCorpusRoot "files\common.jp2"),
+    (Join-Path $formatCorpusRoot "files\opencv-float.exr"),
+    (Join-Path $repoRoot "test\corpus\02-professional\exr_color.exr"),
+    (Join-Path $repoRoot "test\corpus\02-professional\exr_alpha.exr"),
+    $sharpSvgFixture
+)
+foreach ($thumbnailFixture in $thumbnailFixtures) {
+    if (-not (Test-Path -LiteralPath $thumbnailFixture -PathType Leaf)) {
+        throw "Thumbnail regression fixture is missing: $thumbnailFixture"
+    }
+}
+
+& $unitTests $hdrFixture $sharpSvgFixture $textSvgFixture @toolbarIcons @appIcons `
+    $thumbnailProviderDll @thumbnailFixtures
 if ($LASTEXITCODE -ne 0) {
     throw "Unit regression tests failed with exit code $LASTEXITCODE."
 }

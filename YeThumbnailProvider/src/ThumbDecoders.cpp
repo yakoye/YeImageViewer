@@ -1292,6 +1292,280 @@ uint8_t floatToByte(float value) noexcept {
     return static_cast<uint8_t>(std::clamp(value, 0.0f, 255.0f));
 }
 
+// Sun raster（.ras / .sr）。枚举里一直有 Format::Ras/Sr，但嗅探器从来没返回过，
+// 于是这两种格式一路落到 default 分支，WIC 和 stb 都不认，资源管理器永远只给通用图标。
+// 头部八个字段都是大端 32 位，行按 2 字节对齐。
+// 整张图的 alpha 全是 0 等于「完全看不见」：预乘之后每个像素都变成全透明的黑，
+// 资源管理器里就是一片空白。真正带透明的图不会每一个像素都全透明——那样这张图
+// 压根没有内容——所以出现这种情况一定是解码器把透明通道整层解成了 0。
+// 16 位 PSD 就是这样（见 test/corpus/README.md 里那一节）。
+//
+// 这时按不透明处理：缩略图能看见，比一片空白有用；判据是「全零」，
+// 真的带透明的图一个都不会被误伤。
+void repairFullyTransparent(ThumbBitmap& bitmap) noexcept {
+    if (bitmap.bgra.size() < 4) {
+        return;
+    }
+
+    for (size_t offset = 3; offset < bitmap.bgra.size(); offset += 4) {
+        if (bitmap.bgra[offset] != 0) {
+            return;
+        }
+    }
+
+    for (size_t offset = 3; offset < bitmap.bgra.size(); offset += 4) {
+        bitmap.bgra[offset] = 255;
+    }
+    bitmap.hasAlpha = false;
+}
+
+bool decodeSunRaster(std::span<const uint8_t> data, ThumbBitmap& out) {
+    constexpr size_t headerBytes = 32;
+    if (data.size() < headerBytes) {
+        return false;
+    }
+
+    const auto readBigEndian32 = [&data](size_t offset) -> uint32_t {
+        return (static_cast<uint32_t>(data[offset]) << 24) |
+            (static_cast<uint32_t>(data[offset + 1]) << 16) |
+            (static_cast<uint32_t>(data[offset + 2]) << 8) |
+            static_cast<uint32_t>(data[offset + 3]);
+    };
+
+    if (readBigEndian32(0) != 0x59a66a95u) {
+        return false;
+    }
+
+    const uint32_t width = readBigEndian32(4);
+    const uint32_t height = readBigEndian32(8);
+    const uint32_t depth = readBigEndian32(12);
+    const uint32_t type = readBigEndian32(20);
+    const uint32_t mapType = readBigEndian32(24);
+    const uint32_t mapLength = readBigEndian32(28);
+
+    if (!checkedDimensions(width, height)) {
+        return false;
+    }
+    if (depth != 1 && depth != 8 && depth != 24 && depth != 32) {
+        return false;
+    }
+    // 1 RT_STANDARD、2 RT_BYTE_ENCODED、3 RT_FORMAT_RGB，以及 0 RT_OLD（按标准处理）
+    if (type > 3) {
+        return false;
+    }
+    if (mapLength > data.size() - headerBytes) {
+        return false;
+    }
+
+    const uint8_t* palette = data.data() + headerBytes;
+    std::span<const uint8_t> body = data.subspan(headerBytes + mapLength);
+
+    // 行按 2 字节对齐
+    const size_t rowBits = static_cast<size_t>(width) * depth;
+    const size_t rowBytes = ((rowBits + 15) / 16) * 2;
+    const size_t needed = rowBytes * height;
+
+    std::vector<uint8_t> unpacked;
+    if (type == 2) {
+        // RT_BYTE_ENCODED：0x80 开启一段重复，后面跟「个数-1」和值；
+        // 个数为 0 表示这就是一个字面量 0x80。
+        unpacked.reserve(needed);
+        for (size_t i = 0; i < body.size() && unpacked.size() < needed;) {
+            const uint8_t value = body[i++];
+            if (value != 0x80) {
+                unpacked.push_back(value);
+                continue;
+            }
+            if (i >= body.size()) {
+                break;
+            }
+            const uint8_t count = body[i++];
+            if (count == 0) {
+                unpacked.push_back(0x80);
+                continue;
+            }
+            if (i >= body.size()) {
+                break;
+            }
+            const uint8_t repeated = body[i++];
+            const size_t runLength = static_cast<size_t>(count) + 1;
+            unpacked.insert(unpacked.end(),
+                std::min(runLength, needed - unpacked.size()), repeated);
+        }
+        if (unpacked.size() < needed) {
+            return false;
+        }
+        body = std::span<const uint8_t>(unpacked);
+    }
+    else if (body.size() < needed) {
+        return false;
+    }
+
+    // 24/32 位里 RT_FORMAT_RGB 是 RGB 排列，其余是 BGR
+    const bool rgbOrder = type == 3;
+
+    out.width = width;
+    out.height = height;
+    out.hasAlpha = false;
+    out.bgra.assign(static_cast<size_t>(width) * height * 4ULL, 255);
+
+    for (uint32_t y = 0; y < height; ++y) {
+        const uint8_t* row = body.data() + static_cast<size_t>(y) * rowBytes;
+        for (uint32_t x = 0; x < width; ++x) {
+            const size_t dst = (static_cast<size_t>(y) * width + x) * 4ULL;
+            uint8_t b = 0;
+            uint8_t g = 0;
+            uint8_t r = 0;
+
+            switch (depth) {
+            case 1: {
+                // 位为 1 表示黑，和 PBM 一致
+                const uint8_t bits = row[x >> 3];
+                const bool black = (bits >> (7 - (x & 7))) & 1;
+                b = g = r = black ? 0 : 255;
+                break;
+            }
+            case 8: {
+                const uint8_t index = row[x];
+                if (mapType == 1 && mapLength >= 3) {
+                    const uint32_t entries = mapLength / 3;
+                    if (index < entries) {
+                        r = palette[index];
+                        g = palette[entries + index];
+                        b = palette[2ULL * entries + index];
+                    }
+                }
+                else {
+                    b = g = r = index;
+                }
+                break;
+            }
+            case 24: {
+                const uint8_t* pixel = row + static_cast<size_t>(x) * 3;
+                if (rgbOrder) {
+                    r = pixel[0]; g = pixel[1]; b = pixel[2];
+                }
+                else {
+                    b = pixel[0]; g = pixel[1]; r = pixel[2];
+                }
+                break;
+            }
+            default: {
+                // 32 位：第一个字节是填充/alpha，这里按不透明处理
+                const uint8_t* pixel = row + static_cast<size_t>(x) * 4;
+                if (rgbOrder) {
+                    r = pixel[1]; g = pixel[2]; b = pixel[3];
+                }
+                else {
+                    b = pixel[1]; g = pixel[2]; r = pixel[3];
+                }
+                break;
+            }
+            }
+
+            out.bgra[dst + 0] = b;
+            out.bgra[dst + 1] = g;
+            out.bgra[dst + 2] = r;
+        }
+    }
+
+    return true;
+}
+
+// 纯文本 PNM 和 1 位 PBM。stb 只认二进制的 P5/P6，P1/P2/P3/P4 一概解不出来——
+// 所以一张 P4 的 .pbm 在资源管理器里没有缩略图，而同目录的 .pgm 有。
+bool decodePlainPnm(std::span<const uint8_t> data, ThumbBitmap& out) {
+    size_t offset = 0;
+    std::string token;
+
+    if (!parsePfmToken(data, offset, token) || token.size() != 2 || token[0] != 'P') {
+        return false;
+    }
+
+    const char variant = token[1];
+    if (variant != '1' && variant != '2' && variant != '3' && variant != '4') {
+        return false;   // P5/P6 交给 stb，它更快
+    }
+
+    if (!parsePfmToken(data, offset, token)) return false;
+    const long width = std::atol(token.c_str());
+    if (!parsePfmToken(data, offset, token)) return false;
+    const long height = std::atol(token.c_str());
+
+    long maxValue = 1;
+    if (variant == '2' || variant == '3') {
+        if (!parsePfmToken(data, offset, token)) return false;
+        maxValue = std::atol(token.c_str());
+        if (maxValue <= 0 || maxValue > 65535) return false;
+    }
+
+    if (width <= 0 || height <= 0 ||
+        !checkedDimensions(static_cast<uint32_t>(width), static_cast<uint32_t>(height))) {
+        return false;
+    }
+
+    out.width = static_cast<uint32_t>(width);
+    out.height = static_cast<uint32_t>(height);
+    out.hasAlpha = false;
+    out.bgra.assign(static_cast<size_t>(width) * static_cast<size_t>(height) * 4ULL, 255);
+
+    if (variant == '4') {
+        // 二进制位图：每行按字节对齐，位为 1 表示黑
+        const size_t rowBytes = (static_cast<size_t>(width) + 7) / 8;
+        if (offset >= data.size() || rowBytes * height > data.size() - offset) {
+            return false;
+        }
+        // 头部最后一个空白字符之后紧接着就是数据，parsePfmToken 已经停在数据首字节
+        const uint8_t* bits = data.data() + offset;
+        for (long y = 0; y < height; ++y) {
+            const uint8_t* row = bits + static_cast<size_t>(y) * rowBytes;
+            for (long x = 0; x < width; ++x) {
+                const bool black = (row[x >> 3] >> (7 - (x & 7))) & 1;
+                const size_t dst = (static_cast<size_t>(y) * width + x) * 4ULL;
+                const uint8_t value = black ? 0 : 255;
+                out.bgra[dst + 0] = value;
+                out.bgra[dst + 1] = value;
+                out.bgra[dst + 2] = value;
+            }
+        }
+        return true;
+    }
+
+    // 文本：P1 每个样本是 0/1（1 表示黑），P2 是灰度，P3 是 RGB
+    const int samplesPerPixel = variant == '3' ? 3 : 1;
+    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+    for (size_t pixel = 0; pixel < pixelCount; ++pixel) {
+        uint8_t channel[3] = { 0, 0, 0 };
+        for (int sample = 0; sample < samplesPerPixel; ++sample) {
+            if (!parsePfmToken(data, offset, token)) {
+                return false;
+            }
+            const long raw = std::atol(token.c_str());
+            if (variant == '1') {
+                channel[sample] = raw != 0 ? 0 : 255;   // 1 是黑
+            }
+            else {
+                const long clamped = std::clamp<long>(raw, 0, maxValue);
+                channel[sample] = static_cast<uint8_t>(clamped * 255 / maxValue);
+            }
+        }
+
+        const size_t dst = pixel * 4ULL;
+        if (samplesPerPixel == 3) {
+            out.bgra[dst + 0] = channel[2];
+            out.bgra[dst + 1] = channel[1];
+            out.bgra[dst + 2] = channel[0];
+        }
+        else {
+            out.bgra[dst + 0] = channel[0];
+            out.bgra[dst + 1] = channel[0];
+            out.bgra[dst + 2] = channel[0];
+        }
+    }
+
+    return true;
+}
+
 bool decodePfm(std::span<const uint8_t> data, ThumbBitmap& out) {
     size_t offset = 0;
     std::string token;
@@ -1431,7 +1705,7 @@ bool decodeWic(std::span<const uint8_t> data, ThumbBitmap& out) {
 }
 }
 
-bool decodeThumbnail(std::span<const uint8_t> data, uint32_t maxEdge, ThumbBitmap& out) noexcept {
+bool decodeByFormat(std::span<const uint8_t> data, uint32_t maxEdge, ThumbBitmap& out) noexcept {
     out = {};
 
     try {
@@ -1454,6 +1728,9 @@ bool decodeThumbnail(std::span<const uint8_t> data, uint32_t maxEdge, ThumbBitma
             return decodePcx(data, out);
         case Format::Pfm:
             return decodePfm(data, out);
+        case Format::Ras:
+        case Format::Sr:
+            return decodeSunRaster(data, out);
         case Format::Svg:
             return decodeSvg(data, maxEdge, out);
         case Format::Dds:
@@ -1463,8 +1740,10 @@ bool decodeThumbnail(std::span<const uint8_t> data, uint32_t maxEdge, ThumbBitma
         case Format::Tga:
         case Format::Hdr:
         case Format::Pic:
-        case Format::Pnm:
             return decodeStb(data, out);
+        // stb 只认二进制的 P5/P6；P1/P2/P3/P4 由我们自己读
+        case Format::Pnm:
+            return decodeStb(data, out) || decodePlainPnm(data, out);
         case Format::Jxr:
         case Format::RawTiff:
             return decodeRaw(data, out) || decodeWic(data, out);
@@ -1477,5 +1756,14 @@ bool decodeThumbnail(std::span<const uint8_t> data, uint32_t maxEdge, ThumbBitma
         out = {};
         return false;
     }
+}
+
+bool decodeThumbnail(std::span<const uint8_t> data, uint32_t maxEdge, ThumbBitmap& out) noexcept {
+    if (!decodeByFormat(data, maxEdge, out)) {
+        return false;
+    }
+
+    repairFullyTransparent(out);
+    return true;
 }
 }

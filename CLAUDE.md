@@ -134,6 +134,19 @@ RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 3
   系数、不看算出来的边长，一张 10000x1 的图缩到 800 宽，高就成了 `round(1 * 0.08) = 0`，
   预览窗口建不起来——点「打印」什么都不发生，也没有任何提示。`limitSizeTo16K` 是同一个毛病。
   打印线程是 detach 的且没有 try/catch，这类退化尺寸一旦让 OpenCV 抛出来就是整个进程没了。
+- 缩略图组件（`YeThumbnailProvider.dll`）的用例在单元测试程序里：它直接 `LoadLibrary`
+  构建产物那份 DLL，走 `DllGetClassObject` → `IInitializeWithStream` →
+  `IThumbnailProvider::GetThumbnail`，和资源管理器调它的路子一样，但不依赖注册表、
+  不受 shell 缩略图缓存干扰。注册了哪些扩展看 `ThumbnailRegistrar.h` 的
+  `kThumbnailEligibleExtensions`，仓库里有素材的每一个都在测。
+  「出图了」不等于「出对了」：`common.*` 是同一张 160x80 参考图导出的各种格式，
+  测试拿 PNG 当基准逐像素比 tga / ras / sr / pcx——通道顺序搞反这种错，只看
+  「有没有图」看不出来。
+  确实解不出来的（EXR、JP2）登记在 `main.cpp` 的 `thumbnailKnownGaps` 里，连原因一起；
+  哪天补上了解码器，测试会提醒把记录删掉。
+  缩略图里 alpha 整层为 0 一律当不透明处理（`repairFullyTransparent`）：那种图在
+  资源管理器里就是一片空白，而真正带透明的图不会每个像素都全透明。16 位 PSD 就靠这条
+  才看得见。
 - 查「打开一张图为什么慢」用 `YEIMAGEVIEWER_STARTUP_TRACE=<文件路径>` 环境变量（见 `StartupTrace.h`），会记下 CRT 静态初始化、建窗口、建 D3D 设备、解码、格式转换、色彩管理、首帧绘制各段的时刻。没设环境变量时一个字节都不写。
 - 建 D3D 设备要七十多毫秒，建窗口只要五毫秒。图片解码在 `onWindowCreated()` 里就派出去了，和建设备并行跑；启动那一次的 `initOpenFile` 要传 `keepWarmCache = true`，否则 `imgDB.clear()` 会把在途的解码作废。
 - 别再去给 libpng 的去滤波写 SIMD。做过一轮完整的：libpng 自带的 SSE2 只覆盖 3 和 4 字节像素（`intel/intel_init.c` 里 `if (bpp == 3) ... else if (bpp == 4)`），16 位图是 6 或 8 字节像素，确实掉回标量。补齐 6/8 字节的 SSE2 实现之后，自检确认结果与规范逐字节一致，解码耗时却一点没变——A/B 各跑四轮：原版 1506/1513/1513/1523 ms，SIMD 版 1512/1524/1594/1608 ms。
