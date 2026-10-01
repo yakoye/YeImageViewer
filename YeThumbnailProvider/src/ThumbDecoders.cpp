@@ -1763,7 +1763,11 @@ bool decodeThumbnail(std::span<const uint8_t> data, uint32_t maxEdge, ThumbBitma
         return false;
     }
 
-    repairFullyTransparent(out);
+    // 只对 PSD 兜这一手，和主程序的 loadPSD 保持一致。
+    // 别推广到其他格式：一张全透明的 PNG 本来就该是看不见的。
+    if (sniffFormat(data) == Format::Psd) {
+        repairFullyTransparent(out);
+    }
     return true;
 }
 }

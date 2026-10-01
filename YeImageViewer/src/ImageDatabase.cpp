@@ -3445,9 +3445,13 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
         std::tie(img, exifInfo) = loadICO(path, fileBuf);
     }
     else if (ext == L"psd" || ext == L"psdt") {
-        img = loadSTB(path, fileBuf);
+        // psd_sdk 优先，stb 兜底。顺序不能反：stb 压根不支持「16 位 + RLE 压缩」
+        // 的 PSD——它那条 RLE 分支按每通道 pixelCount 个字节读，而 16 位每通道是
+        // pixelCount*2 个字节，于是从第二个通道起全部错位，alpha 读成整层零，
+        // 图在界面上完全不可见。它还会返回「成功」，所以兜底根本轮不到。
+        img = loadPSD(path, fileBuf);
         if (img.empty())
-            img = loadPSD(path, fileBuf);
+            img = loadSTB(path, fileBuf);
         if (img.empty())
             img = getErrorTipsMat();
     }

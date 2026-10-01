@@ -80,7 +80,7 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
   「适应窗口」只缩不放：图片比窗口小就停在 100%。
   `applyImageFittedWindowSize()` 必须在动窗口**之前**关掉 `framedWindowAnchored`：`SetWindowPos` 会同步派发 WM_SIZE，而锚定那条路径会按工作区重算缩放，把刚算好的覆盖掉。
 - 预览图（系统缩略图）的像素尺寸和真图可以毫无关系——一张 280x288 的 SVG，系统给的缩略图是 995x1024。所以：缩放要按真图尺寸算再折算回缩略图像素（`ZoomPolicy::previewZoom`），标题报的尺寸和百分比也要按真图口径（`ZoomPolicy::reportedPercent`），否则换成真图那一刻画面和数字都会跳。系统报不出真图尺寸时（SVG 就报不出）干脆不显示预览，直接等真图。
-- `scripts/check-source-invariants.ps1` 查四件跑起来也看不出来的事，`runTests.ps1`
+- `scripts/check-source-invariants.ps1` 查五件跑起来也看不出来的事，`runTests.ps1`
   会调它，提交前也可以单独跑（只读源码，几秒钟）：
   1. 三语字符串表三列齐全，`// N` 索引标注没错位——那些索引是硬编码的，中间插一条
      会让后面所有 stringID 整体指错。
@@ -90,6 +90,9 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
      才停线程时派生部分已经销毁，在途那次解码正访问已释放的内存。
   4. 格式清单在 `supportExt`/`supportRaw`/`videoExt`、默认关联列表、两份 README 之间
      对得上。加格式漏改一处不会报错，只会让某个格式「能开但没人知道」。
+  5. PSD 的解码顺序是 psd_sdk 优先、stb 兜底。反过来的话 16 位 RLE 的 PSD 会解成
+     全透明而且不报错——stb 返回「成功」，兜底永远轮不到（经过见
+     `test/corpus/README.md`）。
   静态检查最危险的失效方式是什么都抓不到（正则写歪一个字符就照样 PASS），所以配了
   `scripts/verify-source-invariant-checks.ps1`：逐条制造该抓的错误，确认真会报错，
   跑完按原字节还原（不用 `git checkout --`，那会连未提交的改动一起抹掉）。
