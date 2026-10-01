@@ -943,16 +943,25 @@ try {
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0200, [UIntPtr]::Zero, $freshBackgroundPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0201, [UIntPtr]1, $freshBackgroundPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0202, [UIntPtr]0, $freshBackgroundPosition)
-    Start-Sleep -Milliseconds 500
-    $freshFramedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($freshWindow, -16).ToInt64()
-    $freshFramedExtendedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($freshWindow, -20).ToInt64()
-    $freshFramedRect = New-Object YeImageViewerTestNativeV1365+RECT
-    [void][YeImageViewerTestNativeV1365]::GetClientRect($freshWindow, [ref]$freshFramedRect)
-    $freshFramedWidth = $freshFramedRect.Right - $freshFramedRect.Left
-    $freshFramedHeight = $freshFramedRect.Bottom - $freshFramedRect.Top
-    if (($freshFramedStyle -band 0x00C00000) -eq 0 -or
-        ($freshFramedExtendedStyle -band 0x00200000) -eq 0 -or
-        $freshFramedWidth -ge $freshWorkWidth -or $freshFramedHeight -ge $freshWorkHeight) {
+
+    # 点击进的是操作队列，要等绘制循环消费掉才会退回带边框窗口。
+    # 原来固定等 500 毫秒，机器一忙（比如刚跑完性能测量）就会假失败，
+    # 改成轮询到窗口真的变回来为止。
+    $freshFramedDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    do {
+        Start-Sleep -Milliseconds 100
+        $freshFramedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($freshWindow, -16).ToInt64()
+        $freshFramedExtendedStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($freshWindow, -20).ToInt64()
+        $freshFramedRect = New-Object YeImageViewerTestNativeV1365+RECT
+        [void][YeImageViewerTestNativeV1365]::GetClientRect($freshWindow, [ref]$freshFramedRect)
+        $freshFramedWidth = $freshFramedRect.Right - $freshFramedRect.Left
+        $freshFramedHeight = $freshFramedRect.Bottom - $freshFramedRect.Top
+        $freshFramedReady = ($freshFramedStyle -band 0x00C00000) -ne 0 -and
+            ($freshFramedExtendedStyle -band 0x00200000) -ne 0 -and
+            $freshFramedWidth -lt $freshWorkWidth -and $freshFramedHeight -lt $freshWorkHeight
+    } while (-not $freshFramedReady -and [DateTime]::UtcNow -lt $freshFramedDeadline)
+
+    if (-not $freshFramedReady) {
         throw "Fresh-install regression failed: clicking the background did not return to an image-sized framed window."
     }
     if (-not [YeImageViewerTestNativeV1365]::IsWindowEnabled($freshWindow)) {
