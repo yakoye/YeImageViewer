@@ -156,6 +156,11 @@ RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 3
   **那个文件必须单独一个编译单元**：psd_sdk 的 `PsdPlatform.h` 会 `#define NOMSG`
   `NOUSER` `NOGDI` 一整串把 windows.h 砍瘦，只要它排在 COM 头之前，后面的
   `oleidl.h` / `ocidl.h` 就会因为缺 `MSG` 编译失败。
+- 窗口行为测试里要点对话框按钮时，给**按钮子窗口**发 `BM_CLICK`（`GetDlgItem(dlg, IDYES)`
+  再 `SendMessage(btn, 0x00F5)`）。给对话框本身发 `WM_COMMAND` + IDOK/IDYES 关不掉
+  MessageBox，实测提示框还在原地；只有一个按钮的提示框可以用 `WM_CLOSE` 顶替确定，
+  但 Yes/No 那种 `WM_CLOSE` 等于取消，必须真点按钮。
+- 标题里的序号只有总数到两位才补零（`[1/3]`、`[01/12]`），匹配时别写死 `/03]`。
 - 查「打开一张图为什么慢」用 `YEIMAGEVIEWER_STARTUP_TRACE=<文件路径>` 环境变量（见 `StartupTrace.h`），会记下 CRT 静态初始化、建窗口、建 D3D 设备、解码、格式转换、色彩管理、首帧绘制各段的时刻。没设环境变量时一个字节都不写。
 - 建 D3D 设备要七十多毫秒，建窗口只要五毫秒。图片解码在 `onWindowCreated()` 里就派出去了，和建设备并行跑；启动那一次的 `initOpenFile` 要传 `keepWarmCache = true`，否则 `imgDB.clear()` 会把在途的解码作废。
 - 别再去给 libpng 的去滤波写 SIMD。做过一轮完整的：libpng 自带的 SSE2 只覆盖 3 和 4 字节像素（`intel/intel_init.c` 里 `if (bpp == 3) ... else if (bpp == 4)`），16 位图是 6 或 8 字节像素，确实掉回标量。补齐 6/8 字节的 SSE2 实现之后，自检确认结果与规范逐字节一致，解码耗时却一点没变——A/B 各跑四轮：原版 1506/1513/1513/1523 ms，SIMD 版 1512/1524/1594/1608 ms。

@@ -702,6 +702,71 @@ public static class YeImageViewerTestNativeV1365
     public static extern bool EnumChildWindows(IntPtr parent,
         EnumWindowsCallback callback, IntPtr parameter);
 
+    // 剪贴板里那张图的尺寸。直接读 CF_DIB 的 BITMAPINFOHEADER，不碰 WinForms：
+    // PowerShell 7 没有 Get-Clipboard -Format Image，而 WinForms 的 Clipboard
+    // 还要求调用线程是 STA，换个宿主就可能拿不到。
+    [DllImport("user32.dll")]
+    public static extern bool OpenClipboard(IntPtr owner);
+
+    [DllImport("user32.dll")]
+    public static extern bool CloseClipboard();
+
+    [DllImport("user32.dll")]
+    public static extern bool IsClipboardFormatAvailable(uint format);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetClipboardData(uint format);
+
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GlobalLock(IntPtr handle);
+
+    [DllImport("kernel32.dll")]
+    public static extern bool GlobalUnlock(IntPtr handle);
+
+    public static string ClipboardImageSize()
+    {
+        const uint CF_DIB = 8;
+        // 剪贴板是全机器共享的，别人正占着就等一会儿再试
+        for (int attempt = 0; attempt < 20; attempt++)
+        {
+            if (OpenClipboard(IntPtr.Zero))
+            {
+                try
+                {
+                    if (!IsClipboardFormatAvailable(CF_DIB))
+                        return "";
+
+                    IntPtr handle = GetClipboardData(CF_DIB);
+                    if (handle == IntPtr.Zero)
+                        return "";
+
+                    IntPtr bits = GlobalLock(handle);
+                    if (bits == IntPtr.Zero)
+                        return "";
+                    try
+                    {
+                        // BITMAPINFOHEADER: biSize(0) biWidth(4) biHeight(8)
+                        int width = Marshal.ReadInt32(bits, 4);
+                        int height = Marshal.ReadInt32(bits, 8);
+                        // 自下而上的 DIB 高度是负数
+                        return width.ToString() + "x" + Math.Abs(height).ToString();
+                    }
+                    finally
+                    {
+                        GlobalUnlock(handle);
+                    }
+                }
+                finally
+                {
+                    CloseClipboard();
+                }
+            }
+            System.Threading.Thread.Sleep(50);
+        }
+        return "";
+    }
+
+
 }
 "@
 }
@@ -2741,6 +2806,367 @@ finally {
             Stop-Process -Id $viewerProcess.Id -Force
             $viewerProcess.WaitForExit()
         }
+    }
+}
+
+Write-Host "Checking copy and move to a configured folder..."
+# 这两条菜单项曾经整个不可用：1200-1204 / 1210-1214 这段命令 ID 压根没有处理分支，
+# 而「移动」后来复用了 deleteImg——那条路要求文件还在原处，移动完文件已经不在了。
+# 当时修完没有留下回归测试，这里补上：用真窗口发真命令，查文件系统的真实结果。
+$targetTestRoot = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Targets-" + [Guid]::NewGuid().ToString("N"))
+$targetProcess = $null
+try {
+    [void](New-Item -ItemType Directory -Path $targetTestRoot)
+    # 用独立目录里的一份 exe，配置就不会和开发机上的真配置搅在一起
+    $targetViewer = Join-Path $targetTestRoot "YeImageViewer.exe"
+    Copy-Item -LiteralPath $viewer -Destination $targetViewer
+
+    $targetPictures = Join-Path $targetTestRoot "pics"
+    $targetFolder = Join-Path $targetTestRoot "collected"
+    [void](New-Item -ItemType Directory -Path $targetPictures)
+    [void](New-Item -ItemType Directory -Path $targetFolder)
+    foreach ($name in @("a.png", "b.png", "c.png")) {
+        Copy-Item -LiteralPath $commonPngFixture -Destination (Join-Path $targetPictures $name)
+    }
+    $firstImage = Join-Path $targetPictures "a.png"
+
+    # 先跑一次让程序把 4096 字节的设置区写出来，再往文本区追加目标文件夹。
+    # 直接自己造整个文件不如让程序造——设置区是固定结构，手写容易对不上。
+    $seedProcess = Start-Process -FilePath $targetViewer -ArgumentList ('"' + $firstImage + '"') -PassThru
+    $seedDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 200
+        $seedProcess.Refresh()
+    } while (-not $seedProcess.HasExited -and $seedProcess.MainWindowHandle -eq 0 -and
+        [DateTime]::UtcNow -lt $seedDeadline)
+    if ($seedProcess.HasExited -or $seedProcess.MainWindowHandle -eq 0) {
+        throw "Copy/move regression failed: the viewer did not open while seeding its config."
+    }
+    [void]$seedProcess.CloseMainWindow()
+    if (-not $seedProcess.WaitForExit(5000)) {
+        Stop-Process -Id $seedProcess.Id -Force
+        [void]$seedProcess.WaitForExit(3000)
+    }
+    Start-Sleep -Milliseconds 400
+
+    $targetDatabase = Join-Path $targetTestRoot "YeImageViewer.db"
+    if (-not (Test-Path -LiteralPath $targetDatabase -PathType Leaf)) {
+        throw "Copy/move regression failed: the viewer did not write its configuration file."
+    }
+    # 文本区就在 4096 字节的设置区之后，一行一个 Key=Value，UTF-8（见 ConfigFile.h）
+    $databaseBytes = [IO.File]::ReadAllBytes($targetDatabase)
+    if ($databaseBytes.Length -lt 4096) {
+        throw "Copy/move regression failed: the configuration file is shorter than its 4096-byte header."
+    }
+    $targetLines = "TargetCount=1`r`nTargetActive=0`r`nTarget0=$targetFolder`r`n"
+    $stream = [IO.File]::Open($targetDatabase, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite)
+    try {
+        [void]$stream.Seek(4096, [IO.SeekOrigin]::Begin)
+        $lineBytes = [Text.Encoding]::UTF8.GetBytes($targetLines)
+        $stream.Write($lineBytes, 0, $lineBytes.Length)
+        $stream.SetLength(4096 + $lineBytes.Length)
+    }
+    finally {
+        $stream.Dispose()
+    }
+
+    $targetProcess = Start-Process -FilePath $targetViewer -ArgumentList ('"' + $firstImage + '"') -PassThru
+    $openDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 200
+        $targetProcess.Refresh()
+    } while (-not $targetProcess.HasExited -and $targetProcess.MainWindowHandle -eq 0 -and
+        [DateTime]::UtcNow -lt $openDeadline)
+    if ($targetProcess.HasExited -or $targetProcess.MainWindowHandle -eq 0) {
+        throw "Copy/move regression failed: the viewer did not open the first image."
+    }
+    Start-Sleep -Milliseconds 800
+
+    $targetWindow = $targetProcess.MainWindowHandle
+    $targetTitle = New-Object Text.StringBuilder 512
+    [void][YeImageViewerTestNativeV1365]::GetWindowText($targetWindow, $targetTitle, 512)
+    if ($targetTitle.ToString() -notmatch "\[\d+/3\]") {
+        throw ("Copy/move regression failed: expected a three-image list, got " +
+            "'$($targetTitle.ToString())'.")
+    }
+
+    # 「复制到第一个目标」= ContextMenu::copyToTargetFirst
+    [void][YeImageViewerTestNativeV1365]::PostMessage($targetWindow, 0x0111, [UIntPtr]1200, [IntPtr]::Zero)
+    $copiedFile = Join-Path $targetFolder "a.png"
+    $copyDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    while (-not (Test-Path -LiteralPath $copiedFile -PathType Leaf) -and
+        [DateTime]::UtcNow -lt $copyDeadline) {
+        Start-Sleep -Milliseconds 150
+    }
+    if (-not (Test-Path -LiteralPath $copiedFile -PathType Leaf)) {
+        throw "Copy/move regression failed: copying to the configured folder produced no file."
+    }
+    if (-not (Test-Path -LiteralPath $firstImage -PathType Leaf)) {
+        throw "Copy/move regression failed: copying removed the source file."
+    }
+    $targetProcess.Refresh()
+    if ($targetProcess.HasExited) {
+        throw "Copy/move regression failed: the viewer exited while copying."
+    }
+    [void][YeImageViewerTestNativeV1365]::GetWindowText($targetWindow, $targetTitle, 512)
+    if ($targetTitle.ToString() -notmatch "\[\d+/3\]") {
+        throw ("Copy/move regression failed: copying must not change the image list, got " +
+            "'$($targetTitle.ToString())'.")
+    }
+
+    # 「移动到第一个目标」= ContextMenu::moveToTargetFirst。目标里已经有 a.png 了，
+    # 所以这一份应当让路成 a (2).png，源文件要消失，列表要少一张。
+    [void][YeImageViewerTestNativeV1365]::PostMessage($targetWindow, 0x0111, [UIntPtr]1210, [IntPtr]::Zero)
+    $movedFile = Join-Path $targetFolder "a (2).png"
+    $moveDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    while ((Test-Path -LiteralPath $firstImage -PathType Leaf) -and
+        [DateTime]::UtcNow -lt $moveDeadline) {
+        Start-Sleep -Milliseconds 150
+    }
+    if (Test-Path -LiteralPath $firstImage -PathType Leaf) {
+        throw "Copy/move regression failed: moving left the source file in place."
+    }
+    if (-not (Test-Path -LiteralPath $movedFile -PathType Leaf)) {
+        throw ("Copy/move regression failed: the moved file did not get out of the way as " +
+            "'a (2).png'; the target folder holds " +
+            (((Get-ChildItem -LiteralPath $targetFolder -File).Name) -join ", ") + ".")
+    }
+    $targetProcess.Refresh()
+    if ($targetProcess.HasExited) {
+        throw "Copy/move regression failed: the viewer exited while moving."
+    }
+    if (-not [YeImageViewerTestNativeV1365]::IsWindowEnabled($targetWindow)) {
+        throw "Copy/move regression failed: the viewer stayed disabled after moving."
+    }
+
+    # 列表要缩到两张，而且当前显示的不再是被移走的那一张
+    $listDeadline = [DateTime]::UtcNow.AddSeconds(6)
+    do {
+        Start-Sleep -Milliseconds 200
+        [void][YeImageViewerTestNativeV1365]::GetWindowText($targetWindow, $targetTitle, 512)
+    } while ($targetTitle.ToString() -notmatch "\[\d+/2\]" -and [DateTime]::UtcNow -lt $listDeadline)
+    if ($targetTitle.ToString() -notmatch "\[\d+/2\]") {
+        throw ("Copy/move regression failed: the moved image stayed in the list, title is " +
+            "'$($targetTitle.ToString())'.")
+    }
+    if ($targetTitle.ToString() -match "\ba\.png\b") {
+        throw ("Copy/move regression failed: the viewer still shows the moved file, title is " +
+            "'$($targetTitle.ToString())'.")
+    }
+
+    Write-Host ("PASS copy keeps the source and the list, move takes the file away, renames " +
+        "around a collision, and leaves the viewer usable.")
+}
+finally {
+    if ($targetProcess -and -not $targetProcess.HasExited) {
+        [void]$targetProcess.CloseMainWindow()
+        if (-not $targetProcess.WaitForExit(4000)) {
+            Stop-Process -Id $targetProcess.Id -Force
+            [void]$targetProcess.WaitForExit(3000)
+        }
+    }
+    if (Test-Path -LiteralPath $targetTestRoot) {
+        Remove-Item -LiteralPath $targetTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Write-Host "Checking delete-to-recycle-bin, clipboard copy, and the info overlay..."
+# 删除、复制到剪贴板、EXIF 信息这三样此前一条自动化测试都没有。删除尤其值得盯：
+# 它动的是用户的文件，而且默认会先弹确认框——确认框那一步也是行为的一部分。
+#
+# 这一环会改写剪贴板（复制图像/信息本来就是往剪贴板写），跑完原有内容不保证还在。
+$fileOpsRoot = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-FileOps-" + [Guid]::NewGuid().ToString("N"))
+$fileOpsProcess = $null
+try {
+    [void](New-Item -ItemType Directory -Path $fileOpsRoot)
+    $fileOpsViewer = Join-Path $fileOpsRoot "YeImageViewer.exe"
+    Copy-Item -LiteralPath $viewer -Destination $fileOpsViewer
+
+    $fileOpsPictures = Join-Path $fileOpsRoot "pics"
+    [void](New-Item -ItemType Directory -Path $fileOpsPictures)
+    foreach ($name in @("one.png", "two.png", "three.png")) {
+        Copy-Item -LiteralPath $commonPngFixture -Destination (Join-Path $fileOpsPictures $name)
+    }
+    $fileOpsImage = Join-Path $fileOpsPictures "one.png"
+
+    $fileOpsProcess = Start-Process -FilePath $fileOpsViewer -ArgumentList ('"' + $fileOpsImage + '"') -PassThru
+    $fileOpsDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 200
+        $fileOpsProcess.Refresh()
+    } while (-not $fileOpsProcess.HasExited -and $fileOpsProcess.MainWindowHandle -eq 0 -and
+        [DateTime]::UtcNow -lt $fileOpsDeadline)
+    if ($fileOpsProcess.HasExited -or $fileOpsProcess.MainWindowHandle -eq 0) {
+        throw "File-operation regression failed: the viewer did not open."
+    }
+    Start-Sleep -Milliseconds 800
+    $fileOpsWindow = $fileOpsProcess.MainWindowHandle
+
+    # ---- 复制图像数据到剪贴板 = ContextMenu::copyImageData ----
+    Set-Clipboard -Value "YeImageViewer clipboard probe"
+    [void][YeImageViewerTestNativeV1365]::PostMessage($fileOpsWindow, 0x0111, [UIntPtr]1003, [IntPtr]::Zero)
+    $clipboardSize = ""
+    $clipboardDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    while ($clipboardSize -eq "" -and [DateTime]::UtcNow -lt $clipboardDeadline) {
+        Start-Sleep -Milliseconds 200
+        $clipboardSize = [YeImageViewerTestNativeV1365]::ClipboardImageSize()
+    }
+    if ($clipboardSize -eq "") {
+        throw "File-operation regression failed: copying the image put no bitmap on the clipboard."
+    }
+    if ($clipboardSize -ne "160x80") {
+        throw ("File-operation regression failed: the clipboard image is ${clipboardSize}, " +
+            "expected 160x80.")
+    }
+
+    # ---- 复制图像信息 = ContextMenu::copyImageInfo，内容要对得上这张图 ----
+    Set-Clipboard -Value "YeImageViewer clipboard probe"
+    [void][YeImageViewerTestNativeV1365]::PostMessage($fileOpsWindow, 0x0111, [UIntPtr]1001, [IntPtr]::Zero)
+    $clipboardText = ""
+    $textDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    while ([DateTime]::UtcNow -lt $textDeadline) {
+        Start-Sleep -Milliseconds 200
+        $clipboardText = (Get-Clipboard -Raw)
+        if ($clipboardText -and $clipboardText -ne "YeImageViewer clipboard probe") { break }
+    }
+    if (-not $clipboardText -or $clipboardText -eq "YeImageViewer clipboard probe") {
+        throw "File-operation regression failed: copying the image info put nothing on the clipboard."
+    }
+    if ($clipboardText -notmatch "one\.png" -or $clipboardText -notmatch "160" -or
+        $clipboardText -notmatch "80") {
+        throw ("File-operation regression failed: the copied info does not describe the image: " +
+            "'" + ($clipboardText -replace "`r?`n", " | ") + "'")
+    }
+
+    # ---- EXIF 信息面板开关 = ContextMenu::toggleExifDisplay，来回切不能把界面搞死 ----
+    foreach ($round in 1..2) {
+        [void][YeImageViewerTestNativeV1365]::PostMessage($fileOpsWindow, 0x0111, [UIntPtr]1004, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 500
+        $fileOpsProcess.Refresh()
+        if ($fileOpsProcess.HasExited) {
+            throw "File-operation regression failed: toggling the info overlay exited the viewer (round $round)."
+        }
+        $overlayResult = [UIntPtr]::Zero
+        if ([YeImageViewerTestNativeV1365]::SendMessageTimeout($fileOpsWindow, 0x0000,
+                [UIntPtr]::Zero, [IntPtr]::Zero, 0x0002, 3000, [ref]$overlayResult) -eq [IntPtr]::Zero) {
+            throw "File-operation regression failed: the viewer stopped answering after toggling the info overlay (round $round)."
+        }
+    }
+
+    # ---- 删除到回收站 = ContextMenu::deleteImage ----
+    # 默认 isNoteBeforeDelete 为真，所以会先弹 MB_YESNO 确认框（默认按钮是「否」）。
+    # 先验「否」确实不删，再验「是」真的删。
+    $deleteTarget = $fileOpsImage
+    [void][YeImageViewerTestNativeV1365]::PostMessage($fileOpsWindow, 0x0111, [UIntPtr]1006, [IntPtr]::Zero)
+    $confirmDialog = [IntPtr]::Zero
+    $confirmDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    while ($confirmDialog -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $confirmDeadline) {
+        Start-Sleep -Milliseconds 150
+        $confirmDialog = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$fileOpsProcess.Id, "#32770")
+    }
+    if ($confirmDialog -eq [IntPtr]::Zero) {
+        throw ("File-operation regression failed: deleting did not ask for confirmation, " +
+            "although 删除前提示 is on by default.")
+    }
+    # IDNO = 7。按钮子窗口发 BM_CLICK 比给对话框发 WM_COMMAND 可靠（实测后者无效）。
+    $noButton = [YeImageViewerTestNativeV1365]::GetDlgItem($confirmDialog, 7)
+    if ($noButton -eq [IntPtr]::Zero) {
+        throw "File-operation regression failed: the confirmation dialog has no No button."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage($noButton, 0x00F5, [UIntPtr]::Zero, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 800
+    if (-not (Test-Path -LiteralPath $deleteTarget -PathType Leaf)) {
+        throw "File-operation regression failed: answering No still deleted the file."
+    }
+
+    [void][YeImageViewerTestNativeV1365]::PostMessage($fileOpsWindow, 0x0111, [UIntPtr]1006, [IntPtr]::Zero)
+    $confirmDialog = [IntPtr]::Zero
+    $confirmDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    while ($confirmDialog -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $confirmDeadline) {
+        Start-Sleep -Milliseconds 150
+        $confirmDialog = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$fileOpsProcess.Id, "#32770")
+    }
+    if ($confirmDialog -eq [IntPtr]::Zero) {
+        throw "File-operation regression failed: the second delete did not ask for confirmation."
+    }
+    # IDYES = 6
+    $yesButton = [YeImageViewerTestNativeV1365]::GetDlgItem($confirmDialog, 6)
+    if ($yesButton -eq [IntPtr]::Zero) {
+        throw "File-operation regression failed: the confirmation dialog has no Yes button."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage($yesButton, 0x00F5, [UIntPtr]::Zero, [IntPtr]::Zero)
+
+    $goneDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ((Test-Path -LiteralPath $deleteTarget -PathType Leaf) -and
+        [DateTime]::UtcNow -lt $goneDeadline) {
+        Start-Sleep -Milliseconds 200
+    }
+    if (Test-Path -LiteralPath $deleteTarget -PathType Leaf) {
+        throw "File-operation regression failed: answering Yes did not delete the file."
+    }
+
+    # 必须进回收站，不能是直接抹掉——用户按 Ctrl+Z 或者从回收站还原是常见动作
+    $recycleBin = (New-Object -ComObject Shell.Application).Namespace(10)
+    $restorable = $false
+    foreach ($item in $recycleBin.Items()) {
+        if ($item.Name -eq "one.png" -or $item.Name -eq "one") {
+            $originalFolder = $recycleBin.GetDetailsOf($item, 1)
+            if ($originalFolder -and $originalFolder.StartsWith($fileOpsPictures)) {
+                $restorable = $true
+                break
+            }
+        }
+    }
+    if (-not $restorable) {
+        throw ("File-operation regression failed: the deleted file is not in the recycle bin, " +
+            "so it cannot be restored.")
+    }
+
+    $fileOpsProcess.Refresh()
+    if ($fileOpsProcess.HasExited) {
+        throw "File-operation regression failed: the viewer exited after deleting."
+    }
+    if (-not [YeImageViewerTestNativeV1365]::IsWindowEnabled($fileOpsWindow)) {
+        throw "File-operation regression failed: the viewer stayed disabled after deleting."
+    }
+
+    $fileOpsTitle = New-Object Text.StringBuilder 512
+    $listDeadline = [DateTime]::UtcNow.AddSeconds(6)
+    do {
+        Start-Sleep -Milliseconds 200
+        [void][YeImageViewerTestNativeV1365]::GetWindowText($fileOpsWindow, $fileOpsTitle, 512)
+    } while ($fileOpsTitle.ToString() -notmatch "\[\d+/2\]" -and [DateTime]::UtcNow -lt $listDeadline)
+    if ($fileOpsTitle.ToString() -notmatch "\[\d+/2\]") {
+        throw ("File-operation regression failed: the deleted image stayed in the list, title is " +
+            "'$($fileOpsTitle.ToString())'.")
+    }
+
+    Write-Host ("PASS the image copies to the clipboard, its info matches, the overlay toggles, " +
+        "and delete asks first then moves the file to the recycle bin.")
+}
+finally {
+    if ($fileOpsProcess -and -not $fileOpsProcess.HasExited) {
+        [void]$fileOpsProcess.CloseMainWindow()
+        if (-not $fileOpsProcess.WaitForExit(4000)) {
+            Stop-Process -Id $fileOpsProcess.Id -Force
+            [void]$fileOpsProcess.WaitForExit(3000)
+        }
+    }
+    # 把测试丢进回收站的那张删干净，不留在用户的回收站里
+    try {
+        $recycleBin = (New-Object -ComObject Shell.Application).Namespace(10)
+        foreach ($item in @($recycleBin.Items())) {
+            $originalFolder = $recycleBin.GetDetailsOf($item, 1)
+            if ($originalFolder -and $originalFolder.StartsWith($fileOpsRoot)) {
+                Remove-Item -LiteralPath $item.Path -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    catch { }
+    if (Test-Path -LiteralPath $fileOpsRoot) {
+        Remove-Item -LiteralPath $fileOpsRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
