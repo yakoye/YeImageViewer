@@ -1,6 +1,6 @@
 #include "jarkUtils.h"
-#include "exifParse.h"
-
+#include "exifParse.h"
+
 #include "RationalText.h"
 
 
