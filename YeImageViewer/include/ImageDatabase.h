@@ -296,6 +296,21 @@ public:
     std::array<int, 4> homeMatDpis{};
     ColorManager colorManager;
 
+    // 这张 Mat 是不是内置的「打不开」提示图。getErrorTipsMat() 返回的是母本的
+    // 浅拷贝，所以比 data 指针就是精确判定。
+    //
+    // 不能按「800x600 且左上角像素等于主题背景色」来猜——那会误伤真图：一张
+    // 800x600 的截图，左上角正好是主题背景色就会被当成提示图，于是悄悄跳过
+    // 色彩管理，而且没有任何迹象。
+    // 也不在 ImageAsset 上加标记：提示图有三十多个产出点，加标记就得改三十多处，
+    // 下一个新加的点一定会漏。
+    bool isErrorTipsFrame(const cv::Mat& mat) const {
+        if (mat.empty())
+            return false;
+        return (errorTipsMatLight.data != nullptr && mat.data == errorTipsMatLight.data) ||
+            (errorTipsMatDeep.data != nullptr && mat.data == errorTipsMatDeep.data);
+    }
+
     cv::Mat getErrorTipsMat() {
         if (errorTipsMatDeep.empty()) {
             auto rc = jarkUtils::GetResource(IDB_PNG_TIPS, L"PNG");
