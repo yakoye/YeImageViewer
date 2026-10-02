@@ -1,5 +1,6 @@
 #include "LRU.h"
 #include "PrintAdjustments.h"
+#include "RationalText.h"
 #include "PrintLayout.h"
 #include "SVGPreprocessor.h"
 #include "YeThumbnailProviderGuids.h"
@@ -3754,6 +3755,53 @@ void expectPrintAdjustments() {
             std::all_of(column.begin(), column.end(), [](uint8_t v) { return v == 0 || v == 255; }));
     }
 }
+// ===== EXIF 的分数值（RationalText.h）=====
+// EXIF 里曝光时间、光圈、焦距、曝光补偿全是「分子/分母」存的。折错了不会崩，
+// 只会在信息面板上显示一个错数字——而那种错没人会专门去核。
+
+void expectRationalText() {
+    using RationalText::fromFraction;
+
+    // 常见的几种真实值
+    passOrFail("a shutter speed folds to two decimals", fromFraction("1/125") == "0.01");
+    passOrFail("an f-number folds to two decimals", fromFraction("28/10") == "2.80");
+    passOrFail("a focal length folds to two decimals", fromFraction("240/10") == "24");
+    passOrFail("a whole number drops the decimal point", fromFraction("100/1") == "100");
+    passOrFail("one third keeps two decimals", fromFraction("1/3") == "0.33");
+    passOrFail("zero over anything is zero", fromFraction("0/5") == "0");
+
+    // 负值：曝光补偿常常是负的，负号只能作用一次
+    passOrFail("a negative exposure bias keeps its sign", fromFraction("-1/2") == "-0.50");
+    passOrFail("a negative whole number drops the decimal point", fromFraction("-6/2") == "-3");
+    // -1/1000 折完正好是 -0.00，去掉小数部分会剩一个「-0」，那不是人会写的数
+    passOrFail("a tiny negative value does not print as minus zero",
+        fromFraction("-1/1000") == "0");
+
+    // 分母为 0 当作 1：相机写出坏值时宁可显示分子，也不要崩或者显示 inf
+    passOrFail("a zero denominator falls back to the numerator", fromFraction("7/0") == "7");
+
+    // 格式不对就返回空串，让上层原样显示原始值
+    passOrFail("an empty string yields nothing", fromFraction("").empty());
+    passOrFail("a lone minus sign yields nothing", fromFraction("-").empty());
+    passOrFail("a plain number without a slash yields nothing", fromFraction("125").empty());
+    passOrFail("two slashes yield nothing", fromFraction("1/2/3").empty());
+    passOrFail("a slash with nothing before it yields nothing",
+        fromFraction("/125").empty() && fromFraction("-/125").empty());
+    passOrFail("a slash with nothing after it yields nothing", fromFraction("125/").empty());
+    passOrFail("letters and spaces yield nothing",
+        fromFraction("1/12a").empty() && fromFraction("1 / 2").empty() &&
+        fromFraction("f/2.8").empty());
+    passOrFail("a negative denominator yields nothing", fromFraction("1/-2").empty());
+    passOrFail("a plus sign yields nothing", fromFraction("+1/2").empty());
+
+    // 位数多到 long long 装不下时返回空串，不能给出一个截断的数
+    passOrFail("an out-of-range value yields nothing rather than a truncated number",
+        fromFraction("99999999999999999999999/1").empty());
+
+    // 很大但装得下的值要算对
+    passOrFail("a large in-range value still folds",
+        fromFraction("1000000/8") == "125000");
+}
 }
 
 int main(int argc, char* argv[]) {
@@ -3810,6 +3858,7 @@ int main(int argc, char* argv[]) {
     expectFileAssociationNaming();
     expectPrintLayout();
     expectPrintAdjustments();
+    expectRationalText();
     expectSvgPreprocessor();
     expectLruCache();
     if (argc >= 2) {

@@ -1,5 +1,7 @@
 #include "jarkUtils.h"
-#include "exifParse.h"
+#include "exifParse.h"
+
+#include "RationalText.h"
 
 
 std::string ExifParse::getSimpleInfo(wstring_view path, int width, int height, const uint8_t* buf, size_t fileSize) {
@@ -11,66 +13,8 @@ std::string ExifParse::getSimpleInfo(wstring_view path, int width, int height, c
 }
 
 std::string ExifParse::handleMathDiv(std::string_view str) {
-    if (str.empty())
-        return "";
-
-    // 处理可能的前导负号，并确定数字部分的起始位置
-    bool negative = false;
-    size_t pos = 0;
-    if (str[0] == '-') {
-        negative = true;
-        pos = 1;
-        if (str.size() == 1)   // 单独的“-”无效
-            return "";
-    }
-
-    // 遍历字符：只允许数字和恰好一个'/'，'/'前后都必须有数字
-    size_t slashPos = std::string_view::npos;
-    for (size_t i = pos; i < str.size(); ++i) {
-        char c = str[i];
-        if (c >= '0' && c <= '9') {
-            continue;
-        }
-        else if (c == '/') {
-            if (slashPos == std::string_view::npos) {
-                slashPos = i;
-            }
-            else {            // 出现第二个'/'，非法
-                return "";
-            }
-        }
-        else {                // 非法字符
-            return "";
-        }
-    }
-
-    // 必须恰好有一个'/'，且分子和分母均非空
-    if (slashPos == std::string_view::npos ||
-        slashPos == pos || slashPos == str.size() - 1) {
-        return "";
-    }
-
-    // 解析分子和分母
-    try {
-        long long numerator = std::stoll(std::string(str.substr(pos, slashPos - pos)));
-        long long denominator = std::stoll(std::string(str.substr(slashPos + 1)));
-
-        if (denominator == 0)
-            denominator = 1;
-
-        double value = static_cast<double>(numerator) / denominator;
-        if (negative)
-            value = -value;      // 仅应用一次负号
-
-        std::string result = std::format("{:.2f}", value);
-        if (result.size() >= 3 && result.compare(result.size() - 3, 3, ".00") == 0) {
-            result.erase(result.size() - 3);
-        }
-        return result;
-    }
-    catch (const std::exception&) {
-        return "";
-    }
+    // 实现在 RationalText.h，那边不依赖 Exiv2，所以能单测
+    return RationalText::fromFraction(str);
 }
 
 std::string ExifParse::exifDataToString(wstring_view path, const Exiv2::ExifData& exifData) {

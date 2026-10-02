@@ -3677,4 +3677,106 @@ foreach ($printFixture in $printFixtures) {
 Write-Host ("PASS print preview opens, answers messages, and closes cleanly for all " +
     "$($printFixtures.Count) aspect ratios including 10000x1, 1x10000 and an over-16K panorama.")
 
+Write-Host "Checking that every common operation survives extreme aspect ratios..."
+# 本轮的两个真缺陷（打印预览开不出来、ras/sr 没缩略图）都是「拿极端输入把功能挨个过
+# 一遍」找出来的，不是读代码读出来的。这一环把那种扫法固定下来：六种极端尺寸的图，
+# 每张都把常用操作走一遍，只要有一下崩了或者不回消息就记失败。
+#
+# 刻意不验「做得对不对」——那是各功能自己的测试负责的。这里只验「不会把程序搞死」，
+# 判据简单才跑得快、才不会误报。
+$extremeOpsFixtures = @("10000x1.png", "1x10000.png", "1x1.png", "1x2.png",
+    "19200x200.png", "200x19200.png")
+# 消息、参数、名字。滚轮的 wParam 高 16 位是滚动量，0x0078 = 120 一格，
+# 0xFF88 = -120 反向；低位 0x0008 是 MK_CONTROL，按住 Ctrl 才是缩放。
+$extremeOpsSteps = @(
+    @{ Name = "rotate left (Q)"; Message = 0x0100; WParam = 0x51 },
+    @{ Name = "rotate right (E)"; Message = 0x0100; WParam = 0x45 },
+    @{ Name = "rotate right again"; Message = 0x0100; WParam = 0x45 },
+    @{ Name = "toggle the info overlay (I)"; Message = 0x0100; WParam = 0x49 },
+    @{ Name = "toggle the info overlay back"; Message = 0x0100; WParam = 0x49 },
+    @{ Name = "zoom in (Up)"; Message = 0x0100; WParam = 0x26 },
+    @{ Name = "zoom in again"; Message = 0x0100; WParam = 0x26 },
+    @{ Name = "zoom out (Down)"; Message = 0x0100; WParam = 0x28 },
+    @{ Name = "fit (5)"; Message = 0x0100; WParam = 0x35 },
+    @{ Name = "Ctrl+wheel zoom in"; Message = 0x020A; WParam = 0x780008u },
+    @{ Name = "Ctrl+wheel zoom out"; Message = 0x020A; WParam = 0xFF880008u },
+    @{ Name = "pan with the wheel"; Message = 0x020A; WParam = 0x780000u },
+    @{ Name = "next image (Right)"; Message = 0x0100; WParam = 0x27 },
+    @{ Name = "previous image (Left)"; Message = 0x0100; WParam = 0x25 },
+    @{ Name = "last image (End)"; Message = 0x0100; WParam = 0x23 },
+    @{ Name = "first image (Home)"; Message = 0x0100; WParam = 0x24 },
+    @{ Name = "copy the image (Ctrl+C)"; Message = 0x0111; WParam = 1003 },
+    @{ Name = "copy the image info (C)"; Message = 0x0111; WParam = 1001 },
+    @{ Name = "toggle fullscreen (F)"; Message = 0x0100; WParam = 0x46 },
+    @{ Name = "leave fullscreen (F)"; Message = 0x0100; WParam = 0x46 },
+    @{ Name = "enter immersive view"; Message = 0x0111; WParam = 1009 },
+    @{ Name = "leave immersive view"; Message = 0x0111; WParam = 1009 }
+)
+
+foreach ($extremeOpsName in $extremeOpsFixtures) {
+    $extremeOpsImage = Join-Path $repoRoot "test\corpus\13-dimensions\$extremeOpsName"
+    if (-not (Test-Path -LiteralPath $extremeOpsImage -PathType Leaf)) {
+        throw "Extreme-operation regression failed: fixture is missing: $extremeOpsImage"
+    }
+
+    $extremeOpsProcess = $null
+    try {
+        $extremeOpsProcess = Start-Process -FilePath $viewer `
+            -ArgumentList ('"' + $extremeOpsImage + '"') -PassThru
+        $extremeOpsDeadline = [DateTime]::UtcNow.AddSeconds(12)
+        do {
+            Start-Sleep -Milliseconds 200
+            $extremeOpsProcess.Refresh()
+        } while (-not $extremeOpsProcess.HasExited -and
+            $extremeOpsProcess.MainWindowHandle -eq 0 -and
+            [DateTime]::UtcNow -lt $extremeOpsDeadline)
+
+        if ($extremeOpsProcess.HasExited -or $extremeOpsProcess.MainWindowHandle -eq 0) {
+            throw "Extreme-operation regression failed: the viewer did not open $extremeOpsName."
+        }
+        Start-Sleep -Milliseconds 700
+        $extremeOpsWindow = $extremeOpsProcess.MainWindowHandle
+
+        foreach ($extremeOpsStep in $extremeOpsSteps) {
+            [void][YeImageViewerTestNativeV1365]::PostMessage($extremeOpsWindow,
+                [uint32]$extremeOpsStep.Message, [UIntPtr][uint64]$extremeOpsStep.WParam,
+                [IntPtr]::Zero)
+            Start-Sleep -Milliseconds 350
+            $extremeOpsProcess.Refresh()
+
+            if ($extremeOpsProcess.HasExited) {
+                $extremeOpsCode = [BitConverter]::ToUInt32(
+                    [BitConverter]::GetBytes([int]$extremeOpsProcess.ExitCode), 0)
+                throw ("Extreme-operation regression failed: ${extremeOpsName} exited with " +
+                    "0x$('{0:X8}' -f $extremeOpsCode) right after '$($extremeOpsStep.Name)'.")
+            }
+
+            $extremeOpsAnswer = [UIntPtr]::Zero
+            if ([YeImageViewerTestNativeV1365]::SendMessageTimeout($extremeOpsWindow, 0x0000,
+                    [UIntPtr]::Zero, [IntPtr]::Zero, 0x0002, 5000, [ref]$extremeOpsAnswer) -eq
+                    [IntPtr]::Zero) {
+                throw ("Extreme-operation regression failed: ${extremeOpsName} stopped answering " +
+                    "messages after '$($extremeOpsStep.Name)'.")
+            }
+        }
+
+        # 走完一整轮还得是能用的窗口，不能只是「进程还活着」
+        if (-not [YeImageViewerTestNativeV1365]::IsWindowEnabled($extremeOpsWindow)) {
+            throw ("Extreme-operation regression failed: ${extremeOpsName} left the window " +
+                "disabled after the whole round.")
+        }
+    }
+    finally {
+        if ($extremeOpsProcess -and -not $extremeOpsProcess.HasExited) {
+            [void]$extremeOpsProcess.CloseMainWindow()
+            if (-not $extremeOpsProcess.WaitForExit(4000)) {
+                Stop-Process -Id $extremeOpsProcess.Id -Force
+                [void]$extremeOpsProcess.WaitForExit(2000)
+            }
+        }
+    }
+}
+Write-Host ("PASS all $($extremeOpsSteps.Count) common operations survive on " +
+    "$($extremeOpsFixtures.Count) extreme aspect ratios, from 1x1 to 200x19200.")
+
 Write-Host "All regression tests passed."
