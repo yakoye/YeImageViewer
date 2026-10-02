@@ -672,7 +672,9 @@ std::pair<std::wstring, bool> jarkUtils::saveImageDialogW(wstring_view title) {
     ofn.nMaxFile = ARRAYSIZE(szFile);  // 使用字符数而非字节数
     ofn.lpstrFilter = L"JPG\0*.jpg\0PNG\0*.png\0All\0*.*\0";
     ofn.nFilterIndex = 1;
-    ofn.lpstrTitle = title.data();
+    // 同理：lpstrTitle 要的是以 ' ' 结尾的字符串
+    const std::wstring terminatedTitle(title);
+    ofn.lpstrTitle = terminatedTitle.c_str();
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
 
     // 显示保存对话框
@@ -848,9 +850,14 @@ void jarkUtils::openFileProperties(wstring_view filePath) {
         return;
     }
 
+    // lpFile 要的是以 ' ' 结尾的字符串，而 wstring_view::data() 不保证这一点。
+    // 现在的调用方传的都是 wstring（它的缓冲正好带结尾零），所以一直没出事，
+    // 但哪天有人传个 substr 的视图进来，这里就会顺着读过界。先拷一份。
+    const std::wstring terminatedPath(filePath);
+
     SHELLEXECUTEINFOW sei = { sizeof(SHELLEXECUTEINFOW) };
     sei.lpVerb = L"properties";
-    sei.lpFile = filePath.data();
+    sei.lpFile = terminatedPath.c_str();
     sei.nShow = SW_SHOW;
     sei.fMask = SEE_MASK_INVOKEIDLIST;
 

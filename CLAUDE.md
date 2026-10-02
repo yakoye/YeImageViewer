@@ -174,6 +174,16 @@ RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 3
   左上角像素颜色」去猜**：一张正好 800x600、左上角又正好是主题背景色的真图会被误判，
   后果是悄悄跳过色彩管理、少画边框，而且没有任何迹象。源码检查里有一项盯着这个。
   也别在 `ImageAsset` 上加标记——提示图有三十多个产出点，加标记就得改三十多处。
+- 窗口行为测试里要「点图片外的空白处」，别写死坐标。窗口是满工作区的、图片居中缩放，
+  左右留白和上下留白通常只有一边非零，写死的点会随图片长宽比落到画面上。从标题里读
+  真实像素尺寸和缩放百分比算出画面范围，再挑确实在留白里的点。
+- 读剪贴板别用 `Set-Clipboard` 写哨兵再轮询内容：那是去和程序抢同一个全机器资源，
+  程序那边 `OpenClipboard` 一失败就什么都没写进去。用 `GetClipboardSequenceNumber`
+  等版本号变化，再用带重试的 `OpenClipboard` 直读（`ClipboardText` / `ClipboardImageSize`）。
+  PowerShell 7 也没有 `Get-Clipboard -Format Image`。
+- 把 `wstring_view` 交给要求以 `\0` 结尾的 Win32 参数之前先拷成 `wstring`。
+  `data()` 不保证有结尾零——现在的调用方都传 `wstring` 所以一直没出事，
+  传 `substr` 的视图就会读过界。
 - 查「打开一张图为什么慢」用 `YEIMAGEVIEWER_STARTUP_TRACE=<文件路径>` 环境变量（见 `StartupTrace.h`），会记下 CRT 静态初始化、建窗口、建 D3D 设备、解码、格式转换、色彩管理、首帧绘制各段的时刻。没设环境变量时一个字节都不写。
 - 建 D3D 设备要七十多毫秒，建窗口只要五毫秒。图片解码在 `onWindowCreated()` 里就派出去了，和建设备并行跑；启动那一次的 `initOpenFile` 要传 `keepWarmCache = true`，否则 `imgDB.clear()` 会把在途的解码作废。
 - 别再去给 libpng 的去滤波写 SIMD。做过一轮完整的：libpng 自带的 SSE2 只覆盖 3 和 4 字节像素（`intel/intel_init.c` 里 `if (bpp == 3) ... else if (bpp == 4)`），16 位图是 6 或 8 字节像素，确实掉回标量。补齐 6/8 字节的 SSE2 实现之后，自检确认结果与规范逐字节一致，解码耗时却一点没变——A/B 各跑四轮：原版 1506/1513/1513/1523 ms，SIMD 版 1512/1524/1594/1608 ms。
