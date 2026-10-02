@@ -3536,7 +3536,11 @@ ImageAsset ImageDatabase::loader(const wstring& path) {
             std::chrono::steady_clock::now() - iccReadStart).count();
 
         const auto iccApplyStart = std::chrono::steady_clock::now();
-        colorManager.applyToImageAsset(imageAsset);
+        // 内置的「打不开」提示图要跳过：它按当前主题画好，过一遍 ICC 只会染歪；
+        // 而且它是全程序共用的那一份，就地改等于改母本，后面每个打不开的文件
+        // 都会显示染歪的那张。
+        if (!isErrorTipsFrame(imageAsset.primaryFrame))
+            colorManager.applyToImageAsset(imageAsset);
         iccApplyMs = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - iccApplyStart).count();
     }

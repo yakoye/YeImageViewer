@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 反向验证 check-source-invariants.ps1：逐条制造它该抓的错误，确认它真会报错。
 
@@ -97,6 +97,13 @@ $cases = @(
         Old = "        stopPreloadWorker();" + $lf
         New = ""
         Expect = "does not call stopPreloadWorker"
+    },
+    @{
+        Name = "又靠左上角像素颜色认内置提示图"
+        File = "YeImageViewer\src\main.cpp"
+        Old = "        if (imgDB.isErrorTipsFrame(srcImg)) {"
+        New = "        if (*((uint32_t*)srcImg.ptr()) == lightTheme.BG) {"
+        Expect = "must be identified by ImageDatabase::isErrorTipsFrame"
     },
     @{
         Name = "PSD 的解码顺序被改回 stb 优先"

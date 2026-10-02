@@ -115,7 +115,7 @@ RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 3
   「适应窗口」只缩不放：图片比窗口小就停在 100%。
   `applyImageFittedWindowSize()` 必须在动窗口**之前**关掉 `framedWindowAnchored`：`SetWindowPos` 会同步派发 WM_SIZE，而锚定那条路径会按工作区重算缩放，把刚算好的覆盖掉。
 - 预览图（系统缩略图）的像素尺寸和真图可以毫无关系——一张 280x288 的 SVG，系统给的缩略图是 995x1024。所以：缩放要按真图尺寸算再折算回缩略图像素（`ZoomPolicy::previewZoom`），标题报的尺寸和百分比也要按真图口径（`ZoomPolicy::reportedPercent`），否则换成真图那一刻画面和数字都会跳。系统报不出真图尺寸时（SVG 就报不出）干脆不显示预览，直接等真图。
-- `scripts/check-source-invariants.ps1` 查五件跑起来也看不出来的事，`runTests.ps1`
+- `scripts/check-source-invariants.ps1` 查六件跑起来也看不出来的事，`runTests.ps1`
   会调它，提交前也可以单独跑（只读源码，几秒钟）：
   1. 三语字符串表三列齐全，`// N` 索引标注没错位——那些索引是硬编码的，中间插一条
      会让后面所有 stringID 整体指错。
@@ -128,6 +128,7 @@ RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 3
   5. PSD 的解码顺序是 psd_sdk 优先、stb 兜底。反过来的话 16 位 RLE 的 PSD 会解成
      全透明而且不报错——stb 返回「成功」，兜底永远轮不到（经过见
      `test/corpus/README.md`）。
+  6. 没人靠「尺寸 + 左上角像素颜色」去认内置的「打不开」提示图。那是在猜，会误伤真图。
   静态检查最危险的失效方式是什么都抓不到（正则写歪一个字符就照样 PASS），所以配了
   `scripts/verify-source-invariant-checks.ps1`：逐条制造该抓的错误，确认真会报错，
   跑完按原字节还原（不用 `git checkout --`，那会连未提交的改动一起抹掉）。
@@ -168,6 +169,11 @@ RAW 样本用 `./scripts/fetch-raw-corpus.ps1` 按需下载（CC0 来源，约 3
 - 窗口行为测试里要读「界面现在是什么语言」，用设置窗口自己的标题（设置 / Settings / 設定，
   来自 `stringRes` 第 39 条），不要用剪贴板：剪贴板是全机器共享的，程序和测试会抢，
   实测会时不时读到空。标题在建窗口时就定了，所以改完语言要关掉再开一次才看得到。
+- 内置的「打不开」提示图用 `ImageDatabase::isErrorTipsFrame` 认（比 `data` 指针，
+  `getErrorTipsMat()` 返回的是母本的浅拷贝，所以指针相等就是它）。**别靠「尺寸 +
+  左上角像素颜色」去猜**：一张正好 800x600、左上角又正好是主题背景色的真图会被误判，
+  后果是悄悄跳过色彩管理、少画边框，而且没有任何迹象。源码检查里有一项盯着这个。
+  也别在 `ImageAsset` 上加标记——提示图有三十多个产出点，加标记就得改三十多处。
 - 查「打开一张图为什么慢」用 `YEIMAGEVIEWER_STARTUP_TRACE=<文件路径>` 环境变量（见 `StartupTrace.h`），会记下 CRT 静态初始化、建窗口、建 D3D 设备、解码、格式转换、色彩管理、首帧绘制各段的时刻。没设环境变量时一个字节都不写。
 - 建 D3D 设备要七十多毫秒，建窗口只要五毫秒。图片解码在 `onWindowCreated()` 里就派出去了，和建设备并行跑；启动那一次的 `initOpenFile` 要传 `keepWarmCache = true`，否则 `imgDB.clear()` 会把在途的解码作废。
 - 别再去给 libpng 的去滤波写 SIMD。做过一轮完整的：libpng 自带的 SSE2 只覆盖 3 和 4 字节像素（`intel/intel_init.c` 里 `if (bpp == 3) ... else if (bpp == 4)`），16 位图是 6 或 8 字节像素，确实掉回标量。补齐 6/8 字节的 SSE2 实现之后，自检确认结果与规范逐字节一致，解码耗时却一点没变——A/B 各跑四轮：原版 1506/1513/1513/1523 ms，SIMD 版 1512/1524/1594/1608 ms。

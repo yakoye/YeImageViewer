@@ -3247,8 +3247,15 @@ public:
 
         fillCanvasBackground(canvas);
 
-        if (((srcH == 600 and srcW == 800) or (srcH == 800 and srcW == 600)) and 
-            (*((uint32_t*)srcImg.ptr()) == deepTheme.BG) or (*((uint32_t*)srcImg.ptr()) == lightTheme.BG)) {
+        // 内置的「打不开」提示图不画边框。这里问 imgDB 要精确判定（比 data 指针），
+        // 不猜尺寸和首像素。
+        //
+        // 原先那句写的是
+        //   ((600x800 or 800x600) and 首像素==deepTheme.BG) or (首像素==lightTheme.BG)
+        // 而 and 比 or 结合得紧，所以尺寸那一半只管住了深色那个颜色：**任何尺寸**的图，
+        // 只要左上角那个像素正好是 lightTheme.BG（0xFFF1F3F9，一种很浅的蓝白），
+        // 边框就没了。
+        if (imgDB.isErrorTipsFrame(srcImg)) {
             // 内置的用于提示的图像
         }
         else { // 普通图像  画边框
@@ -5575,14 +5582,34 @@ static int runColorSelfTest(const std::wstring& resultPath) {
     const auto serialUs = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - tiledStart).count();
     const bool sameResult = std::equal(whole.datastart, whole.dataend, tiled.datastart);
+
+    // 一张正正好 800x600、左上角像素又正好等于主题背景色的真图，必须照样做色彩管理。
+    // 内置的「打不开」提示图原先就是靠这两个特征认的，于是这种真图（截图、UI 稿很
+    // 容易撞上）会被当成提示图悄悄跳过，而且没有任何迹象。现在改成比 data 指针，
+    // 只有真的是那一份母本才跳过。
+    cv::Mat tipsLookalike(600, 800, CV_8UC4);
+    for (int y = 0; y < tipsLookalike.rows; ++y) {
+        auto* row = tipsLookalike.ptr<uint32_t>(y);
+        for (int x = 0; x < tipsLookalike.cols; ++x)
+            row[x] = static_cast<uint32_t>(0xFF000000u | ((x * 7 + y * 13) & 0x00FFFFFFu));
+    }
+    // 左上角抹成深色/浅色主题的背景色，把旧判据的两个条件都凑齐
+    tipsLookalike.ptr<uint32_t>(0)[0] = deepTheme.BG;
+    const cv::Mat tipsLookalikeSource = tipsLookalike.clone();
+    const bool lookalikeApplied = ColorManager::applyToMat(tipsLookalike, wideGamut, noProfile);
+    const bool lookalikeChanged = !std::equal(tipsLookalikeSource.datastart,
+        tipsLookalikeSource.dataend, tipsLookalike.datastart);
+
     const bool success = skippedBoth && skippedSame && identityUntouched &&
-        wholeApplied && wholeChanged && tiledApplied && sameResult;
+        wholeApplied && wholeChanged && tiledApplied && sameResult &&
+        lookalikeApplied && lookalikeChanged;
 
     result << (success ? "OK" : "ERROR")
         << "\tidentitySkipped=" << (skippedBoth && skippedSame ? 1 : 0)
         << "\tidentityUntouched=" << (identityUntouched ? 1 : 0)
         << "\ttransformApplied=" << (wholeApplied && wholeChanged ? 1 : 0)
         << "\tparallelMatchesSerial=" << (sameResult ? 1 : 0)
+        << "\ttipsLookalikeStillManaged=" << (lookalikeApplied && lookalikeChanged ? 1 : 0)
         << "\tparallelUs=" << parallelUs
         << "\tserialUs=" << serialUs
         << "\n";

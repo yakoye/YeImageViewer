@@ -335,3 +335,38 @@ if ($psdSdkAt -gt $stbAt) {
 }
 Write-Host "PASS PSD decoding tries psd_sdk before stb, so 16-bit RLE files stay visible."
 
+# 六、不许靠「尺寸 + 左上角像素颜色」来认内置的「打不开」提示图。
+# 那是在猜：一张正好 800x600、左上角像素又正好是主题背景色的真图（截图、UI 稿很容易
+# 撞上）会被当成提示图，于是悄悄跳过色彩管理、少画边框，而且没有任何迹象。
+# 更糟的是那句判断还踩过运算符优先级：and 比 or 紧，写成
+#   ((600x800 or 800x600) and 首像素==deepTheme.BG) or (首像素==lightTheme.BG)
+# 之后尺寸那一半只管住了深色那个颜色，任何尺寸的图只要左上角是 lightTheme.BG 就中招。
+# 精确判定是 ImageDatabase::isErrorTipsFrame（比 data 指针，母本就一份）。
+$themeGuessOffenders = @()
+foreach ($source in Get-ChildItem -Path (Join-Path $repoRoot "YeImageViewer") -Recurse `
+        -Include *.cpp, *.h -File) {
+    if ($source.FullName -match '\\include\\(opencv2|exiv2|ffmpeg|libraw|libheif|libwebp2|jxl|aom|dav1d|libde265|libyuv|minizip|psdsdk)\\') {
+        continue
+    }
+    # 主题背景色自己的定义、以及精确判定那个函数所在的文件不算
+    if ($source.Name -eq "jarkUtils.h") { continue }
+
+    $themeHits = Select-String -LiteralPath $source.FullName `
+        -Pattern '==\s*(deepTheme|lightTheme)\.BG\b' -AllMatches
+    foreach ($hit in $themeHits) {
+        $trimmed = $hit.Line.Trim()
+        if ($trimmed.StartsWith("//") -or $trimmed.StartsWith("*") -or $trimmed.StartsWith("/*")) {
+            continue
+        }
+        # 色彩管理自检要故意造一张「长得像提示图」的真图来验不会误判，那是测试代码
+        if ($trimmed -match 'tipsLookalike') { continue }
+        $themeGuessOffenders += "$($source.Name):$($hit.LineNumber): $trimmed"
+    }
+}
+if ($themeGuessOffenders.Count -gt 0) {
+    throw ("Internal-tips regression failed: the built-in 'cannot open' image must be " +
+        "identified by ImageDatabase::isErrorTipsFrame (a data-pointer comparison), not by " +
+        "guessing from its size and corner pixel colour.`n" + ($themeGuessOffenders -join "`n"))
+}
+Write-Host "PASS the built-in tips image is identified exactly, not guessed from a corner pixel."
+
