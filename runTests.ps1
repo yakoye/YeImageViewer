@@ -737,6 +737,50 @@ public static class YeImageViewerTestNativeV1365
     [DllImport("kernel32.dll")]
     public static extern bool GlobalUnlock(IntPtr handle);
 
+    // 剪贴板的「版本号」。每次有人写剪贴板它就加一，用它判断程序到底写没写，
+    // 比「内容变了没」可靠：内容可能正好和上次一样。
+    [DllImport("user32.dll")]
+    public static extern uint GetClipboardSequenceNumber();
+
+    public static string ClipboardText()
+    {
+        const uint CF_UNICODETEXT = 13;
+        // 剪贴板是全机器共享的，别人正占着就等一会儿再试
+        for (int attempt = 0; attempt < 20; attempt++)
+        {
+            if (OpenClipboard(IntPtr.Zero))
+            {
+                try
+                {
+                    if (!IsClipboardFormatAvailable(CF_UNICODETEXT))
+                        return "";
+
+                    IntPtr handle = GetClipboardData(CF_UNICODETEXT);
+                    if (handle == IntPtr.Zero)
+                        return "";
+
+                    IntPtr text = GlobalLock(handle);
+                    if (text == IntPtr.Zero)
+                        return "";
+                    try
+                    {
+                        return Marshal.PtrToStringUni(text);
+                    }
+                    finally
+                    {
+                        GlobalUnlock(handle);
+                    }
+                }
+                finally
+                {
+                    CloseClipboard();
+                }
+            }
+            System.Threading.Thread.Sleep(50);
+        }
+        return "";
+    }
+
     public static string ClipboardImageSize()
     {
         const uint CF_DIB = 8;
@@ -1324,10 +1368,40 @@ try {
     }
     Write-Host "PASS clicking the image keeps presentation mode available for dragging."
 
-    # Use the far-left gutter; the portrait fixture may overlap the former
-    # fixed 120,120 point on smaller/high-DPI work areas.
-    $freshBackgroundX = 4
-    $freshBackgroundY = [int](($freshClientRect.Bottom - $freshClientRect.Top) / 2)
+    # 「图片外的空白处」不能写死一个坐标。窗口是满工作区的、图片居中缩放，所以
+    # 左右留白和上下留白通常只有一边非零——写死 x=4 时，一张足够宽的图会让那个点
+    # 正好落在画面上，于是点下去不退出沉浸，测试超时失败（偶发过两次）。
+    # 这里从标题里读出真实像素尺寸和缩放百分比，算出画面实际占多大，再挑一个
+    # 确实落在留白里的点。
+    $freshSizeMatch = [regex]::Match($freshInitialTitle.ToString(), '(\d+)x(\d+)')
+    if (-not $freshSizeMatch.Success) {
+        throw "Fresh-install regression failed: presentation title did not report the pixel size."
+    }
+    $freshImageWidth = [int]$freshSizeMatch.Groups[1].Value
+    $freshImageHeight = [int]$freshSizeMatch.Groups[2].Value
+    $freshZoomPercent = [double]$freshInitialZoomMatch.Groups[1].Value
+    $freshClientWidth = $freshClientRect.Right - $freshClientRect.Left
+    $freshClientHeight = $freshClientRect.Bottom - $freshClientRect.Top
+    # 标题里的百分比是取整过的，画面尺寸按它算会差一两个像素，所以留白要留余量
+    $freshDrawnWidth = [int][Math]::Ceiling($freshImageWidth * $freshZoomPercent / 100.0)
+    $freshDrawnHeight = [int][Math]::Ceiling($freshImageHeight * $freshZoomPercent / 100.0)
+    $freshSideGutter = [int](($freshClientWidth - $freshDrawnWidth) / 2)
+    $freshTopGutter = [int](($freshClientHeight - $freshDrawnHeight) / 2)
+
+    if ($freshSideGutter -ge 12) {
+        $freshBackgroundX = 4
+        $freshBackgroundY = [int]($freshClientHeight / 2)
+    }
+    elseif ($freshTopGutter -ge 12) {
+        $freshBackgroundX = [int]($freshClientWidth / 2)
+        $freshBackgroundY = 4
+    }
+    else {
+        throw ("Fresh-install regression failed: the image fills the whole work area " +
+            "(${freshDrawnWidth}x${freshDrawnHeight} in ${freshClientWidth}x${freshClientHeight}), " +
+            "so there is no background to click. Pick a fixture whose aspect ratio differs " +
+            "from the monitor's.")
+    }
     $freshBackgroundPosition = [IntPtr](($freshBackgroundY -shl 16) -bor ($freshBackgroundX -band 0xFFFF))
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0200, [UIntPtr]::Zero, $freshBackgroundPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0201, [UIntPtr]1, $freshBackgroundPosition)
@@ -3017,13 +3091,17 @@ try {
     $fileOpsWindow = $fileOpsProcess.MainWindowHandle
 
     # ---- 复制图像数据到剪贴板 = ContextMenu::copyImageData ----
-    Set-Clipboard -Value "YeImageViewer clipboard probe"
+    # 不往剪贴板里写哨兵：那是去和程序抢同一个全机器资源，程序那边
+    # OpenClipboard 一失败就什么都没写进去。改成记下版本号，等它变。
+    $clipboardBefore = [YeImageViewerTestNativeV1365]::GetClipboardSequenceNumber()
     [void][YeImageViewerTestNativeV1365]::PostMessage($fileOpsWindow, 0x0111, [UIntPtr]1003, [IntPtr]::Zero)
     $clipboardSize = ""
-    $clipboardDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    $clipboardDeadline = [DateTime]::UtcNow.AddSeconds(10)
     while ($clipboardSize -eq "" -and [DateTime]::UtcNow -lt $clipboardDeadline) {
         Start-Sleep -Milliseconds 200
-        $clipboardSize = [YeImageViewerTestNativeV1365]::ClipboardImageSize()
+        if ([YeImageViewerTestNativeV1365]::GetClipboardSequenceNumber() -ne $clipboardBefore) {
+            $clipboardSize = [YeImageViewerTestNativeV1365]::ClipboardImageSize()
+        }
     }
     if ($clipboardSize -eq "") {
         throw "File-operation regression failed: copying the image put no bitmap on the clipboard."
@@ -3034,16 +3112,19 @@ try {
     }
 
     # ---- 复制图像信息 = ContextMenu::copyImageInfo，内容要对得上这张图 ----
-    Set-Clipboard -Value "YeImageViewer clipboard probe"
+    $infoBefore = [YeImageViewerTestNativeV1365]::GetClipboardSequenceNumber()
     [void][YeImageViewerTestNativeV1365]::PostMessage($fileOpsWindow, 0x0111, [UIntPtr]1001, [IntPtr]::Zero)
     $clipboardText = ""
-    $textDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    $textDeadline = [DateTime]::UtcNow.AddSeconds(10)
     while ([DateTime]::UtcNow -lt $textDeadline) {
         Start-Sleep -Milliseconds 200
-        $clipboardText = (Get-Clipboard -Raw)
-        if ($clipboardText -and $clipboardText -ne "YeImageViewer clipboard probe") { break }
+        if ([YeImageViewerTestNativeV1365]::GetClipboardSequenceNumber() -eq $infoBefore) {
+            continue
+        }
+        $clipboardText = [YeImageViewerTestNativeV1365]::ClipboardText()
+        if ($clipboardText) { break }
     }
-    if (-not $clipboardText -or $clipboardText -eq "YeImageViewer clipboard probe") {
+    if (-not $clipboardText) {
         throw "File-operation regression failed: copying the image info put nothing on the clipboard."
     }
     if ($clipboardText -notmatch "one\.png" -or $clipboardText -notmatch "160" -or
