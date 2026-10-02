@@ -1,4 +1,6 @@
 #include "ImageDatabase.h"
+
+#include "PsdMemoryFile.h"
 #include "PngFastDecode.h"
 #include "StartupTrace.h"
 #include "MotionPhotoUtils.h"
@@ -1679,11 +1681,14 @@ cv::Mat ImageDatabase::loadPSD(wstring_view path, std::span<const uint8_t> buf) 
 
     cv::Mat img;
 
+    // 从内存读，不要让 psd_sdk 自己再开一遍文件：myLoader 已经把整个文件读进
+    // fileBuf 了，PSD 动辄几百 MB，白读一遍很贵。
+    // 顺带避开一个坑：原先传的是 path.data()，而 wstring_view 不保证以 '\0' 结尾。
     psd::MallocAllocator allocator;
-    psd::NativeFile file(&allocator);
+    PsdSupport::MemoryFile file(&allocator, buf);
 
-    if (!file.OpenRead(path.data())) {
-        JARK_LOG("Cannot open file {}", jarkUtils::wstringToUtf8(path));
+    if (!file.OpenRead(L"")) {
+        JARK_LOG("Empty PSD buffer {}", jarkUtils::wstringToUtf8(path));
         return {};
     }
 

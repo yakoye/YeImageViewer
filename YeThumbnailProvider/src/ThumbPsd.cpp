@@ -4,6 +4,7 @@
 #undef WIN32_LEAN_AND_MEAN
 #undef NOMINMAX
 #include "psdsdk.h"
+#include "PsdMemoryFile.h"
 
 #include <algorithm>
 #include <cstring>
@@ -24,47 +25,6 @@ bool validDimensions(uint32_t width, uint32_t height) noexcept {
     const uint64_t bytes = static_cast<uint64_t>(width) * height * 4ULL;
     return bytes <= static_cast<uint64_t>(std::numeric_limits<int32_t>::max());
 }
-
-// psd_sdk 的 File 是从磁盘读的，而缩略图组件只有一个内存里的缓冲，
-// 所以实现一个内存版。只需要读，写一律拒绝。
-class PsdMemoryFile final : public psd::File {
-public:
-    PsdMemoryFile(psd::Allocator* allocator, const uint8_t* data, size_t size) noexcept
-        : psd::File(allocator), m_data(data), m_size(size) {}
-
-private:
-    bool DoOpenRead(const wchar_t*) override { return m_data != nullptr; }
-    bool DoOpenWrite(const wchar_t*) override { return false; }
-    bool DoClose(void) override { return true; }
-
-    ReadOperation DoRead(void* buffer, uint32_t count, uint64_t position) override {
-        if (!buffer || position > m_size)
-            return nullptr;
-
-        const size_t available = m_size - static_cast<size_t>(position);
-        const size_t copied = count < available ? count : available;
-        std::memcpy(buffer, m_data + position, copied);
-        if (copied < count) {
-            // 读过界的部分填零：截断的文件不至于读到未初始化内存
-            std::memset(static_cast<uint8_t*>(buffer) + copied, 0, count - copied);
-        }
-        // 同步读已经完成，返回一个非空句柄表示「这次操作有效」
-        return reinterpret_cast<ReadOperation>(static_cast<uintptr_t>(1));
-    }
-
-    bool DoWaitForRead(ReadOperation& operation) override {
-        const bool ok = operation != nullptr;
-        operation = nullptr;
-        return ok;
-    }
-
-    WriteOperation DoWrite(const void*, uint32_t, uint64_t) override { return nullptr; }
-    bool DoWaitForWrite(WriteOperation&) override { return false; }
-    uint64_t DoGetSize(void) const override { return m_size; }
-
-    const uint8_t* m_data = nullptr;
-    size_t m_size = 0;
-};
 
 // psd_sdk 给的是分离的平面通道，这里交织成 BGRA 并归一到 8 位
 template <typename Sample>
@@ -119,7 +79,7 @@ bool decodePsd(std::span<const uint8_t> data, ThumbBitmap& out) noexcept {
 
     try {
         psd::MallocAllocator allocator;
-        PsdMemoryFile file(&allocator, data.data(), data.size());
+        PsdSupport::MemoryFile file(&allocator, data);
         if (!file.OpenRead(L""))
             return false;
 
