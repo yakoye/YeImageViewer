@@ -126,6 +126,13 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
   MessageBox，实测提示框还在原地；只有一个按钮的提示框可以用 `WM_CLOSE` 顶替确定，
   但 Yes/No 那种 `WM_CLOSE` 等于取消，必须真点按钮。
 - 标题里的序号只有总数到两位才补零（`[1/3]`、`[01/12]`），匹配时别写死 `/03]`。
+- 设置页单选组的「每组几个选项」在 `SettingCommand::GENERAL_RADIO_OPTION_COUNTS`，必须和
+  `Setting.h` 里 `generalTabRadioList` 每组 `stringIDs` 的条数（减掉开头的标签）相等。
+  加语言、加选项时两边都要改；单元测试拿界面那边的条数反核这张表，别把期望值照抄过去
+  ——照抄过一次，结果「加繁體中文漏改选项数」两边一起错，测试还是绿的。
+- 窗口行为测试里要读「界面现在是什么语言」，用设置窗口自己的标题（设置 / Settings / 設定，
+  来自 `stringRes` 第 39 条），不要用剪贴板：剪贴板是全机器共享的，程序和测试会抢，
+  实测会时不时读到空。标题在建窗口时就定了，所以改完语言要关掉再开一次才看得到。
 - 查「打开一张图为什么慢」用 `YEIMAGEVIEWER_STARTUP_TRACE=<文件路径>` 环境变量（见 `StartupTrace.h`），会记下 CRT 静态初始化、建窗口、建 D3D 设备、解码、格式转换、色彩管理、首帧绘制各段的时刻。没设环境变量时一个字节都不写。
 - 建 D3D 设备要七十多毫秒，建窗口只要五毫秒。图片解码在 `onWindowCreated()` 里就派出去了，和建设备并行跑；启动那一次的 `initOpenFile` 要传 `keepWarmCache = true`，否则 `imgDB.clear()` 会把在途的解码作废。
 - 别再去给 libpng 的去滤波写 SIMD。做过一轮完整的：libpng 自带的 SSE2 只覆盖 3 和 4 字节像素（`intel/intel_init.c` 里 `if (bpp == 3) ... else if (bpp == 4)`），16 位图是 6 或 8 字节像素，确实掉回标量。补齐 6/8 字节的 SSE2 实现之后，自检确认结果与规范逐字节一致，解码耗时却一点没变——A/B 各跑四轮：原版 1506/1513/1513/1523 ms，SIMD 版 1512/1524/1594/1608 ms。

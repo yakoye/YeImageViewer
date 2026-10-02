@@ -3170,6 +3170,299 @@ finally {
     }
 }
 
+Write-Host "Checking frame export for animated images..."
+# 导出（Ctrl+S 把动图每一帧存成 PNG）此前只靠手工冒烟。它没有保存对话框，
+# 只有一个是/否确认框，所以完全可以自动验：答「否」一个文件都不该出现，
+# 答「是」要在原图旁边生成 <名字>_0001.png 起的一串，而且每个都是能解的 PNG。
+$exportRoot = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Export-" + [Guid]::NewGuid().ToString("N"))
+$exportProcess = $null
+try {
+    [void](New-Item -ItemType Directory -Path $exportRoot)
+    $exportViewer = Join-Path $exportRoot "YeImageViewer.exe"
+    Copy-Item -LiteralPath $viewer -Destination $exportViewer
+
+    $exportPictures = Join-Path $exportRoot "pics"
+    [void](New-Item -ItemType Directory -Path $exportPictures)
+    $animatedSource = Join-Path $formatCorpusRoot "files\animated.gif"
+    if (-not (Test-Path -LiteralPath $animatedSource -PathType Leaf)) {
+        throw "Export regression failed: the animated fixture is missing: $animatedSource"
+    }
+    $exportImage = Join-Path $exportPictures "clip.gif"
+    Copy-Item -LiteralPath $animatedSource -Destination $exportImage
+
+    $exportProcess = Start-Process -FilePath $exportViewer -ArgumentList ('"' + $exportImage + '"') -PassThru
+    $exportDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 200
+        $exportProcess.Refresh()
+    } while (-not $exportProcess.HasExited -and $exportProcess.MainWindowHandle -eq 0 -and
+        [DateTime]::UtcNow -lt $exportDeadline)
+    if ($exportProcess.HasExited -or $exportProcess.MainWindowHandle -eq 0) {
+        throw "Export regression failed: the viewer did not open the animated fixture."
+    }
+    Start-Sleep -Milliseconds 1200
+    $exportWindow = $exportProcess.MainWindowHandle
+
+    # Ctrl+S。程序自己按 WM_KEYDOWN VK_CONTROL 记状态，所以合成这两条消息就够了。
+    function Send-ExportShortcut([IntPtr]$Window) {
+        [void][YeImageViewerTestNativeV1365]::PostMessage($Window, 0x0100, [UIntPtr]0x11, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 120
+        [void][YeImageViewerTestNativeV1365]::PostMessage($Window, 0x0100, [UIntPtr]0x53, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 120
+        [void][YeImageViewerTestNativeV1365]::PostMessage($Window, 0x0101, [UIntPtr]0x53, [IntPtr]::Zero)
+        [void][YeImageViewerTestNativeV1365]::PostMessage($Window, 0x0101, [UIntPtr]0x11, [IntPtr]::Zero)
+    }
+
+    function Wait-ExportDialog([int]$ProcessId) {
+        $dialog = [IntPtr]::Zero
+        $deadline = [DateTime]::UtcNow.AddSeconds(8)
+        while ($dialog -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 150
+            $dialog = [YeImageViewerTestNativeV1365]::FindProcessWindow([uint32]$ProcessId, "#32770")
+        }
+        return $dialog
+    }
+
+    # ---- 先答「否」：不该产生任何文件 ----
+    Send-ExportShortcut $exportWindow
+    $exportDialog = Wait-ExportDialog $exportProcess.Id
+    if ($exportDialog -eq [IntPtr]::Zero) {
+        throw ("Export regression failed: Ctrl+S on an animated image did not ask before " +
+            "writing a file per frame.")
+    }
+    # IDNO = 7，按钮子窗口发 BM_CLICK
+    $exportNo = [YeImageViewerTestNativeV1365]::GetDlgItem($exportDialog, 7)
+    if ($exportNo -eq [IntPtr]::Zero) {
+        throw "Export regression failed: the export confirmation has no No button."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage($exportNo, 0x00F5, [UIntPtr]::Zero, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 1200
+    $strayFiles = @(Get-ChildItem -LiteralPath $exportPictures -Filter "clip_*.png" -File)
+    if ($strayFiles.Count -gt 0) {
+        throw ("Export regression failed: answering No still wrote " +
+            "$($strayFiles.Count) file(s).")
+    }
+
+    # ---- 再答「是」：每帧一个 PNG ----
+    Send-ExportShortcut $exportWindow
+    $exportDialog = Wait-ExportDialog $exportProcess.Id
+    if ($exportDialog -eq [IntPtr]::Zero) {
+        throw "Export regression failed: the second Ctrl+S did not ask for confirmation."
+    }
+    # IDYES = 6
+    $exportYes = [YeImageViewerTestNativeV1365]::GetDlgItem($exportDialog, 6)
+    if ($exportYes -eq [IntPtr]::Zero) {
+        throw "Export regression failed: the export confirmation has no Yes button."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage($exportYes, 0x00F5, [UIntPtr]::Zero, [IntPtr]::Zero)
+
+    $exportedFiles = @()
+    $writeDeadline = [DateTime]::UtcNow.AddSeconds(20)
+    while ([DateTime]::UtcNow -lt $writeDeadline) {
+        Start-Sleep -Milliseconds 250
+        $exportedFiles = @(Get-ChildItem -LiteralPath $exportPictures -Filter "clip_*.png" -File |
+            Sort-Object Name)
+        if ($exportedFiles.Count -ge 2) { break }
+    }
+    if ($exportedFiles.Count -lt 2) {
+        throw ("Export regression failed: the animated fixture has at least two frames but only " +
+            "$($exportedFiles.Count) PNG(s) were written.")
+    }
+    if ($exportedFiles[0].Name -ne "clip_0001.png") {
+        throw ("Export regression failed: frames should be numbered from clip_0001.png, got " +
+            "$($exportedFiles[0].Name).")
+    }
+
+    # 每个导出的文件都要是真能用的 PNG：查签名，并从 IHDR 里读出尺寸
+    foreach ($exported in $exportedFiles) {
+        $header = [byte[]]::new(24)
+        $stream = [IO.File]::OpenRead($exported.FullName)
+        try { [void]$stream.Read($header, 0, 24) } finally { $stream.Dispose() }
+        $signature = @(137, 80, 78, 71, 13, 10, 26, 10)
+        for ($index = 0; $index -lt 8; $index++) {
+            if ($header[$index] -ne $signature[$index]) {
+                throw ("Export regression failed: $($exported.Name) is not a PNG file.")
+            }
+        }
+        # IHDR: 宽在偏移 16，高在偏移 20，都是大端 32 位
+        $width = ($header[16] -shl 24) -bor ($header[17] -shl 16) -bor ($header[18] -shl 8) -bor $header[19]
+        $height = ($header[20] -shl 24) -bor ($header[21] -shl 16) -bor ($header[22] -shl 8) -bor $header[23]
+        if ($width -ne 160 -or $height -ne 80) {
+            throw ("Export regression failed: $($exported.Name) is ${width}x${height}, " +
+                "expected the fixture's 160x80.")
+        }
+    }
+
+    # 两帧的内容不该一模一样——真的是不同帧，而不是同一帧写了两遍
+    if ($exportedFiles.Count -ge 2) {
+        $firstHash = (Get-FileHash -LiteralPath $exportedFiles[0].FullName -Algorithm SHA256).Hash
+        $secondHash = (Get-FileHash -LiteralPath $exportedFiles[1].FullName -Algorithm SHA256).Hash
+        if ($firstHash -eq $secondHash) {
+            throw ("Export regression failed: the exported frames are byte-identical, so the " +
+                "same frame was written twice.")
+        }
+    }
+
+    $exportProcess.Refresh()
+    if ($exportProcess.HasExited) {
+        throw "Export regression failed: the viewer exited while exporting."
+    }
+    if (-not [YeImageViewerTestNativeV1365]::IsWindowEnabled($exportWindow)) {
+        throw "Export regression failed: the viewer stayed disabled after exporting."
+    }
+
+    Write-Host ("PASS frame export asks first, writes one real PNG per frame next to the source " +
+        "($($exportedFiles.Count) frames), and leaves the viewer usable.")
+}
+finally {
+    if ($exportProcess -and -not $exportProcess.HasExited) {
+        [void]$exportProcess.CloseMainWindow()
+        if (-not $exportProcess.WaitForExit(6000)) {
+            Stop-Process -Id $exportProcess.Id -Force
+            [void]$exportProcess.WaitForExit(3000)
+        }
+    }
+    if (Test-Path -LiteralPath $exportRoot) {
+        Remove-Item -LiteralPath $exportRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Write-Host "Checking that the language radio really switches the UI language..."
+# 繁體是第三种语言，而「界面是不是中文」一旦写成 UI_LANG == 0，繁體就会掉进英文分支。
+# 源码检查只拦得住那一种写法，这里从真窗口验结果：在设置页点语言，再看设置窗口
+# 自己的标题是哪一种语言（设置 / Settings / 設定，都来自 stringRes 第 39 条）。
+#
+# 读「界面现在是什么语言」用窗口标题，不用剪贴板。剪贴板是全机器共享的，
+# 程序和测试会抢，实测会时不时读到空——而标题是窗口自带的，取多少次都一样。
+# 标题在建窗口时就定了，所以每次改完语言要关掉再开一次才能看到新标题。
+$languageRoot = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Lang-" + [Guid]::NewGuid().ToString("N"))
+$languageProcess = $null
+try {
+    [void](New-Item -ItemType Directory -Path $languageRoot)
+    $languageViewer = Join-Path $languageRoot "YeImageViewer.exe"
+    Copy-Item -LiteralPath $viewer -Destination $languageViewer
+    $languagePictures = Join-Path $languageRoot "pics"
+    [void](New-Item -ItemType Directory -Path $languagePictures)
+    $languageImage = Join-Path $languagePictures "sample.png"
+    Copy-Item -LiteralPath $commonPngFixture -Destination $languageImage
+
+    $languageProcess = Start-Process -FilePath $languageViewer -ArgumentList ('"' + $languageImage + '"') -PassThru
+    $languageDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 200
+        $languageProcess.Refresh()
+    } while (-not $languageProcess.HasExited -and $languageProcess.MainWindowHandle -eq 0 -and
+        [DateTime]::UtcNow -lt $languageDeadline)
+    if ($languageProcess.HasExited -or $languageProcess.MainWindowHandle -eq 0) {
+        throw "Language regression failed: the viewer did not open."
+    }
+    Start-Sleep -Milliseconds 800
+    $languageWindow = $languageProcess.MainWindowHandle
+    $languagePid = [uint32]$languageProcess.Id
+
+    function Open-LanguageSettings {
+        # 右键菜单的「设置」= ContextMenu::openSetting
+        [void][YeImageViewerTestNativeV1365]::PostMessage($languageWindow, 0x0111, [UIntPtr]1010, [IntPtr]::Zero)
+        $window = [IntPtr]::Zero
+        $deadline = [DateTime]::UtcNow.AddSeconds(8)
+        while ($window -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 150
+            $window = [YeImageViewerTestNativeV1365]::FindProcessWindow($languagePid, "YeImageViewerSettingWnd")
+        }
+        if ($window -eq [IntPtr]::Zero) {
+            throw "Language regression failed: the Settings window did not open."
+        }
+        return $window
+    }
+
+    function Close-LanguageSettings([IntPtr]$Window) {
+        [void][YeImageViewerTestNativeV1365]::SendMessage($Window, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
+        $deadline = [DateTime]::UtcNow.AddSeconds(6)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 150
+            if ([YeImageViewerTestNativeV1365]::FindProcessWindow($languagePid, "YeImageViewerSettingWnd") -eq
+                [IntPtr]::Zero) {
+                return
+            }
+        }
+        throw "Language regression failed: the Settings window did not close."
+    }
+
+    # 语言单选是「显示」卡片里的第 3 行（下标 2），逻辑坐标按 SettingLayout 推：
+    #   GENERAL_CHECK_BOTTOM    = 54 + 2*36 + 32   = 158
+    #   GENERAL_BEHAVIOR_CARD.h = 158 + 4 - 20     = 142
+    #   GENERAL_DISPLAY_CARD_Y  = 20 + 142 + 16    = 178
+    #   GENERAL_RADIO_FIRST_Y   = 178 + 38         = 216
+    #   行 y（下标 2）          = 216 + 2*48        = 312
+    # 选项区从行左边 +138（labelWidth）起、宽 544-138=406，三个选项各 135 宽
+    # （见 Setting.h 的 handleGeneralTab）。窗口坐标还要加 52 的标签页高度。
+    $languageOptionY = 52 + 312 + 5 + 14
+    $languageOptionX = @(0, 1, 2 | ForEach-Object { 38 + 138 + $_ * 135 + 67 })
+
+    $languageExpectations = @(
+        @{ Index = 0; Name = "简体中文"; Title = "设置" },
+        @{ Index = 1; Name = "English"; Title = "Settings" },
+        @{ Index = 2; Name = "繁體中文"; Title = "設定" }
+    )
+
+    $languageSettings = Open-LanguageSettings
+    try {
+        foreach ($expectation in $languageExpectations) {
+            # 逻辑画布固定 620 宽，倍率按实际客户区宽度反推（窗口放不下时程序会压低缩放）
+            $settingRect = New-Object YeImageViewerTestNativeV1365+RECT
+            [void][YeImageViewerTestNativeV1365]::GetClientRect($languageSettings, [ref]$settingRect)
+            $settingWidth = $settingRect.Right - $settingRect.Left
+            if ($settingWidth -le 0) { $settingWidth = 620 }
+
+            $clickX = [int][Math]::Round($languageOptionX[$expectation.Index] * $settingWidth / 620.0)
+            $clickY = [int][Math]::Round($languageOptionY * $settingWidth / 620.0)
+            $position = [IntPtr](($clickY -shl 16) -bor ($clickX -band 0xFFFF))
+            [void][YeImageViewerTestNativeV1365]::SendMessage($languageSettings, 0x0201, [UIntPtr]1, $position)
+            [void][YeImageViewerTestNativeV1365]::SendMessage($languageSettings, 0x0202, [UIntPtr]0, $position)
+            Start-Sleep -Milliseconds 400
+
+            Close-LanguageSettings $languageSettings
+            $languageSettings = Open-LanguageSettings
+
+            $settingTitle = New-Object Text.StringBuilder 512
+            [void][YeImageViewerTestNativeV1365]::GetWindowText($languageSettings, $settingTitle, 512)
+            $actual = $settingTitle.ToString()
+            if ($actual -ne $expectation.Title) {
+                throw ("Language regression failed: after selecting $($expectation.Name) the " +
+                    "Settings window is titled '${actual}', expected '$($expectation.Title)'. " +
+                    "A wrong title here means the UI fell back to another language.")
+            }
+        }
+    }
+    finally {
+        if ($languageSettings -ne [IntPtr]::Zero) {
+            [void][YeImageViewerTestNativeV1365]::SendMessage($languageSettings, 0x0010,
+                [UIntPtr]::Zero, [IntPtr]::Zero)
+            Start-Sleep -Milliseconds 400
+        }
+    }
+
+    $languageProcess.Refresh()
+    if ($languageProcess.HasExited) {
+        throw "Language regression failed: the viewer exited while switching languages."
+    }
+
+    Write-Host ("PASS the language radio switches between 简体中文, English and 繁體中文, and the " +
+        "UI text follows all three.")
+}
+finally {
+    if ($languageProcess -and -not $languageProcess.HasExited) {
+        [void]$languageProcess.CloseMainWindow()
+        if (-not $languageProcess.WaitForExit(5000)) {
+            Stop-Process -Id $languageProcess.Id -Force
+            [void]$languageProcess.WaitForExit(3000)
+        }
+    }
+    if (Test-Path -LiteralPath $languageRoot) {
+        Remove-Item -LiteralPath $languageRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host "Checking the print preview on extreme aspect ratios..."
 # 打印预览的缩放以前只算缩放系数，不管算出来的边长：一张 10000x1 的图缩到 800 宽，
 # 高就成了 round(1 * 0.08) = 0，预览窗口压根建不起来——点「打印」什么都不发生，
