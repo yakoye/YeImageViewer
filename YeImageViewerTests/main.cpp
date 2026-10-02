@@ -1766,10 +1766,23 @@ void expectSettingLayout() {
         everySettingControlRoutes &= command.kind == SettingCommand::Kind::GeneralToggle &&
             command.index == index;
     }
-    // 必须与 SettingCommand::resolve 里的 optionCounts 逐项一致，否则命中判定会用错
-    // 分段宽度。数量与 GENERAL_RADIOS 对齐由下面的静态断言兜住。
-    constexpr std::array<int, 12> radioOptions{ 3, 3, 2, 2, 4, 4, 2, 2, 2, 4, 2, 2 };
+    // 这张表不是从 SettingCommand 抄来的，是从 Setting.h 的 generalTabRadioList
+    // 数出来的：每组的 stringIDs 第一项是标签，剩下的才是选项。
+    //   {20,21,22,23} {24,25,26,27} {28,30,31,86} {36,37,38}
+    //   {57,58,59,60,83} {61,62,63,64,84} {65,66,67} {68,69,70}
+    //   {73,66,67} {74,75,76,77,78} {79,80,81} {85,66,67}
+    // 两边必须相等——先前这条测试直接照抄了 SettingCommand 那张表，于是
+    // 「加繁體中文时漏改选项数」这种错两边一起错，测试照样绿。
+    constexpr std::array<int, 12> radioOptions{ 3, 3, 3, 2, 4, 4, 2, 2, 2, 4, 2, 2 };
     static_assert(radioOptions.size() == SettingLayout::GENERAL_RADIOS.size());
+    for (std::size_t index = 0; index < radioOptions.size(); ++index) {
+        if (radioOptions[index] != SettingCommand::GENERAL_RADIO_OPTION_COUNTS[index]) {
+            everySettingControlRoutes = false;
+            std::cerr << "FAIL general radio row " << index << " has " << radioOptions[index]
+                << " labelled options but SettingCommand counts "
+                << SettingCommand::GENERAL_RADIO_OPTION_COUNTS[index] << '\n';
+        }
+    }
     for (int rowIndex = 0; rowIndex < static_cast<int>(SettingLayout::GENERAL_RADIOS.size()); ++rowIndex) {
         const auto row = SettingLayout::GENERAL_RADIOS[rowIndex];
         const int segmentX = row.x + 138;

@@ -39,6 +39,27 @@ struct Command {
     constexpr bool operator==(const Command&) const = default;
 };
 
+// 「常规」页每个单选组有几个选项，顺序与 Setting::generalTabRadioList 一一对应。
+// 这张表定分段宽度和命中判定，必须和那边 stringIDs 的个数（减掉开头的标签）相等。
+// 曾经不等过：加繁體中文时 stringIDs 从三项变四项，这里还写着 2，于是
+// resolve() 报出来的选项下标按两段算，和界面上实际选中的那一项对不上。
+// 单元测试会拿 Setting.h 那边的条数反过来核对这张表。
+inline constexpr std::array<int, 12> GENERAL_RADIO_OPTION_COUNTS{
+    3,  // 切图动画：无/上下/左右
+    3,  // 主题：跟随系统/浅色/深色
+    3,  // 语言：简体中文/English/繁體中文
+    2,  // 鼠标右键
+    4,  // 打开方式
+    4,  // 双击动作
+    2,  // 翻页箭头
+    2,  // 拖动行为
+    2,  // 直方图
+    4,  // 信息面板不透明度
+    2,  // 实况声音
+    2,  // 全屏信息条
+};
+static_assert(GENERAL_RADIO_OPTION_COUNTS.size() == SettingLayout::GENERAL_RADIOS.size());
+
 constexpr bool contains(const SettingLayout::Rect& rect, int x, int y) {
     return rect.x <= x && x < rect.x + rect.width &&
         rect.y <= y && y < rect.y + rect.height;
@@ -60,12 +81,6 @@ constexpr Command resolve(int tab, int x, int windowY, int scrollOffset,
             if (contains(SettingLayout::GENERAL_CHECK_BOXES[index], x, y))
                 return { Kind::GeneralToggle, index, -1 };
         }
-        // 与 Setting::generalTabRadioList 的顺序一一对应。少一项就会越界取到 0，
-        // 后面的分段宽度除法直接整数除零，所以这里用断言钉住数量。
-        // 与 Setting::generalTabRadioList 一一对应：打开方式和双击动作各加了一项，
-        // 末尾新增全屏信息条（关/开）。
-        constexpr std::array<int, 12> optionCounts{ 3, 3, 2, 2, 4, 4, 2, 2, 2, 4, 2, 2 };
-        static_assert(optionCounts.size() == SettingLayout::GENERAL_RADIOS.size());
         constexpr int labelWidth = 138;
         for (int index = 0; index < static_cast<int>(SettingLayout::GENERAL_RADIOS.size()); ++index) {
             const auto& row = SettingLayout::GENERAL_RADIOS[index];
@@ -73,9 +88,10 @@ constexpr Command resolve(int tab, int x, int windowY, int scrollOffset,
                 row.x + labelWidth, row.y + 5, row.width - labelWidth, row.height - 10 };
             if (!contains(segments, x, y))
                 continue;
-            const int itemWidth = segments.width / optionCounts[index];
+            const int itemWidth = segments.width / GENERAL_RADIO_OPTION_COUNTS[index];
             return { Kind::GeneralRadioOption, index,
-                std::clamp((x - segments.x) / itemWidth, 0, optionCounts[index] - 1) };
+                std::clamp((x - segments.x) / itemWidth, 0,
+                    GENERAL_RADIO_OPTION_COUNTS[index] - 1) };
         }
         for (int index = 0; index < externalEditorCount; ++index) {
             if (contains(SettingLayout::generalEditorName(index), x, y))
