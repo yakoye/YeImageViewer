@@ -702,6 +702,20 @@ public static class YeImageViewerTestNativeV1365
     public static extern bool EnumChildWindows(IntPtr parent,
         EnumWindowsCallback callback, IntPtr parameter);
 
+    // 窗口的深色模式标记。切主题时程序会给主窗口设 DWMWA_USE_IMMERSIVE_DARK_MODE(20)，
+    // 读回来就知道主题到底切过去了没有——这是少有的「界面主题」能在窗口外部验证的地方。
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr window, int attribute,
+        out int value, int size);
+
+    public static int DarkModeFlag(IntPtr window)
+    {
+        int value = -1;
+        if (DwmGetWindowAttribute(window, 20, out value, sizeof(int)) != 0)
+            return -1;
+        return value;
+    }
+
     // 剪贴板里那张图的尺寸。直接读 CF_DIB 的 BITMAPINFOHEADER，不碰 WinForms：
     // PowerShell 7 没有 Get-Clipboard -Format Image，而 WinForms 的 Clipboard
     // 还要求调用线程是 STA，换个宿主就可能拿不到。
@@ -3327,7 +3341,7 @@ finally {
     }
 }
 
-Write-Host "Checking that the language radio really switches the UI language..."
+Write-Host "Checking that the language and theme radios really take effect..."
 # 繁體是第三种语言，而「界面是不是中文」一旦写成 UI_LANG == 0，繁體就会掉进英文分支。
 # 源码检查只拦得住那一种写法，这里从真窗口验结果：在设置页点语言，再看设置窗口
 # 自己的标题是哪一种语言（设置 / Settings / 設定，都来自 stringRes 第 39 条）。
@@ -3442,13 +3456,78 @@ try {
         }
     }
 
+    # ---- 主题：跟随系统 / 浅色 / 深色 ----
+    # 主题是「界面主题」里唯一能在窗口外部验的部分：切过去之后程序会给主窗口设
+    # DWMWA_USE_IMMERSIVE_DARK_MODE(20)，读回来就知道到底切没切。
+    # 行是「显示」卡片的第 2 行（下标 1）：y = 216 + 1*48 = 264，三个选项，x 同语言那一行。
+    $themeOptionY = 52 + 264 + 5 + 14
+    $systemUsesLightTheme = 1
+    try {
+        $systemUsesLightTheme = (Get-ItemProperty -Path `
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" `
+            -Name "AppsUseLightTheme" -ErrorAction Stop).AppsUseLightTheme
+    }
+    catch {
+        # 这个值不存在时 Windows 按浅色处理
+        $systemUsesLightTheme = 1
+    }
+
+    $themeExpectations = @(
+        @{ Index = 1; Name = "浅色"; Dark = 0 },
+        @{ Index = 2; Name = "深色"; Dark = 1 },
+        @{ Index = 0; Name = "跟随系统"; Dark = $(if ($systemUsesLightTheme -eq 0) { 1 } else { 0 }) }
+    )
+
+    $themeSettings = Open-LanguageSettings
+    try {
+        foreach ($expectation in $themeExpectations) {
+            $settingRect = New-Object YeImageViewerTestNativeV1365+RECT
+            [void][YeImageViewerTestNativeV1365]::GetClientRect($themeSettings, [ref]$settingRect)
+            $settingWidth = $settingRect.Right - $settingRect.Left
+            if ($settingWidth -le 0) { $settingWidth = 620 }
+
+            $clickX = [int][Math]::Round($languageOptionX[$expectation.Index] * $settingWidth / 620.0)
+            $clickY = [int][Math]::Round($themeOptionY * $settingWidth / 620.0)
+            $position = [IntPtr](($clickY -shl 16) -bor ($clickX -band 0xFFFF))
+            [void][YeImageViewerTestNativeV1365]::SendMessage($themeSettings, 0x0201, [UIntPtr]1, $position)
+            [void][YeImageViewerTestNativeV1365]::SendMessage($themeSettings, 0x0202, [UIntPtr]0, $position)
+
+            # 主题是异步落到主窗口上的（isNeedUpdateTheme 由绘制循环消费），轮询等它生效
+            $themeDeadline = [DateTime]::UtcNow.AddSeconds(6)
+            $actualDark = -1
+            do {
+                Start-Sleep -Milliseconds 200
+                $actualDark = [YeImageViewerTestNativeV1365]::DarkModeFlag($languageWindow)
+                $normalized = if ($actualDark -gt 0) { 1 } else { $actualDark }
+            } while ($normalized -ne $expectation.Dark -and [DateTime]::UtcNow -lt $themeDeadline)
+
+            if ($actualDark -lt 0) {
+                throw ("Theme regression failed: the window does not report its dark-mode state, " +
+                    "so selecting $($expectation.Name) cannot be verified.")
+            }
+            $normalized = if ($actualDark -gt 0) { 1 } else { 0 }
+            if ($normalized -ne $expectation.Dark) {
+                throw ("Theme regression failed: after selecting $($expectation.Name) the window's " +
+                    "dark-mode flag is ${normalized}, expected $($expectation.Dark).")
+            }
+        }
+    }
+    finally {
+        if ($themeSettings -ne [IntPtr]::Zero) {
+            [void][YeImageViewerTestNativeV1365]::SendMessage($themeSettings, 0x0010,
+                [UIntPtr]::Zero, [IntPtr]::Zero)
+            Start-Sleep -Milliseconds 400
+        }
+    }
+
     $languageProcess.Refresh()
     if ($languageProcess.HasExited) {
         throw "Language regression failed: the viewer exited while switching languages."
     }
 
-    Write-Host ("PASS the language radio switches between 简体中文, English and 繁體中文, and the " +
-        "UI text follows all three.")
+    Write-Host ("PASS the language radio switches between 简体中文, English and 繁體中文, the UI " +
+        "text follows all three, and the theme radio really switches the window between " +
+        "light and dark.")
 }
 finally {
     if ($languageProcess -and -not $languageProcess.HasExited) {

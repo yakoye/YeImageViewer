@@ -59,13 +59,42 @@ if (-not $SkipRegistration) {
 $startMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 $shortcutPath = Join-Path $startMenuDir "YeImageViewer.lnk"
 $shell = New-Object -ComObject WScript.Shell
+# 写 .lnk 偶尔会失败：资源管理器正在读那个目录、同步盘（OneDrive 之类）正占着文件，
+# 都会让 Save() 抛「无法保存快捷方式」。这不该让整次安装失败——程序本体已经装好了，
+# 快捷方式晚一点再写就是。重试几次，仍然不行就说清楚并继续。
+function Save-ShortcutWithRetry {
+    param(
+        [Parameter(Mandatory = $true)] $Shortcut,
+        [Parameter(Mandatory = $true)] [string]$Path,
+        [int]$Attempts = 5
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            $Shortcut.Save()
+            return $true
+        }
+        catch {
+            if ($attempt -eq $Attempts) {
+                Write-Warning ("无法写入快捷方式 {0}：{1}。程序本体已安装到 {2}，可手动创建快捷方式。" -f
+                    $Path, $_.Exception.Message, $InstallDir)
+                return $false
+            }
+            Start-Sleep -Milliseconds (200 * $attempt)
+        }
+    }
+    return $false
+}
+
 if (-not $NoStartMenuShortcut) {
     $shortcut = $shell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $targetExe
     $shortcut.WorkingDirectory = $InstallDir
     $shortcut.IconLocation = "$targetExe,0"
     $shortcut.Description = "YeImageViewer 图像查看器"
-    $shortcut.Save()
+    if (-not (Save-ShortcutWithRetry -Shortcut $shortcut -Path $shortcutPath)) {
+        $shortcutPath = $null
+    }
 }
 else {
     $shortcutPath = $null
@@ -81,7 +110,9 @@ if (-not $NoDesktopShortcut) {
         $desktopShortcut.WorkingDirectory = $InstallDir
         $desktopShortcut.IconLocation = "$targetExe,0"
         $desktopShortcut.Description = "YeImageViewer 图像查看器"
-        $desktopShortcut.Save()
+        if (-not (Save-ShortcutWithRetry -Shortcut $desktopShortcut -Path $desktopShortcutPath)) {
+            $desktopShortcutPath = $null
+        }
     }
 }
 
