@@ -149,6 +149,19 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 - 把 `wstring_view` 交给要求以 `\0` 结尾的 Win32 参数之前先拷成 `wstring`。
   `data()` 不保证有结尾零——现在的调用方都传 `wstring` 所以一直没出事，
   传 `substr` 的视图就会读过界。
+- 发布就是绿色版，**不做安装程序**。`packageRelease.ps1` 出三样：裸的
+  `YeImageViewer.exe`、`...-portable.zip`（Windows 自带能解压）、`...-portable.7z`
+  （最小）。压缩包里 exe 躺在根目录，不要再埋进 `x64\Release\`。
+  曾经有个 7z SFX 一键安装器，已经删掉：SFX 的版本信息写着 `7z Setup SFX small`，
+  Windows 的「程序兼容性助手」据此判定它是安装程序，而它退出时又不写卸载注册项，
+  于是**每装一次就弹一次「可能未正确安装此程序」**。程序本来就是绿色单文件，
+  装不装都一样。打包契约测试现在反过来禁止 SFX 回来。
+  `installLocal.ps1` 保留——它是 PowerShell 脚本，不触发兼容性助手。
+- 真窗口测试要在临时目录里跑自己那份 exe 和素材，**别直接用仓库里的**。
+  旋转角度和每图缩放是持久化的（存在 exe 旁边的 `YeImageViewer.db` 里），直接跑的话
+  每次起始状态都不一样：实测连跑六轮，起始缩放 17%/46%/9%，旋转顺时针90°/180°/
+  逆时针90°/无。结果不可重现的测试没法用来判断「是不是真的坏了」，而且还会把旋转
+  记录写进开发目录的配置、影响别的环节。
 - 查「打开一张图为什么慢」用 `YEIMAGEVIEWER_STARTUP_TRACE=<文件路径>` 环境变量（见 `StartupTrace.h`），会记下 CRT 静态初始化、建窗口、建 D3D 设备、解码、格式转换、色彩管理、首帧绘制各段的时刻。没设环境变量时一个字节都不写。
 - 建 D3D 设备要七十多毫秒，建窗口只要五毫秒。图片解码在 `onWindowCreated()` 里就派出去了，和建设备并行跑；启动那一次的 `initOpenFile` 要传 `keepWarmCache = true`，否则 `imgDB.clear()` 会把在途的解码作废。
 - 别再去给 libpng 的去滤波写 SIMD。做过一轮完整的：libpng 自带的 SSE2 只覆盖 3 和 4 字节像素（`intel/intel_init.c` 里 `if (bpp == 3) ... else if (bpp == 4)`），16 位图是 6 或 8 字节像素，确实掉回标量。补齐 6/8 字节的 SSE2 实现之后，自检确认结果与规范逐字节一致，解码耗时却一点没变——A/B 各跑四轮：原版 1506/1513/1513/1523 ms，SIMD 版 1512/1524/1594/1608 ms。

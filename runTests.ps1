@@ -222,18 +222,37 @@ Write-Host "PASS open-with registration lists all $($expectedOpenWithExt.Count) 
 $packageScript = Join-Path $repoRoot "packageRelease.ps1"
 $packageSource = [IO.File]::ReadAllText($packageScript)
 [void][scriptblock]::Create($packageSource)
-$installerLauncher = Join-Path $repoRoot "tools\installer\setup.cmd"
-$installerSfx = Join-Path $repoRoot "tools\installer\7zS2.sfx"
-if (-not (Test-Path -LiteralPath $installerLauncher -PathType Leaf) -or
-    -not (Test-Path -LiteralPath $installerSfx -PathType Leaf) -or
-    (Get-FileHash -LiteralPath $installerSfx -Algorithm SHA256).Hash -ne
-        "5844E4A1F78F309170B8A956DF9A24CAF932A6BA4CF1FCDE3E0066D850FBF5E3" -or
-    -not ([IO.File]::ReadAllText($installerLauncher).Contains('"%~dp0installLocal.ps1" %*')) -or
-    -not $packageSource.Contains('installer-smoke-install') -or
-    -not $packageSource.Contains('Start-Process -FilePath $installer')) {
-    throw "Packaging regression failed: the pinned non-elevating SFX launcher or execution smoke gate is missing."
+# 发布产物必须是绿色版：一个裸 exe，外加一个根目录就放着 exe 的压缩包。
+# 原先还做一个 7z SFX 一键安装器，已经去掉——它每次运行都会弹 Windows
+# 「程序兼容性助手 / 可能未正确安装此程序」。那个 SFX 的版本信息写着
+# "7z Setup SFX small"，PCA 据此判定它是安装程序，而它退出时又不写卸载项，
+# 于是每装一次就吓人一次。本程序是绿色单文件，装不装都一样。
+foreach ($forbiddenInstallerMarker in @("7zS2.sfx", "installer-smoke-install", "-setup.exe")) {
+    if ($packageSource.Contains($forbiddenInstallerMarker)) {
+        throw ("Packaging regression failed: the one-click SFX installer is back ($forbiddenInstallerMarker). " +
+            "It trips the Windows Program Compatibility Assistant on every run; ship the portable " +
+            "executable instead.")
+    }
 }
-Write-Host "PASS one-click packaging pins the non-elevating SFX launcher and requires a real safe-install smoke test."
+foreach ($requiredPortableMarker in @(
+    '$standaloneExe = Join-Path $OutputDirectory "YeImageViewer.exe"',
+    'Copy-Item -LiteralPath $viewer -Destination (Join-Path $stagingRoot "YeImageViewer.exe")',
+    "使用说明.txt"
+)) {
+    if (-not $packageSource.Contains($requiredPortableMarker)) {
+        throw "Packaging regression failed: the portable package no longer ships $requiredPortableMarker."
+    }
+}
+# 包里不能再把 exe 埋进 x64\Release\：解压出来要能直接看到并双击
+if ($packageSource.Contains('Join-Path $stagingRoot "x64\Release"')) {
+    throw ("Packaging regression failed: the portable package buries the executable under " +
+        "x64\Release again; it must sit at the archive root.")
+}
+if (Test-Path -LiteralPath (Join-Path $repoRoot "tools\installer\7zS2.sfx")) {
+    throw ("Packaging regression failed: the SFX installer module is back in tools\installer; " +
+        "it is what triggers the compatibility-assistant dialog.")
+}
+Write-Host "PASS the release ships a portable executable, with no SFX installer to trip the compatibility assistant."
 
 $embeddedIcon = [Drawing.Icon]::ExtractAssociatedIcon($viewer)
 if ($null -eq $embeddedIcon) {
@@ -829,6 +848,45 @@ public static class YeImageViewerTestNativeV1365
 "@
 }
 
+# 「点图片外的空白处」用的坐标不能写死。窗口是满工作区的、图片居中缩放，左右留白
+# 和上下留白通常只有一边非零——写死 x=4 时，一张足够宽的图会让那个点正好落在画面上，
+# 点下去不退出沉浸，于是等到超时假失败。这件事在三个环节里都要做，所以抽出来。
+#
+# 标题形如：[5/5] 名字.svg 1200x1600(1.2MB) 45%
+function Get-ViewerBackgroundPoint {
+    param(
+        [Parameter(Mandatory = $true)] [IntPtr]$Window,
+        [Parameter(Mandatory = $true)] [string]$Title
+    )
+
+    $sizeMatch = [regex]::Match($Title, '(\d+)x(\d+)')
+    $zoomMatch = [regex]::Match($Title, '(\d+)%')
+    if (-not $sizeMatch.Success -or -not $zoomMatch.Success) {
+        throw "Cannot find background: the title does not report a pixel size and zoom ('$Title')."
+    }
+
+    $clientRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($Window, [ref]$clientRect)
+    $clientWidth = $clientRect.Right - $clientRect.Left
+    $clientHeight = $clientRect.Bottom - $clientRect.Top
+
+    # 标题里的百分比是取整过的，画面尺寸按它算会差一两个像素，所以留白要留余量
+    $drawnWidth = [int][Math]::Ceiling([int]$sizeMatch.Groups[1].Value * [double]$zoomMatch.Groups[1].Value / 100.0)
+    $drawnHeight = [int][Math]::Ceiling([int]$sizeMatch.Groups[2].Value * [double]$zoomMatch.Groups[1].Value / 100.0)
+    $sideGutter = [int](($clientWidth - $drawnWidth) / 2)
+    $topGutter = [int](($clientHeight - $drawnHeight) / 2)
+
+    if ($sideGutter -ge 12) {
+        return [IntPtr](([int]($clientHeight / 2) -shl 16) -bor 4)
+    }
+    if ($topGutter -ge 12) {
+        return [IntPtr]((4 -shl 16) -bor ([int]($clientWidth / 2) -band 0xFFFF))
+    }
+    throw ("Cannot find background: the image fills the whole work area " +
+        "(${drawnWidth}x${drawnHeight} in ${clientWidth}x${clientHeight}). " +
+        "Pick a fixture whose aspect ratio differs from the monitor's.")
+}
+
 # Match the viewer's per-monitor-v2 coordinate space before reading client
 # rectangles or synthesizing mouse messages on scaled displays.
 [void][YeImageViewerTestNativeV1365]::SetThreadDpiAwarenessContext([IntPtr](-4))
@@ -1368,41 +1426,8 @@ try {
     }
     Write-Host "PASS clicking the image keeps presentation mode available for dragging."
 
-    # 「图片外的空白处」不能写死一个坐标。窗口是满工作区的、图片居中缩放，所以
-    # 左右留白和上下留白通常只有一边非零——写死 x=4 时，一张足够宽的图会让那个点
-    # 正好落在画面上，于是点下去不退出沉浸，测试超时失败（偶发过两次）。
-    # 这里从标题里读出真实像素尺寸和缩放百分比，算出画面实际占多大，再挑一个
-    # 确实落在留白里的点。
-    $freshSizeMatch = [regex]::Match($freshInitialTitle.ToString(), '(\d+)x(\d+)')
-    if (-not $freshSizeMatch.Success) {
-        throw "Fresh-install regression failed: presentation title did not report the pixel size."
-    }
-    $freshImageWidth = [int]$freshSizeMatch.Groups[1].Value
-    $freshImageHeight = [int]$freshSizeMatch.Groups[2].Value
-    $freshZoomPercent = [double]$freshInitialZoomMatch.Groups[1].Value
-    $freshClientWidth = $freshClientRect.Right - $freshClientRect.Left
-    $freshClientHeight = $freshClientRect.Bottom - $freshClientRect.Top
-    # 标题里的百分比是取整过的，画面尺寸按它算会差一两个像素，所以留白要留余量
-    $freshDrawnWidth = [int][Math]::Ceiling($freshImageWidth * $freshZoomPercent / 100.0)
-    $freshDrawnHeight = [int][Math]::Ceiling($freshImageHeight * $freshZoomPercent / 100.0)
-    $freshSideGutter = [int](($freshClientWidth - $freshDrawnWidth) / 2)
-    $freshTopGutter = [int](($freshClientHeight - $freshDrawnHeight) / 2)
-
-    if ($freshSideGutter -ge 12) {
-        $freshBackgroundX = 4
-        $freshBackgroundY = [int]($freshClientHeight / 2)
-    }
-    elseif ($freshTopGutter -ge 12) {
-        $freshBackgroundX = [int]($freshClientWidth / 2)
-        $freshBackgroundY = 4
-    }
-    else {
-        throw ("Fresh-install regression failed: the image fills the whole work area " +
-            "(${freshDrawnWidth}x${freshDrawnHeight} in ${freshClientWidth}x${freshClientHeight}), " +
-            "so there is no background to click. Pick a fixture whose aspect ratio differs " +
-            "from the monitor's.")
-    }
-    $freshBackgroundPosition = [IntPtr](($freshBackgroundY -shl 16) -bor ($freshBackgroundX -band 0xFFFF))
+    # 「图片外的空白处」不能写死一个坐标，按当前这张图的实际留白算（见 Get-ViewerBackgroundPoint）
+    $freshBackgroundPosition = Get-ViewerBackgroundPoint -Window $freshWindow -Title $freshInitialTitle.ToString()
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0200, [UIntPtr]::Zero, $freshBackgroundPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0201, [UIntPtr]1, $freshBackgroundPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0202, [UIntPtr]0, $freshBackgroundPosition)
@@ -2320,20 +2345,37 @@ try {
         throw "Current-image restore regression failed: immersive browsing did not reach image 5."
     }
 
-    # 同上：Esc 现在默认关闭图片，退出沉浸预览改用点击图片外背景
-    $restoreExitRect = New-Object YeImageViewerTestNativeV1365+RECT
-    [void][YeImageViewerTestNativeV1365]::GetClientRect($restoreWindow, [ref]$restoreExitRect)
-    $restoreExitY = [int](($restoreExitRect.Bottom - $restoreExitRect.Top) / 2)
-    $restoreExitPosition = [IntPtr](($restoreExitY -shl 16) -bor 4)
+    # 同上：Esc 现在默认关闭图片，退出沉浸预览改用点击图片外背景。
+    # 坐标按当前这张图的实际留白算，不能写死——写死过 x=4，第五张图够宽时那个点
+    # 正好落在画面上，点下去不退出沉浸，于是这一条偶发失败。
+    $restoreExitPosition = Get-ViewerBackgroundPoint -Window $restoreWindow -Title $fifthTitle.ToString()
     [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0200, [UIntPtr]::Zero, $restoreExitPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0201, [UIntPtr]1, $restoreExitPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($restoreWindow, 0x0202, [UIntPtr]0, $restoreExitPosition)
-    Start-Sleep -Milliseconds 600
-    $fifthStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($restoreWindow, -16).ToInt64()
-    $fifthRect = New-Object YeImageViewerTestNativeV1365+RECT
-    [void][YeImageViewerTestNativeV1365]::GetClientRect($restoreWindow, [ref]$fifthRect)
-    $fifthWidth = $fifthRect.Right - $fifthRect.Left
-    $fifthHeight = $fifthRect.Bottom - $fifthRect.Top
+
+    # 点击进的是操作队列，等窗口真的变回带边框、尺寸不再变化为止，别固定睡一段
+    $restoreFramedDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    $fifthStyle = 0
+    $fifthWidth = 0
+    $fifthHeight = 0
+    $restoreStableCount = 0
+    $restoreLastSize = ""
+    do {
+        Start-Sleep -Milliseconds 150
+        $fifthStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($restoreWindow, -16).ToInt64()
+        $fifthRect = New-Object YeImageViewerTestNativeV1365+RECT
+        [void][YeImageViewerTestNativeV1365]::GetClientRect($restoreWindow, [ref]$fifthRect)
+        $fifthWidth = $fifthRect.Right - $fifthRect.Left
+        $fifthHeight = $fifthRect.Bottom - $fifthRect.Top
+        $restoreNowSize = "${fifthWidth}x${fifthHeight}"
+        if (($fifthStyle -band 0x00C00000) -ne 0 -and $restoreNowSize -eq $restoreLastSize) {
+            $restoreStableCount++
+        }
+        else {
+            $restoreStableCount = 0
+        }
+        $restoreLastSize = $restoreNowSize
+    } while ($restoreStableCount -lt 3 -and [DateTime]::UtcNow -lt $restoreFramedDeadline)
     $restoreMonitor = [YeImageViewerTestNativeV1365]::MonitorFromWindow($restoreWindow, 2)
     $restoreMonitorInfo = New-Object YeImageViewerTestNativeV1365+MONITORINFO
     $restoreMonitorInfo.Size = [Runtime.InteropServices.Marshal]::SizeOf($restoreMonitorInfo)
@@ -3794,15 +3836,32 @@ $extremeOpsSteps = @(
     @{ Name = "leave immersive view"; Message = 0x0111; WParam = 1009 }
 )
 
+# 在临时目录里跑，不要直接用仓库里的 exe 和素材：旋转角度和每图缩放是持久化的
+# （存在 exe 旁边的 YeImageViewer.db 里），直接跑的话每次的起始状态都不一样——
+# 实测连跑六轮，起始缩放分别是 17%/46%/9%，旋转分别是顺时针90°/180°/逆时针90°/无。
+# 结果不可重现的测试没法用来判断「是不是真的坏了」，而且它还会把旋转记录写进
+# 开发目录的配置，影响别的环节。
+$extremeOpsRoot = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-ExtremeOps-" + [Guid]::NewGuid().ToString("N"))
+try {
+[void](New-Item -ItemType Directory -Path $extremeOpsRoot)
+$extremeOpsViewer = Join-Path $extremeOpsRoot "YeImageViewer.exe"
+Copy-Item -LiteralPath $viewer -Destination $extremeOpsViewer
+$extremeOpsPictures = Join-Path $extremeOpsRoot "pics"
+[void](New-Item -ItemType Directory -Path $extremeOpsPictures)
 foreach ($extremeOpsName in $extremeOpsFixtures) {
-    $extremeOpsImage = Join-Path $repoRoot "test\corpus\13-dimensions\$extremeOpsName"
-    if (-not (Test-Path -LiteralPath $extremeOpsImage -PathType Leaf)) {
-        throw "Extreme-operation regression failed: fixture is missing: $extremeOpsImage"
+    $extremeOpsSource = Join-Path $repoRoot "test\corpus\13-dimensions\$extremeOpsName"
+    if (-not (Test-Path -LiteralPath $extremeOpsSource -PathType Leaf)) {
+        throw "Extreme-operation regression failed: fixture is missing: $extremeOpsSource"
     }
+    Copy-Item -LiteralPath $extremeOpsSource -Destination (Join-Path $extremeOpsPictures $extremeOpsName)
+}
+
+foreach ($extremeOpsName in $extremeOpsFixtures) {
+    $extremeOpsImage = Join-Path $extremeOpsPictures $extremeOpsName
 
     $extremeOpsProcess = $null
     try {
-        $extremeOpsProcess = Start-Process -FilePath $viewer `
+        $extremeOpsProcess = Start-Process -FilePath $extremeOpsViewer `
             -ArgumentList ('"' + $extremeOpsImage + '"') -PassThru
         $extremeOpsDeadline = [DateTime]::UtcNow.AddSeconds(12)
         do {
@@ -3855,6 +3914,12 @@ foreach ($extremeOpsName in $extremeOpsFixtures) {
                 [void]$extremeOpsProcess.WaitForExit(2000)
             }
         }
+    }
+}
+}
+finally {
+    if (Test-Path -LiteralPath $extremeOpsRoot) {
+        Remove-Item -LiteralPath $extremeOpsRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 Write-Host ("PASS all $($extremeOpsSteps.Count) common operations survive on " +
