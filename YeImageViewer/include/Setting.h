@@ -61,6 +61,23 @@ private:
         return GlobalVar::currentTheme.FG;
     }
 
+    // 赞赏入口那行的两段颜色（取值和理由都在 SettingLayout.h）
+    static uint32_t donateHeartColor() {
+        return GlobalVar::isCurrentUIDarkMode ?
+            SettingLayout::ABOUT_DONATE_HEART_DARK : SettingLayout::ABOUT_DONATE_HEART_LIGHT;
+    }
+
+    static uint32_t donateWordsColor() {
+        return GlobalVar::isCurrentUIDarkMode ?
+            SettingLayout::ABOUT_DONATE_WORDS_DARK : SettingLayout::ABOUT_DONATE_WORDS_LIGHT;
+    }
+
+    // 对比度是按卡片底色算的，而那份底色在 SettingLayout.h 里另抄了一份（那个头
+    // 不能依赖 jarkUtils.h，否则纯逻辑的单元测试工程包不进来）。两边对不上就等于
+    // 对比度是照着错的底算的，所以钉在这里。
+    static_assert(SettingLayout::ABOUT_CARD_BACKGROUND_DARK == deepTheme.BG);
+    static_assert(SettingLayout::ABOUT_CARD_BACKGROUND_LIGHT == lightTheme.BG);
+
     static cv::Rect toCvRect(const SettingLayout::Rect& rect) {
         return { rect.x, rect.y, rect.width, rect.height };
     }
@@ -624,13 +641,30 @@ private:
             { hero.x + 30, hero.y + 350, hero.width - 60, 36 },
             commitText.c_str(), secondaryText());
 
-        // 赞赏入口：一行淡色小字，和上面的编译时间、commit 同一个分量，
-        // 不抢眼。解不出收款码就不画——没有能点开的东西，就别留个钩子。
+        // 赞赏入口：红心一段、文字一段，分开画才能各上各的色。
+        // 解不出收款码就不画——没有能点开的东西，就别留个钩子。
         if (donateCodesAvailable()) {
-            textDrawer.putAlignCenter(page, toCanvasRect(SettingLayout::ABOUT_DONATE_LINK),
-                tr("觉得好用？请作者喝杯咖啡",
-                    "Found it useful? Buy the author a coffee",
-                    "覺得好用？請作者喝杯咖啡"), secondaryText());
+            const cv::Rect linkRect = toCanvasRect(SettingLayout::ABOUT_DONATE_LINK);
+            // U+2665 不带变体选择符：加上 U+FE0F 是在要彩色 emoji，而这里是 GDI
+            // 单色绘制，要不到就画成一个豆腐块。
+            const char* const heart = "♥ ";
+            const char* const words = tr("觉得不错？赞赏一下作者~",
+                "Like it? Buy the author a coffee~",
+                "覺得不錯？讚賞一下作者~");
+            const int heartWidth = textDrawer.measureWidth(heart);
+            const int wordsWidth = textDrawer.measureWidth(words);
+            const int startX = linkRect.x +
+                std::max(0, (linkRect.width - heartWidth - wordsWidth) / 2);
+            const int rightEdge = linkRect.x + linkRect.width;
+            // 两段的右边界都给到整行末尾：按量出来的宽度卡死的话，差一两个像素就会
+            // 被 DT_END_ELLIPSIS 截成省略号。
+            textDrawer.putAlignLeft(page,
+                { startX, linkRect.y, rightEdge - startX, linkRect.height },
+                heart, donateHeartColor());
+            textDrawer.putAlignLeft(page,
+                { startX + heartWidth, linkRect.y,
+                  rightEdge - startX - heartWidth, linkRect.height },
+                words, donateWordsColor());
         }
 
         const auto projectButton = toCanvasRect(SettingLayout::ABOUT_PROJECT_BUTTON);

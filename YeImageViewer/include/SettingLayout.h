@@ -227,6 +227,23 @@ constexpr Rect aboutDonateCaption(int index) {
     return { qr.x, qr.y + qr.height + 6, qr.width, 30 };
 }
 
+// 赞赏入口那行的两段配色。红心说是红的就得是红的，不跟着主题褪成灰；文字用蓝，
+// 和设置页其余那些灰色说明文字区分开。深浅两套只差明度。
+//
+// 深色那档蓝比信息面板的强调色（0xFF5685DC）亮一级：设置页的卡片底比信息面板的
+// 面板底亮一截，那个蓝摆过来只剩 4.48:1，刚好够不到正文该有的 4.5。
+inline constexpr uint32_t ABOUT_DONATE_HEART_DARK = 0xFFFF5252u;
+inline constexpr uint32_t ABOUT_DONATE_HEART_LIGHT = 0xFFD93025u;
+inline constexpr uint32_t ABOUT_DONATE_WORDS_DARK = 0xFF6E9BE8u;
+inline constexpr uint32_t ABOUT_DONATE_WORDS_LIGHT = 0xFF3C64C8u;
+
+// 这两档颜色压在卡片底色上，对比度要按它算。值必须等于 jarkUtils.h 里
+// deepTheme.BG / lightTheme.BG——Setting.h 有 static_assert 盯着，改了主题
+// 这边忘了跟，编译就过不去。单独写一份是因为 jarkUtils.h 拖着 Win32 和 OpenCV，
+// 纯逻辑的单元测试工程包不进来。
+inline constexpr uint32_t ABOUT_CARD_BACKGROUND_DARK = 0xFF1F2024u;
+inline constexpr uint32_t ABOUT_CARD_BACKGROUND_LIGHT = 0xFFF1F3F9u;
+
 inline constexpr Rect ABOUT_DONATE_TITLE{ ABOUT_HERO_CARD.x + 30,
     ABOUT_HERO_CARD.y + 24, ABOUT_HERO_CARD.width - 60, 38 };
 inline constexpr Rect ABOUT_DONATE_BACK{ ABOUT_HERO_CARD.x + 30,

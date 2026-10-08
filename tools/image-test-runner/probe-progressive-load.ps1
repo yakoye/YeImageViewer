@@ -43,11 +43,39 @@ public class LoadProbe {
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int index);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int val, int size);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
     [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr h);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr h, int index, StringBuilder buf, int length, out int needed);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+    // 有没有别的窗口压在被测窗口上面。CopyFromScreen 抓的是屏幕，别人盖上来就把
+    // 读数搅乱了，而窗口句柄、窗口矩形一切正常，看不出任何异样。
+    //
+    // 不能用 WindowFromPoint：那是命中测试，而沉浸显示下图片以外那圈是半透明的
+    // 压暗层，取样点会直接穿透到桌面，每轮都报「被遮挡」。Z 序相交不看透明。
+    public static int CountOverlapping(IntPtr hwnd, RECT r) {
+        int count = 0;
+        IntPtr cur = hwnd;
+        // GW_HWNDPREV = 3：Z 序里排在前面的，也就是画在上面的
+        while ((cur = GetWindow(cur, 3)) != IntPtr.Zero) {
+            if (!IsWindowVisible(cur) || IsIconic(cur)) continue;
+            // 输入法候选条、浮动提示这类工具窗口不算遮挡
+            if ((GetWindowLong(cur, -20) & 0x00000080) != 0) continue;
+            // UWP 的后台窗口报「可见」但 DWM 根本没画它。DWMWA_CLOAKED = 14
+            int cloaked;
+            if (DwmGetWindowAttribute(cur, 14, out cloaked, 4) == 0 && cloaked != 0) continue;
+            RECT o;
+            if (!GetWindowRect(cur, out o)) continue;
+            if (o.R - o.L <= 0 || o.B - o.T <= 0) continue;
+            if (o.L < r.R && r.L < o.R && o.T < r.B && r.T < o.B) count++;
+        }
+        return count;
+    }
 
     // 锁屏或 UAC 安全桌面显示时，输入桌面是 Winlogon，普通进程打不开；
     // 只有能打开且名字是 Default 时，屏幕上显示的才是用户桌面。
@@ -140,6 +168,7 @@ $hwnd = [IntPtr]::Zero
 $windowAt = $null
 $contentAt = $null
 $samples = @()
+$occludedFrames = 0
 
 try {
     while ($sw.Elapsed.TotalSeconds -lt $Duration) {
@@ -152,6 +181,12 @@ try {
                 $windowAt = $sw.Elapsed.TotalSeconds
                 Write-Output ("窗口出现  t={0:F2}s" -f $windowAt)
                 Write-Output ""
+                # 读屏幕就得保证读到的是它。这台机器上有程序会自己弹窗口到 Z 序
+                # 上面（实测 Shazao.MainWindow 一直压着，还在移动），盖住之后亮度
+                # 和非暗像素会突变，判出「换图时画面会跳变」这种假失败。
+                # HWND_TOPMOST(-1)，SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE：
+                # 只改 Z 序，不动位置尺寸、不抢焦点，解码时序和渲染路径都不受影响。
+                [void][LoadProbe]::SetWindowPos($hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x0013)
                 Write-Output "   t(s)    亮度   梯度(清晰度)  非暗像素%"
                 Write-Output "   -----  ------  ------------  ---------"
             }
@@ -169,6 +204,9 @@ try {
                 $g.Dispose()
                 $m = Measure-Frame $bmp
                 $bmp.Dispose()
+                # 这一帧读的时候窗口被别人盖住了没有。盖住了就整轮作废——
+                # 被遮挡的那几帧混在里面，切换点会落在错的地方。
+                if ([LoadProbe]::CountOverlapping($hwnd, $r) -gt 0) { $occludedFrames++ }
                 if ($m) {
                     $t = $sw.Elapsed.TotalSeconds
                     $samples += [pscustomobject]@{
@@ -210,6 +248,18 @@ Write-Output ("画面有内容    {0:F2}s  (阈值 {1}s)" -f $contentAt, $MaxPre
 if ($contentAt -gt $MaxPreviewSeconds) {
     Write-Output "FAIL 模糊预览出现太慢"
     $failed = $true
+}
+
+# 采样期间被别的窗口盖过，这一轮的像素读数就不可信了。这和锁屏、远程桌面断开
+# 是同一类事：与被测行为无关的环境干扰，记未执行而不是失败。实测被盖住那一轮
+# 的非暗像素从 66% 掉到 20%、亮度从 64 掉到 32，判出「画面会跳变」，而同一个
+# 构建单独连跑三轮漂移都只有 0.1。
+# 窗口已经置顶了，还能被盖住就只剩「别的 topmost 窗口压着」这一种可能。
+# 那是真的环境干扰，和被测行为无关，记未执行而不是失败。
+if ($occludedFrames -gt 0) {
+    Write-Output ("SKIPPED 窗口已置顶，采样期间仍有 $occludedFrames 帧被其他置顶窗口遮挡，" +
+        "屏幕读数不可信")
+    exit $EXIT_SKIPPED
 }
 
 # 窗口刚出现的头几帧还没画完，CopyFromScreen 会抓到底下的桌面，丢弃
