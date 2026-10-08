@@ -50,7 +50,7 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.37.3";
+std::wstring_view appVersion = L"v1.37.5";
 constinit int appVersionCode = 13630; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
@@ -4061,9 +4061,8 @@ public:
         }
 
         const int availableHeight = canvas.rows - margin * 2;
-        const int maxPanelHeight = std::min(availableHeight, scaled(compact ?
-            ImageInfoPresentation::LOGICAL_COMPACT_MAX_HEIGHT :
-            ImageInfoPresentation::LOGICAL_FULL_MAX_HEIGHT));
+        const int maxPanelHeight = ImageInfoPresentation::maxPanelHeight(mode, availableHeight,
+            scaled(ImageInfoPresentation::LOGICAL_COMPACT_MAX_HEIGHT));
         const int panelHeight = std::min(maxPanelHeight, headerHeight + contentHeight + footerHeight);
         if (panelWidth <= 0 || panelHeight <= headerHeight + footerHeight)
             return;

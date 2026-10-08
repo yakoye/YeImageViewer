@@ -17,6 +17,7 @@
 #include "ImageInterpolation.h"
 #include "InitialWindowLayout.h"
 #include "ImageInfoPresentation.h"
+#include "ExifValueFormat.h"
 #include "WindowTitlePresentation.h"
 #include "PresentationLayout.h"
 #include "OverlayLayout.h"
@@ -1897,6 +1898,43 @@ void expectSettingLayout() {
             SettingCommand::Kind::AboutUpstream;
     passOrFail("every Settings tab switch segment association shortcut and About button routes to its production command",
         everySettingControlRoutes);
+
+    // 赞赏入口的热区随状态变：收起时只有底下那行小字能点，展开时整张卡片都能点
+    // 回去。两边写反的后果都很难看——要么点卡片空白处莫名其妙翻过去，要么翻过去
+    // 之后只有一小条能翻回来。
+    const auto aboutHit = [](int x, int y, bool expanded) {
+        return SettingCommand::resolve(3, x, SettingLayout::TAB_HEIGHT + y, 0, 0, 0, 0,
+            expanded).kind;
+        };
+    const auto& donateLink = SettingLayout::ABOUT_DONATE_LINK;
+    const auto& heroCard = SettingLayout::ABOUT_HERO_CARD;
+    passOrFail("the donate line is the only hot spot while the About card is face up",
+        aboutHit(donateLink.x + donateLink.width / 2,
+            donateLink.y + donateLink.height / 2, false) ==
+            SettingCommand::Kind::AboutDonateToggle &&
+        aboutHit(heroCard.x + heroCard.width / 2, heroCard.y + 40, false) ==
+            SettingCommand::Kind::None);
+    passOrFail("the whole About card turns back once the donation codes are showing",
+        aboutHit(heroCard.x + heroCard.width / 2, heroCard.y + 40, true) ==
+            SettingCommand::Kind::AboutDonateToggle &&
+        aboutHit(SettingLayout::aboutDonateQr(1).x + 4,
+            SettingLayout::aboutDonateQr(1).y + 4, true) ==
+            SettingCommand::Kind::AboutDonateToggle);
+    passOrFail("the repository buttons keep working on both faces of the About card",
+        aboutHit(SettingLayout::ABOUT_PROJECT_BUTTON.x + 10,
+            SettingLayout::ABOUT_PROJECT_BUTTON.y + 10, true) ==
+            SettingCommand::Kind::AboutProject &&
+        aboutHit(SettingLayout::ABOUT_UPSTREAM_BUTTON.x + 10,
+            SettingLayout::ABOUT_UPSTREAM_BUTTON.y + 10, true) ==
+            SettingCommand::Kind::AboutUpstream);
+
+    // 收款码在界面上必须大到还能扫。曾经按 184 逻辑像素画，支付宝那个码模块密，
+    // 每模块不到四个像素，边界糊成灰的——界面上看着是个二维码，扫码器认不出来。
+    // 模块数从资源图量（见 runTests.ps1 的「赞赏收款码」一环），这里只钉显示尺寸。
+    passOrFail("the donation codes are drawn large enough to still scan",
+        SettingLayout::ABOUT_DONATE_QR_SIZE >= 220 &&
+        SettingLayout::aboutDonateQr(0).width == SettingLayout::ABOUT_DONATE_QR_SIZE &&
+        SettingLayout::aboutDonateQr(1).width == SettingLayout::ABOUT_DONATE_QR_SIZE);
     passOrFail("general settings pair switches and keep segmented rows full width",
         SettingLayout::GENERAL_CHECK_BOXES[0].y == SettingLayout::GENERAL_CHECK_BOXES[1].y &&
         SettingLayout::GENERAL_CHECK_BOXES[0].x < SettingLayout::GENERAL_CHECK_BOXES[1].x &&
@@ -2090,6 +2128,93 @@ void expectTextRendering() {
         std::filesystem::is_regular_file(*systemFont));
 }
 
+void expectExifValueFormat() {
+    using namespace std::string_literals;
+    const auto shown = [](const char* tag, const char* raw, uint32_t language = UiLanguage::SIMPLIFIED) {
+        const auto value = ExifValueFormat::format(tag, raw, language);
+        return value ? *value : "<未翻译>"s;
+        };
+
+    // 快门：一秒以内摄影界一律写 1/x。相机写进 EXIF 的分数五花八门，尼康这台
+    // 把 1/60 秒存成 10/600，照搬分母就成了「1/600 秒」，差十倍。
+    passOrFail("sub-second exposure times read as the shutter speeds photographers use",
+        shown("Exif.Photo.ExposureTime", "10/600") == "1/60 s" &&
+        shown("Exif.Photo.ExposureTime", "1/125") == "1/125 s" &&
+        shown("Exif.Photo.ExposureTime", "3/1000") == "1/333 s");
+    // 1/1.6 秒这种慢门取整会变成 1/2，差了三分之一档
+    passOrFail("slow shutter speeds keep the fractional stop instead of rounding to 1/2",
+        shown("Exif.Photo.ExposureTime", "10/16") == "1/1.6 s");
+    passOrFail("exposures of a second or more read as plain seconds",
+        shown("Exif.Photo.ExposureTime", "5/1") == "5 s" &&
+        shown("Exif.Photo.ExposureTime", "16/10") == "1.6 s" &&
+        shown("Exif.Photo.ExposureTime", "30/1") == "30 s");
+    // ShutterSpeedValue 是 APEX：秒数 = 2^(-S)
+    passOrFail("the APEX shutter speed converts to a real exposure time",
+        shown("Exif.Photo.ShutterSpeedValue", "6/1") == "1/64 s" &&
+        shown("Exif.Photo.ShutterSpeedValue", "0/1") == "1 s");
+
+    passOrFail("aperture reads as an f-number without a trailing zero",
+        shown("Exif.Photo.FNumber", "80/10") == "f/8" &&
+        shown("Exif.Photo.FNumber", "28/10") == "f/2.8" &&
+        shown("Exif.Photo.FNumber", "18/10") == "f/1.8");
+    // ApertureValue 也是 APEX：f = 2^(A/2)
+    passOrFail("the APEX aperture value converts to an f-number",
+        shown("Exif.Photo.ApertureValue", "6/1") == "f/8" &&
+        shown("Exif.Photo.MaxApertureValue", "0/1") == "f/1");
+
+    passOrFail("focal length carries its millimetre unit",
+        shown("Exif.Photo.FocalLength", "899/10") == "89.9 mm" &&
+        shown("Exif.Photo.FocalLength", "500/10") == "50 mm" &&
+        shown("Exif.Photo.FocalLengthIn35mmFilm", "24") == "24 mm");
+
+    // 曝光补偿要带符号，不然看不出偏哪边；三分之一档是相机的常用步进，
+    // 折成 0.33 不如保留分数。
+    passOrFail("exposure compensation is signed and keeps third-stop fractions",
+        shown("Exif.Photo.ExposureBiasValue", "0/10") == "0 EV" &&
+        shown("Exif.Photo.ExposureBiasValue", "1/3") == "+1/3 EV" &&
+        shown("Exif.Photo.ExposureBiasValue", "-2/3") == "-2/3 EV" &&
+        shown("Exif.Photo.ExposureBiasValue", "1/1") == "+1 EV" &&
+        shown("Exif.Photo.ExposureBiasValue", "33/100") == "+0.33 EV");
+
+    passOrFail("enumerated EXIF fields read as words in all three languages",
+        shown("Exif.Photo.WhiteBalance", "0") == "自动" &&
+        shown("Exif.Photo.WhiteBalance", "0", UiLanguage::ENGLISH) == "Auto" &&
+        shown("Exif.Photo.WhiteBalance", "0", UiLanguage::TRADITIONAL) == "自動" &&
+        shown("Exif.Image.Orientation", "1") == "正常" &&
+        shown("Exif.Image.Orientation", "6") == "顺时针 90°" &&
+        shown("Exif.Photo.MeteringMode", "5") == "多分区测光" &&
+        shown("Exif.Photo.ExposureProgram", "3") == "光圈优先" &&
+        shown("Exif.Photo.ColorSpace", "1") == "sRGB" &&
+        shown("Exif.Photo.SceneCaptureType", "1") == "风景");
+
+    // 闪光灯是位域，不是枚举
+    passOrFail("the flash bit field reads as whether it fired and in which mode",
+        shown("Exif.Photo.Flash", "16") == "未闪光，强制关闭" &&
+        shown("Exif.Photo.Flash", "25") == "已闪光，自动" &&
+        shown("Exif.Photo.Flash", "32") == "无闪光灯" &&
+        shown("Exif.Photo.Flash", "0") == "未闪光" &&
+        shown("Exif.Photo.Flash", "89") == "已闪光，自动，防红眼");
+
+    // 规范之外的取值不猜：厂商私有扩展按自己的表编号，照着规范翻会翻出错的词，
+    // 而错的词比一个数字更误导人。
+    passOrFail("values outside the specification are left alone instead of guessed",
+        shown("Exif.Photo.WhiteBalance", "7") == "<未翻译>" &&
+        shown("Exif.Image.Orientation", "0") == "<未翻译>" &&
+        shown("Exif.Image.Orientation", "9") == "<未翻译>");
+    passOrFail("unknown tags and malformed rationals fall back to the generic display",
+        shown("Exif.Nikon3.Quality", "3") == "<未翻译>" &&
+        shown("Exif.Photo.FNumber", "80/0") == "<未翻译>" &&
+        shown("Exif.Photo.FNumber", "abc") == "<未翻译>" &&
+        shown("Exif.Photo.ExposureTime", "") == "<未翻译>" &&
+        shown("Exif.Photo.FocalLength", "1/2/3") == "<未翻译>");
+
+    // 分母为 0 不是「整数」，是坏数据——当成整数会把 80/0 显示成 f/80
+    passOrFail("a zero denominator is rejected rather than treated as a whole number",
+        !ExifValueFormat::parseRational("5/0").has_value() &&
+        ExifValueFormat::parseRational("5")->denominator == 1 &&
+        ExifValueFormat::parseRational("-3/2")->numerator == -3);
+}
+
 void expectImageInfoPresentation() {
     constexpr std::string_view rawInfo =
         "路径: C:\\Pictures\\这是一个非常长而且必须完整换行显示的图片文件名_sample.png\n"
@@ -2142,6 +2267,26 @@ void expectImageInfoPresentation() {
         ImageInfoPresentation::clampScrollOffset(800, 300, -20) == 0 &&
         ImageInfoPresentation::clampScrollOffset(800, 300, 240) == 240 &&
         ImageInfoPresentation::clampScrollOffset(800, 300, 900) == 500);
+
+    // 完整面板此前也被 400 逻辑像素的上限卡住：880 高的窗口里它只占左下角一小块，
+    // 「照片信息」刚露出标题就到底，相机/光圈/快门要滚好几次才看得见，而窗口
+    // 还空着四百多像素。现在它跟着可用高度长，紧凑面板仍保持小卡片不变。
+    constexpr int kCompactLimit = ImageInfoPresentation::LOGICAL_COMPACT_MAX_HEIGHT;
+    passOrFail("the full information panel grows with the window instead of stopping at a fixed height",
+        ImageInfoPresentation::maxPanelHeight(
+            ImageInfoPresentation::Mode::Full, 848, kCompactLimit) == 848 &&
+        ImageInfoPresentation::maxPanelHeight(
+            ImageInfoPresentation::Mode::Full, 220, kCompactLimit) == 220);
+    passOrFail("the compact information card stays a corner card however tall the window is",
+        ImageInfoPresentation::maxPanelHeight(
+            ImageInfoPresentation::Mode::Compact, 848, kCompactLimit) == kCompactLimit &&
+        ImageInfoPresentation::maxPanelHeight(
+            ImageInfoPresentation::Mode::Compact, 220, kCompactLimit) == 220);
+    passOrFail("a window too short for any panel yields no panel instead of a negative height",
+        ImageInfoPresentation::maxPanelHeight(
+            ImageInfoPresentation::Mode::Full, 0, kCompactLimit) == 0 &&
+        ImageInfoPresentation::maxPanelHeight(
+            ImageInfoPresentation::Mode::Compact, -40, kCompactLimit) == 0);
 }
 
 void expectWindowTitlePresentation() {
@@ -3859,6 +4004,7 @@ int main(int argc, char* argv[]) {
     expectPrintLayout();
     expectPrintAdjustments();
     expectRationalText();
+    expectExifValueFormat();
     expectSvgPreprocessor();
     expectLruCache();
     if (argc >= 2) {

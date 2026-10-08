@@ -11,11 +11,17 @@ class ExifParse {
 public:
     static std::string getSimpleInfo(std::wstring_view path, int width, int height, const uint8_t* buf, size_t fileSize);
     static std::string handleMathDiv(std::string_view str);
-    static std::string exifDataToString(std::wstring_view path, const Exiv2::ExifData& exifData);
+    // orientationOut 不为空时顺手带出 Exif.Image.Orientation 的原始数值（1~8），
+    // 没有这个标签就不动它。调用方原先是在拼好的文本里找「方向: 」这个前缀，
+    // 再把紧跟其后的那个字符减 '0'——只要显示格式一改（比如把 1 翻成「正常」），
+    // 照片就不再转正，而且一点报错都没有。方向是功能，不该挂在显示文本上。
+    static std::string exifDataToString(std::wstring_view path, const Exiv2::ExifData& exifData,
+        int* orientationOut = nullptr);
     static std::string xmpDataToString(std::wstring_view path, const Exiv2::XmpData& xmpData);
     static std::string iptcDataToString(std::wstring_view path, const Exiv2::IptcData& IptcData);
     static std::string parseAiPrompt(std::wstring_view path, const uint8_t* buf, size_t fileSize);
-    static std::string getExif(std::wstring_view path, const uint8_t* buf, size_t fileSize);
+    static std::string getExif(std::wstring_view path, const uint8_t* buf, size_t fileSize,
+        int* orientationOut = nullptr);
 
 private:
 

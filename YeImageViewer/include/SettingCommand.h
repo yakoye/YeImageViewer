@@ -29,6 +29,7 @@ enum class Kind {
     ShortcutClear,
     AboutProject,
     AboutUpstream,
+    AboutDonateToggle,
 };
 
 struct Command {
@@ -67,7 +68,7 @@ constexpr bool contains(const SettingLayout::Rect& rect, int x, int y) {
 
 constexpr Command resolve(int tab, int x, int windowY, int scrollOffset,
     int associationExtensionCount = 0, int associationButtonsY = 0,
-    int externalEditorCount = 0) {
+    int externalEditorCount = 0, bool donateExpanded = false) {
     if (windowY < SettingLayout::TAB_HEIGHT) {
         return { Kind::Tab,
             std::clamp(x / SettingLayout::TAB_WIDTH, 0, 3), -1 };
@@ -154,6 +155,11 @@ constexpr Command resolve(int tab, int x, int windowY, int scrollOffset,
             return { Kind::AboutProject, 0, -1 };
         if (contains(SettingLayout::ABOUT_UPSTREAM_BUTTON, x, y))
             return { Kind::AboutUpstream, 1, -1 };
+        // 收款码那一面铺满整张 hero 卡片，点卡片任何地方都翻回去；收起时只有
+        // 底下那一行小字是热区，免得点卡片空白处莫名其妙翻过去。
+        if (donateExpanded ? contains(SettingLayout::ABOUT_HERO_CARD, x, y) :
+            contains(SettingLayout::ABOUT_DONATE_LINK, x, y))
+            return { Kind::AboutDonateToggle, 0, -1 };
     }
     return {};
 }

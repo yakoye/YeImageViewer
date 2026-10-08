@@ -115,6 +115,27 @@ $cases = @(
             "        if (img.empty())" + $lf +
             "            img = loadPSD(path, fileBuf);"
         Expect = "loadSTB runs before loadPSD"
+    },
+    @{
+        Name = "发版只改了 .rc，关于页的版本号还停在上一版"
+        File = "YeImageViewer\src\main.cpp"
+        Old = 'appVersion = L"v1.37.5"'
+        New = 'appVersion = L"v1.37.4"'
+        Expect = "the About page shows v1.37.4 while the version resource says"
+    },
+    @{
+        Name = "FileVersion 和 ProductVersion 对不上"
+        File = "YeImageViewer\YeImageViewer.rc"
+        Old = 'VALUE "FileVersion", "1.37.5.0"'
+        New = 'VALUE "FileVersion", "1.38.0.0"'
+        Expect = "disagree in YeImageViewer.rc"
+    },
+    @{
+        Name = "README 的版本号没跟着发版一起改"
+        File = "README.md"
+        Old = "当前版本：**v1.37.5**"
+        New = "当前版本：**v1.37.2-rc1**"
+        Expect = "README.md says v1.37.2-rc1 while the program is"
     }
 )
 

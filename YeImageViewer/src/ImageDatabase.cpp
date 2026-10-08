@@ -898,23 +898,22 @@ ImageAsset ImageDatabase::loadLEP(wstring_view path, std::span<const uint8_t> bu
     ImageAsset imageAsset;
     imageAsset.format = ImageFormat::Still;
     imageAsset.primaryFrame = std::move(image);
+    int exifOrientation = 0;
     imageAsset.exifInfo = ExifParse::getSimpleInfo(
         path,
         imageAsset.primaryFrame.cols,
         imageAsset.primaryFrame.rows,
         buf.data(),
         buf.size()) +
-        ExifParse::getExif(path, jpeg_data, jpeg_size);
+        ExifParse::getExif(path, jpeg_data, jpeg_size, &exifOrientation);
     if (GlobalVar::settingParameter.enableColorManagement) {
         imageAsset.iccProfile = ColorManager::readEmbeddedIccProfile(
             path,
             std::span<const uint8_t>(jpeg_data, static_cast<size_t>(jpeg_size)));
     }
 
-    const size_t idx = imageAsset.exifInfo.find(getUIString(53));
-    if (idx != string::npos) {
-        handleExifOrientation(imageAsset.exifInfo[idx + strlen(getUIString(53))] - '0', imageAsset.primaryFrame);
-    }
+    if (exifOrientation > 0)
+        handleExifOrientation(exifOrientation, imageAsset.primaryFrame);
 
     free_lepton_buffer(jpeg_data, jpeg_size);
     return imageAsset;
@@ -3075,12 +3074,12 @@ ImageAsset ImageDatabase::loadLivp(wstring_view path, std::span<const uint8_t> f
         img = loadImageOpenCV(path, imageFileData);
     }
 
-    auto exifTmp = ExifParse::getExif(path, imageFileData.data(), imageFileData.size());
-    if (imageExt == "jpg" || imageExt == "jpeg") { //heic 已经在解码过程应用了裁剪/旋转/镜像等操作
-        const size_t idx = exifTmp.find(getUIString(53));
-        if (idx != string::npos) {
-            handleExifOrientation(exifTmp[idx + strlen(getUIString(53))] - '0', img);
-        }
+    int exifOrientation = 0;
+    auto exifTmp = ExifParse::getExif(path, imageFileData.data(), imageFileData.size(),
+        &exifOrientation);
+    if (exifOrientation > 0 && (imageExt == "jpg" || imageExt == "jpeg")) {
+        //heic 已经在解码过程应用了裁剪/旋转/镜像等操作
+        handleExifOrientation(exifOrientation, img);
     }
     auto exifInfo = ExifParse::getSimpleInfo(path, img.cols, img.rows, fileBuf.data(), fileBuf.size()) + exifTmp;
 
@@ -3151,14 +3150,12 @@ ImageAsset ImageDatabase::loadMotionPhoto(wstring_view path, std::span<const uin
         return { ImageFormat::Still, getErrorTipsMat(), {}, {}, exifInfo };
     }
 
+    int exifOrientation = 0;
     auto exifInfo = ExifParse::getSimpleInfo(path, img.cols, img.rows, fileBuf.data(), fileBuf.size()) +
-        ExifParse::getExif(path, fileBuf.data(), fileBuf.size());
+        ExifParse::getExif(path, fileBuf.data(), fileBuf.size(), &exifOrientation);
 
-    if (isJPG) {
-        const size_t idx = exifInfo.find(getUIString(53));
-        if (idx != string::npos) {
-            handleExifOrientation(exifInfo[idx + strlen(getUIString(53))] - '0', img);
-        }
+    if (isJPG && exifOrientation > 0) {
+        handleExifOrientation(exifOrientation, img);
     }
 
     auto videoSize = MotionPhotoUtils::getVideoSize(exifInfo);
@@ -3345,14 +3342,13 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
             imageAsset.exifInfo = ExifParse::getSimpleInfo(path, 0, 0, fileBuf.data(), fileBuf.size());
         }
         else if (imageAsset.format == ImageFormat::Still) {
+            int exifOrientation = 0;
             imageAsset.exifInfo = ExifParse::getSimpleInfo(path, imageAsset.primaryFrame.cols, imageAsset.primaryFrame.rows,
                 fileBuf.data(), fileBuf.size())
-                + ExifParse::getExif(path, fileBuf.data(), fileBuf.size());
+                + ExifParse::getExif(path, fileBuf.data(), fileBuf.size(), &exifOrientation);
 
-            const size_t idx = imageAsset.exifInfo.find(getUIString(53));
-            if (idx != string::npos) {
-                handleExifOrientation(imageAsset.exifInfo[idx + strlen(getUIString(53))] - '0', imageAsset.primaryFrame);
-            }
+            if (exifOrientation > 0)
+                handleExifOrientation(exifOrientation, imageAsset.primaryFrame);
         }
         else {
             imageAsset.exifInfo = ExifParse::getSimpleInfo(path, imageAsset.frames[0].cols, imageAsset.frames[0].rows, fileBuf.data(), fileBuf.size())
@@ -3491,12 +3487,11 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
         img = loadImageWinCOM(path, fileBuf);
 
     if (exifInfo.empty()) {
-        auto exifTmp = ExifParse::getExif(path, fileBuf.data(), fileBuf.size());
-        if (!supportRaw.contains(ext)) { // RAW 格式已经在解码过程应用了裁剪/旋转/镜像等操作
-            const size_t idx = exifTmp.find(getUIString(53));
-            if (idx != string::npos) {
-                handleExifOrientation(exifTmp[idx + strlen(getUIString(53))] - '0', img);
-            }
+        int exifOrientation = 0;
+        auto exifTmp = ExifParse::getExif(path, fileBuf.data(), fileBuf.size(), &exifOrientation);
+        // RAW 格式已经在解码过程应用了裁剪/旋转/镜像等操作
+        if (exifOrientation > 0 && !supportRaw.contains(ext)) {
+            handleExifOrientation(exifOrientation, img);
         }
         exifInfo = ExifParse::getSimpleInfo(path, img.cols, img.rows, fileBuf.data(), fileBuf.size()) + exifTmp;
     }
