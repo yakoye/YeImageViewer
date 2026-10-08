@@ -38,8 +38,10 @@ inline constexpr int LOGICAL_FULL_HEADER_HEIGHT = 40;
 inline constexpr int LOGICAL_SECTION_HEIGHT = 24;
 inline constexpr int LOGICAL_FOOTER_HEIGHT = 36;
 inline constexpr int LOGICAL_COMPACT_MAX_HEIGHT = 360;
-inline constexpr int LOGICAL_FULL_MAX_HEIGHT = 400;
-inline constexpr int LOGICAL_COMPACT_LABEL_WIDTH = 48;
+// 标签列要放得下四个汉字：字号 12，四个字正好 48，一点余量都没有，最后一个字会被裁掉。
+// 简体的「文件大小」「色彩空间」「质量因子」和繁體的「檔案大小」「色彩空間」
+// 「品質因子」「檔案名稱」都是四个字，先前全都只显示出前三个。
+inline constexpr int LOGICAL_COMPACT_LABEL_WIDTH = 56;
 inline constexpr int LOGICAL_FULL_LABEL_WIDTH = 64;
 inline constexpr int LOGICAL_COMPACT_PADDING = 12;
 inline constexpr int LOGICAL_FULL_PADDING = 16;
@@ -56,6 +58,23 @@ inline constexpr uint32_t LIGHT_TEXT_PRIMARY = 0xFF142844u;
 inline constexpr uint32_t LIGHT_TEXT_SECONDARY = 0xFF142844u;
 inline constexpr uint32_t LIGHT_TEXT_MUTED = 0xFF506EA0u;
 inline constexpr uint32_t LIGHT_ACCENT = 0xFF3C64C8u;
+
+// 面板最高能占多少。紧凑面板是浮在角上的小卡片，再高也没有意义，保留固定上限；
+// 完整面板是沉浸模式下唯一的信息出口，内容是基础信息 + 直方图 + 整份 EXIF，
+// 动辄二三十行，应该跟着可用高度长。
+//
+// 这里原先给完整面板也写死了 400 逻辑像素的上限：880 高的窗口里面板只占左下角
+// 一小块，「照片信息」那一段刚露出标题就到底了，相机、光圈、快门、焦距全被压在
+// 视口外要滚好几次，而窗口明明还空着四百多像素。内容不够长时下游的
+// min(maxPanelHeight, header + content + footer) 会自己把面板收回去，所以
+// 放开上限不会凭空撑出一条空白。
+constexpr int maxPanelHeight(Mode mode, int availableHeight, int compactLimit) {
+    if (availableHeight <= 0)
+        return 0;
+    if (mode == Mode::Compact)
+        return compactLimit < availableHeight ? compactLimit : availableHeight;
+    return availableHeight;
+}
 
 inline std::string trim(std::string_view value) {
     const auto first = value.find_first_not_of(" \t\r\n");

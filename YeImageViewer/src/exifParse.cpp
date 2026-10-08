@@ -1,5 +1,6 @@
 #include "jarkUtils.h"
 #include "exifParse.h"
+#include "ExifValueFormat.h"
 
 #include "RationalText.h"
 
@@ -17,7 +18,8 @@ std::string ExifParse::handleMathDiv(std::string_view str) {
     return RationalText::fromFraction(str);
 }
 
-std::string ExifParse::exifDataToString(wstring_view path, const Exiv2::ExifData& exifData) {
+std::string ExifParse::exifDataToString(wstring_view path, const Exiv2::ExifData& exifData,
+    int* orientationOut) {
     if (exifData.empty()) {
         JARK_LOG("No EXIF data {}", jarkUtils::wstringToUtf8(path));
         return "";
@@ -124,6 +126,15 @@ std::string ExifParse::exifDataToString(wstring_view path, const Exiv2::ExifData
         }
         else {
             translatedTagName = tagName;
+        }
+
+        // 方向要在格式化之前取：下面会把 1 翻成「正常」，到那时就读不回数字了。
+        if (orientationOut != nullptr && tagName == "Exif.Image.Orientation") {
+            const auto parsed = ExifValueFormat::parseRational(tag.toString());
+            if (parsed && parsed->denominator == 1 &&
+                parsed->numerator >= 1 && parsed->numerator <= 8) {
+                *orientationOut = static_cast<int>(parsed->numerator);
+            }
         }
 
         std::string tagValue;
@@ -244,6 +255,14 @@ std::string ExifParse::exifDataToString(wstring_view path, const Exiv2::ExifData
                 wstring_view str(buf.data(), buf.size());
                 tagValue = jarkUtils::wstringToUtf8(str);
             }
+        }
+        else if (const auto friendly = ExifValueFormat::format(
+            tagName, tagValue, GlobalVar::settingParameter.UI_LANG)) {
+            // 摄影参数按惯用写法显示：1/60 s、f/8、89.9 mm、自动。
+            // 原先这些都掉进下面那条通用规则，出来的是「0.02 (10/600)」
+            // 「8 (80/10)」「白平衡 0」——既不是摄影人认得的写法，
+            // 也不是普通人看得懂的话。
+            tagValue = *friendly;
         }
         else if (2 < tagValue.length() && tagValue.length() < 100) {
             auto res = handleMathDiv(tagValue);
@@ -427,7 +446,8 @@ std::string ExifParse::parseAiPrompt(wstring_view path, const uint8_t* buf, size
     return "";
 }
 
-std::string ExifParse::getExif(wstring_view path, const uint8_t* buf, size_t fileSize) {
+std::string ExifParse::getExif(wstring_view path, const uint8_t* buf, size_t fileSize,
+    int* orientationOut) {
     static std::mutex mtx;
 
     std::lock_guard<std::mutex> lock(mtx);
@@ -436,7 +456,7 @@ std::string ExifParse::getExif(wstring_view path, const uint8_t* buf, size_t fil
         auto image = Exiv2::ImageFactory::open(buf, fileSize);
         image->readMetadata();
 
-        auto exifStr = exifDataToString(path, image->exifData());
+        auto exifStr = exifDataToString(path, image->exifData(), orientationOut);
         auto xmpStr = xmpDataToString(path, image->xmpData());
         auto iptcStr = iptcDataToString(path, image->iptcData());
         auto prompt = parseAiPrompt(path, buf, fileSize);

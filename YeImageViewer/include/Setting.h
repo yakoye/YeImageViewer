@@ -512,10 +512,79 @@ private:
         }
     }
 
+    bool donateExpanded = false;
+    std::array<bool, 2> donateQrLoaded{ false, false };
+    std::array<cv::Mat, 2> donateQrCache{};
+
+    // 收款码按需解一次就留着：关于页会反复重绘，每次 imdecode 两张 480x480
+    // 纯属浪费。解不出来（资源缺失）时留空，入口那行字也就不画了——宁可没有，
+    // 不要画一个点下去什么都不出来的东西。
+    const cv::Mat& donateQrMat(int index) {
+        static const std::array<int, 2> ids{ IDB_PNG_DONATE_ALIPAY, IDB_PNG_DONATE_WECHAT };
+        auto& cached = donateQrCache[index];
+        if (!donateQrLoaded[index]) {
+            donateQrLoaded[index] = true;
+            const auto rc = jarkUtils::GetResource(ids[index], L"PNG");
+            if (rc.ptr != nullptr && rc.size > 0) {
+                cached = cv::imdecode(
+                    cv::Mat(1, static_cast<int>(rc.size), CV_8UC1, (uint8_t*)rc.ptr),
+                    cv::IMREAD_COLOR);
+            }
+        }
+        return cached;
+    }
+
+    bool donateCodesAvailable() {
+        return !donateQrMat(0).empty() && !donateQrMat(1).empty();
+    }
+
+    // 收款码那一面：标题、两张码、平台名、返回提示。整张卡片都是热区。
+    void refreshDonateFace(cv::Mat& page, const cv::Rect& hero) {
+        textDrawer.putAlignCenter(page, toCanvasRect(SettingLayout::ABOUT_DONATE_TITLE),
+            tr("请作者喝杯咖啡", "Buy the author a coffee", "請作者喝杯咖啡"), primaryText());
+
+        constexpr std::array<const char*, 2> zhNames{ "支付宝", "微信" };
+        constexpr std::array<const char*, 2> enNames{ "Alipay", "WeChat Pay" };
+        constexpr std::array<const char*, 2> twNames{ "支付寶", "微信" };
+        for (int index = 0; index < 2; ++index) {
+            const cv::Rect slot = toCanvasRect(SettingLayout::aboutDonateQr(index));
+            const cv::Mat& code = donateQrMat(index);
+            if (code.empty())
+                continue;
+            // 二维码底色必须是白的：深色主题下直接贴上去，四周的静区会糊进
+            // 深色卡片里，扫码器找不到边界。所以先铺一块白底再贴。
+            cv::rectangle(page, slot, cv::Scalar(255, 255, 255, 255), -1);
+            cv::Mat resized;
+            cv::resize(code, resized, { slot.width, slot.height }, 0, 0, cv::INTER_AREA);
+            cv::Mat rgba;
+            cv::cvtColor(resized, rgba, cv::COLOR_BGR2BGRA);
+            rgba.copyTo(page(slot));
+            textDrawer.putAlignCenter(page,
+                toCanvasRect(SettingLayout::aboutDonateCaption(index)),
+                tr(zhNames[index], enNames[index], twNames[index]), secondaryText());
+        }
+
+        textDrawer.putAlignCenter(page, toCanvasRect(SettingLayout::ABOUT_DONATE_BACK),
+            tr("点一下返回", "Click anywhere to go back", "點一下返回"), secondaryText());
+        (void)hero;
+    }
+
     void refreshAboutTab(cv::Mat& page) {
         const bool chinese = isChineseUI();
         const cv::Rect hero = toCanvasRect(SettingLayout::ABOUT_HERO_CARD);
         drawCard(page, hero);
+        if (donateExpanded && donateCodesAvailable()) {
+            refreshDonateFace(page, hero);
+            const auto projectButtonBack = toCanvasRect(SettingLayout::ABOUT_PROJECT_BUTTON);
+            const auto upstreamButtonBack = toCanvasRect(SettingLayout::ABOUT_UPSTREAM_BUTTON);
+            fillRoundedRect(page, projectButtonBack, GlobalVar::currentTheme.CHECK, 8);
+            fillRoundedRect(page, upstreamButtonBack, GlobalVar::currentTheme.BG_TAG, 8);
+            textDrawer.putAlignCenter(page, projectButtonBack,
+                tr("访问本项目", "Open this project", "造訪本專案"), 0xFFFFFFFFu);
+            textDrawer.putAlignCenter(page, upstreamButtonBack,
+                tr("访问上游项目", "Open upstream", "造訪上游專案"), primaryText());
+            return;
+        }
         // 用真正的应用图标，和任务栏、快捷方式、文件关联看到的是同一个。
         // 以前这里画的是一个圆角方块加字母「Y」，和图标对不上。
         const int iconSize = S(64);
@@ -554,6 +623,15 @@ private:
         textDrawer.putAlignCenter(page,
             { hero.x + 30, hero.y + 350, hero.width - 60, 36 },
             commitText.c_str(), secondaryText());
+
+        // 赞赏入口：一行淡色小字，和上面的编译时间、commit 同一个分量，
+        // 不抢眼。解不出收款码就不画——没有能点开的东西，就别留个钩子。
+        if (donateCodesAvailable()) {
+            textDrawer.putAlignCenter(page, toCanvasRect(SettingLayout::ABOUT_DONATE_LINK),
+                tr("觉得好用？请作者喝杯咖啡",
+                    "Found it useful? Buy the author a coffee",
+                    "覺得好用？請作者喝杯咖啡"), secondaryText());
+        }
 
         const auto projectButton = toCanvasRect(SettingLayout::ABOUT_PROJECT_BUTTON);
         const auto upstreamButton = toCanvasRect(SettingLayout::ABOUT_UPSTREAM_BUTTON);
@@ -832,6 +910,13 @@ private:
             jarkUtils::openUrl(upstreamRepository.data());
     }
 
+    void toggleDonateFace() {
+        if (!donateCodesAvailable())
+            return;
+        donateExpanded = !donateExpanded;
+        isNeedRefreshUI = true;
+    }
+
     void handleShortcutTab(int x, int y) {
         for (int index = 0; index < 3; ++index) {
             const cv::Rect row = toCvRect(SettingLayout::shortcutWheelRow(index));
@@ -894,7 +979,8 @@ private:
         const auto command = SettingCommand::resolve(curTabIdx, m_x, m_y,
             scrollOffsets[curTabIdx], visibleExtensionCount,
             curTabIdx == 1 ? associationButtonsY() : 0,
-            static_cast<int>(GlobalVar::externalEditors.size()));
+            static_cast<int>(GlobalVar::externalEditors.size()),
+            donateExpanded);
 
         if (editorNameCapture &&
             !(command.kind == SettingCommand::Kind::GeneralEditorRename &&
@@ -950,6 +1036,9 @@ private:
         case SettingCommand::Kind::AboutProject:
         case SettingCommand::Kind::AboutUpstream:
             handleAboutTab(contentX, contentY);
+            break;
+        case SettingCommand::Kind::AboutDonateToggle:
+            toggleDonateFace();
             break;
         default:
             break;

@@ -202,6 +202,36 @@ inline constexpr Rect ABOUT_PROJECT_BUTTON{ 20, 480, 282, 48 };
 inline constexpr Rect ABOUT_UPSTREAM_BUTTON{ 318, 480, 282, 48 };
 inline constexpr int ABOUT_CONTENT_HEIGHT = 548;
 
+// 赞赏入口：hero 卡片最底下一行淡色小字，commit 那行之下的空白里，默认只有这一行。
+// 点它才把卡片翻到收款码那一面，再点一下翻回来。做成「一行字 + 翻面」而不是
+// 直接摆两张收款码，是因为这东西天天看着会腻——想给的人找得到就够了。
+inline constexpr Rect ABOUT_DONATE_LINK{ ABOUT_HERO_CARD.x + 30,
+    ABOUT_HERO_CARD.y + 386, ABOUT_HERO_CARD.width - 60, 34 };
+
+// 翻面之后的内容，坐标都在 hero 卡片之内：标题、两张码、两个平台名、返回提示。
+// 184 太小了：支付宝那个码模块比微信密，缩到 184 之后每个模块不到四个像素，
+// 边界糊成灰的，扫码器直接认不出来（微信那个还能认）。228 下每模块四个半以上。
+inline constexpr int ABOUT_DONATE_QR_SIZE = 228;
+inline constexpr int ABOUT_DONATE_QR_GAP = 40;
+inline constexpr int ABOUT_DONATE_QR_TOP = ABOUT_HERO_CARD.y + 76;
+inline constexpr int ABOUT_DONATE_QR_LEFT = ABOUT_HERO_CARD.x +
+    (ABOUT_HERO_CARD.width - ABOUT_DONATE_QR_SIZE * 2 - ABOUT_DONATE_QR_GAP) / 2;
+
+constexpr Rect aboutDonateQr(int index) {
+    return { ABOUT_DONATE_QR_LEFT + index * (ABOUT_DONATE_QR_SIZE + ABOUT_DONATE_QR_GAP),
+        ABOUT_DONATE_QR_TOP, ABOUT_DONATE_QR_SIZE, ABOUT_DONATE_QR_SIZE };
+}
+
+constexpr Rect aboutDonateCaption(int index) {
+    const auto qr = aboutDonateQr(index);
+    return { qr.x, qr.y + qr.height + 6, qr.width, 30 };
+}
+
+inline constexpr Rect ABOUT_DONATE_TITLE{ ABOUT_HERO_CARD.x + 30,
+    ABOUT_HERO_CARD.y + 24, ABOUT_HERO_CARD.width - 60, 38 };
+inline constexpr Rect ABOUT_DONATE_BACK{ ABOUT_HERO_CARD.x + 30,
+    ABOUT_HERO_CARD.y + 374, ABOUT_HERO_CARD.width - 60, 34 };
+
 constexpr bool overlaps(const Rect& left, const Rect& right) {
     return left.x < right.x + right.width && right.x < left.x + left.width &&
         left.y < right.y + right.height && right.y < left.y + left.height;
@@ -301,6 +331,12 @@ constexpr bool shortcutItemsAreSeparated() {
         isInsidePage(SHORTCUT_CARD, SHORTCUT_CONTENT_HEIGHT);
 }
 
+constexpr bool contains(const Rect& outer, const Rect& inner) {
+    return inner.x >= outer.x && inner.y >= outer.y &&
+        inner.x + inner.width <= outer.x + outer.width &&
+        inner.y + inner.height <= outer.y + outer.height;
+}
+
 constexpr bool aboutLayoutIsOrdered() {
     return isInsidePage(ABOUT_HERO_CARD, ABOUT_CONTENT_HEIGHT) &&
         isInsidePage(ABOUT_PROJECT_BUTTON, ABOUT_CONTENT_HEIGHT) &&
@@ -312,6 +348,28 @@ constexpr bool aboutLayoutIsOrdered() {
             ABOUT_CONTENT_HEIGHT - PAGE_PADDING;
 }
 
+// 赞赏那一面全在 hero 卡片里：卡片之外没有它的任何像素，所以翻面不改内容高度、
+// 不影响滚动，页面照旧一屏装得下。两张码之间也不能叠在一起。
+constexpr bool aboutDonateLayoutIsOrdered() {
+    return contains(ABOUT_HERO_CARD, ABOUT_DONATE_LINK) &&
+        contains(ABOUT_HERO_CARD, ABOUT_DONATE_TITLE) &&
+        contains(ABOUT_HERO_CARD, ABOUT_DONATE_BACK) &&
+        contains(ABOUT_HERO_CARD, aboutDonateQr(0)) &&
+        contains(ABOUT_HERO_CARD, aboutDonateQr(1)) &&
+        contains(ABOUT_HERO_CARD, aboutDonateCaption(0)) &&
+        contains(ABOUT_HERO_CARD, aboutDonateCaption(1)) &&
+        !overlaps(aboutDonateQr(0), aboutDonateQr(1)) &&
+        !overlaps(aboutDonateCaption(0), aboutDonateCaption(1)) &&
+        !overlaps(aboutDonateQr(0), aboutDonateCaption(0)) &&
+        !overlaps(ABOUT_DONATE_TITLE, aboutDonateQr(0)) &&
+        !overlaps(ABOUT_DONATE_BACK, aboutDonateCaption(0)) &&
+        aboutDonateQr(0).x < aboutDonateQr(1).x &&
+        // 收起时那行小字要落在 commit 行之下的空白里，不能压到上面的文字。
+        // commit 那行是 { hero.y + 350, 高 36 }，底边正好是 hero.y + 386，
+        // 紧挨着不算压到，所以是 >= 不是 >。
+        ABOUT_DONATE_LINK.y >= ABOUT_HERO_CARD.y + 350 + 36;
+}
+
 static_assert(CANVAS_WIDTH == 620 && CANVAS_HEIGHT == 620);
 static_assert(TAB_WIDTH * 4 == CANVAS_WIDTH);
 static_assert(GENERAL_CONTENT_HEIGHT > CONTENT_VIEW_HEIGHT);
@@ -320,6 +378,7 @@ static_assert(ABOUT_CONTENT_HEIGHT <= CONTENT_VIEW_HEIGHT);
 static_assert(generalControlsAreSeparated());
 static_assert(shortcutItemsAreSeparated());
 static_assert(aboutLayoutIsOrdered());
+static_assert(aboutDonateLayoutIsOrdered());
 static_assert(ABOUT_TITLE_FONT_SIZE == FONT_SIZE);
 
 }

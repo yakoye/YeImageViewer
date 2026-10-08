@@ -84,8 +84,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,37,4,0
- PRODUCTVERSION 1,37,4,0
+ FILEVERSION 1,37,5,0
+ PRODUCTVERSION 1,37,5,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -102,12 +102,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "YeImageViewer Project"
             VALUE "FileDescription", "YeImageViewer 图像查看器"
-            VALUE "FileVersion", "1.37.4.0"
+            VALUE "FileVersion", "1.37.5.0"
             VALUE "InternalName", "YeImageViewer"
             VALUE "LegalCopyright", "Copyright (C) 2023-2026 JARK006 and YeImageViewer contributors"
             VALUE "OriginalFilename", "YeImageViewer.exe"
             VALUE "ProductName", "YeImageViewer"
-            VALUE "ProductVersion", "1.37.4"
+            VALUE "ProductVersion", "1.37.5"
         END
     END
     BLOCK "VarFileInfo"
@@ -128,6 +128,10 @@ IDB_PNG_TIPS            PNG                     "file\\tips.png"
 IDB_PNG_MAIN_RES        PNG                     "file\\mainRes.png"
 
 IDB_PNG_PRINTER_RES     PNG                     "file\\printerRes.png"
+
+IDB_PNG_DONATE_ALIPAY   PNG                     "file\\donate-alipay.png"
+
+IDB_PNG_DONATE_WECHAT   PNG                     "file\\donate-wechat.png"
 
 IDR_SVG_PREVIOUS_ICON   SVG                     "file\\icons\\previous.svg"
 IDR_SVG_NEXT_ICON       SVG                     "file\\icons\\next.svg"

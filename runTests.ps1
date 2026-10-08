@@ -75,7 +75,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.37.4.0"
+$expectedFileVersion = "1.37.5.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -83,7 +83,7 @@ if ($actualFileVersion -ne $expectedFileVersion) {
 Write-Host "PASS viewer file version is $expectedFileVersion."
 
 # 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
-$expectedProductVersion = "1.37.4"
+$expectedProductVersion = "1.37.5"
 $actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
@@ -3924,5 +3924,155 @@ finally {
 }
 Write-Host ("PASS all $($extremeOpsSteps.Count) common operations survive on " +
     "$($extremeOpsFixtures.Count) extreme aspect ratios, from 1x1 to 200x19200.")
+
+# ---- 赞赏收款码：界面上还扫不扫得出来 ----
+#
+# 这事跑起来看不出来：界面上明明画着个二维码，手机扫就是不认。踩过一次——
+# 显示尺寸按 184 逻辑像素算，支付宝那个码模块比微信密，每个模块摊不到四个
+# 像素，边界全糊成灰的，OpenCV 和手机都认不出来，而界面毫无异样。
+#
+# 所以这里逐像素量三件事：静区还在不在（裁的时候容易切掉）、显示尺寸下每个
+# 模块够不够四个像素、黑白比正不正常（防止哪天换成一张糊图或者纯色块）。
+Write-Host "Checking the donation QR codes still scan at their on-screen size..."
+Add-Type -AssemblyName System.Drawing
+
+$donateQrSizeMatch = [regex]::Match(
+    (Get-Content -LiteralPath (Join-Path $repoRoot "YeImageViewer/include/SettingLayout.h") -Raw),
+    'ABOUT_DONATE_QR_SIZE\s*=\s*(\d+)')
+if (-not $donateQrSizeMatch.Success) {
+    throw "Donation QR check failed: SettingLayout.h no longer declares ABOUT_DONATE_QR_SIZE."
+}
+$donateDisplaySize = [int]$donateQrSizeMatch.Groups[1].Value
+
+foreach ($donateName in @("donate-alipay.png", "donate-wechat.png")) {
+    $donatePath = Join-Path $repoRoot "YeImageViewer/file/$donateName"
+    if (-not (Test-Path -LiteralPath $donatePath)) {
+        throw "Donation QR check failed: $donateName is missing from YeImageViewer/file."
+    }
+
+    $donateBitmap = New-Object System.Drawing.Bitmap $donatePath
+    try {
+        $donateWidth = $donateBitmap.Width
+        $donateHeight = $donateBitmap.Height
+        if ($donateWidth -ne $donateHeight) {
+            throw ("Donation QR check failed: $donateName is ${donateWidth}x${donateHeight}, " +
+                "not square - a stretched QR code will not scan.")
+        }
+
+        # 逐像素用 GetPixel 在 PowerShell 里太慢（一张图二十多万次互操作调用），
+        # 一次性锁出字节数组再纯索引访问。
+        $donateRect = New-Object System.Drawing.Rectangle 0, 0, $donateWidth, $donateHeight
+        $donateLock = $donateBitmap.LockBits($donateRect,
+            [System.Drawing.Imaging.ImageLockMode]::ReadOnly,
+            [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $donateStride = $donateLock.Stride
+        $donateBytes = New-Object byte[] ($donateStride * $donateHeight)
+        [System.Runtime.InteropServices.Marshal]::Copy($donateLock.Scan0, $donateBytes, 0,
+            $donateBytes.Length)
+        $donateBitmap.UnlockBits($donateLock)
+
+        # 「黑模块」判得严一点：缩放和抗锯齿会在模块边界上留一圈灰，那一圈不算黑，
+        # 否则量出来的模块会比实际宽。
+        $isDark = {
+            param($x, $y)
+            $offset = $y * $donateStride + $x * 4
+            ($donateBytes[$offset] + $donateBytes[$offset + 1] + $donateBytes[$offset + 2]) -lt 300
+        }
+
+        # 整幅的黑色占比。二维码大致黑白各半，静区白边拉低一些，两到六成是正常范围。
+        # 纯色块、糊图、截错的图都落不进这个区间。
+        $donateDark = 0
+        $donateSamples = 0
+        for ($y = 0; $y -lt $donateHeight; $y += 4) {
+            for ($x = 0; $x -lt $donateWidth; $x += 4) {
+                $donateSamples++
+                if (& $isDark $x $y) { $donateDark++ }
+            }
+        }
+        $donateDarkRatio = $donateDark / [double]$donateSamples
+        if ($donateDarkRatio -lt 0.20 -or $donateDarkRatio -gt 0.60) {
+            throw ("Donation QR check failed: $donateName is " +
+                ("{0:P0}" -f $donateDarkRatio) + " dark, which is not a QR code.")
+        }
+
+        # 码本体的四条边。每条边都扫整列/整行——第一版拿中间那一行去量左边界，
+        # 而 QR 码中间高度处最左一列很可能整列是白的，量出来的左边界偏右，
+        # 顺着它找到的「第一段黑」根本不是定位图案，模块数算成了 311。
+        $donateLeft = -1
+        for ($x = 0; $x -lt $donateWidth -and $donateLeft -lt 0; $x++) {
+            for ($y = 0; $y -lt $donateHeight; $y++) {
+                if (& $isDark $x $y) { $donateLeft = $x; break }
+            }
+        }
+        $donateRight = -1
+        for ($x = $donateWidth - 1; $x -ge 0 -and $donateRight -lt 0; $x--) {
+            for ($y = 0; $y -lt $donateHeight; $y++) {
+                if (& $isDark $x $y) { $donateRight = $x; break }
+            }
+        }
+        $donateTop = -1
+        for ($y = 0; $y -lt $donateHeight -and $donateTop -lt 0; $y++) {
+            for ($x = 0; $x -lt $donateWidth; $x++) {
+                if (& $isDark $x $y) { $donateTop = $y; break }
+            }
+        }
+        if ($donateLeft -lt 0 -or $donateRight -lt 0 -or $donateTop -lt 0) {
+            throw "Donation QR check failed: $donateName has no dark modules at all."
+        }
+        if ($donateLeft -le 0 -or $donateRight -ge $donateWidth - 1) {
+            throw ("Donation QR check failed: $donateName is cropped flush to its modules; " +
+                "without a quiet zone scanners cannot find the code boundary.")
+        }
+
+        # 左上角定位图案的第一行是整整七个模块宽的实心黑，横着量它就得到模块宽度。
+        $donateScanRow = $donateTop + 1
+        $donateRunEnd = $donateLeft
+        while ($donateRunEnd -lt $donateWidth -and (& $isDark $donateRunEnd $donateScanRow)) {
+            $donateRunEnd++
+        }
+        $donateModulePixels = ($donateRunEnd - $donateLeft) / 7.0
+        if ($donateModulePixels -lt 1.0) {
+            throw ("Donation QR check failed: $donateName has no finder pattern in its " +
+                "top-left corner.")
+        }
+
+        # 模块数一定是 21 + 4n（版本 1 到 40），所以量出来的粗值要对齐到最近的合法值：
+        # 定位图案边缘那一圈是抗锯齿的灰，按「黑」判会少算一两个像素，支付宝那张
+        # 粗量出来是 42，真值 41。偏差超过一个半模块就不是量不准，是量错了地方。
+        $donateRawModules = ($donateRight - $donateLeft + 1) / $donateModulePixels
+        $donateModuleCount = 21 + 4 * [int][Math]::Round(($donateRawModules - 21) / 4.0)
+        if ($donateModuleCount -lt 21 -or $donateModuleCount -gt 177 -or
+            [Math]::Abs($donateRawModules - $donateModuleCount) -gt 1.5) {
+            throw ("Donation QR check failed: $donateName measures " +
+                ("{0:N1}" -f $donateRawModules) + " modules, which is not close to any valid " +
+                "QR version (21 + 4n) - the finder pattern was probably mismeasured.")
+        }
+        # 模块数定下来之后，用整幅宽度反推模块宽，比拿七个模块量出来的准得多
+        $donateModulePixels = ($donateRight - $donateLeft + 1) / [double]$donateModuleCount
+        $donateQuietModules = $donateLeft / $donateModulePixels
+        if ($donateQuietModules -lt 4.0) {
+            throw ("Donation QR check failed: $donateName keeps only " +
+                ("{0:N1}" -f $donateQuietModules) + " modules of quiet zone, " +
+                "below the four the specification requires.")
+        }
+
+        # 关键一条：画到界面上之后，一个模块还剩几个像素。
+        $donateOnScreen = $donateDisplaySize / [double]$donateModuleCount
+        if ($donateOnScreen -lt 4.0) {
+            throw ("Donation QR check failed: $donateName has $donateModuleCount modules, so at " +
+                "$donateDisplaySize logical pixels each module is only " +
+                ("{0:N1}" -f $donateOnScreen) + " pixels wide - the edges blur into grey and " +
+                "scanners stop reading it. Either enlarge ABOUT_DONATE_QR_SIZE or use a " +
+                "lower-density code.")
+        }
+
+        Write-Host ("PASS $donateName is a $donateModuleCount-module code with " +
+            ("{0:N1}" -f $donateQuietModules) + " modules of quiet zone, " +
+            ("{0:N1}" -f $donateOnScreen) + " screen pixels per module.")
+    }
+    finally {
+        $donateBitmap.Dispose()
+    }
+}
 
 Write-Host "All regression tests passed."

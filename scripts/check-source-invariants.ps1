@@ -370,3 +370,54 @@ if ($themeGuessOffenders.Count -gt 0) {
 }
 Write-Host "PASS the built-in tips image is identified exactly, not guessed from a corner pixel."
 
+# 七、关于页显示的版本号要和 .rc 里的版本资源一致。
+# 发 v1.37.4 时只改了 .rc，main.cpp 里的 appVersion 还停在 v1.37.3，于是关于页
+# 写着 v1.37.3、资源管理器属性页写着 1.37.4。两边都不报错，而原有的测试只校验
+# .rc 那两条，少改一处没有任何征兆。
+$versionSourcePath = Join-Path $repoRoot "YeImageViewer/src/main.cpp"
+$versionResourcePath = Join-Path $repoRoot "YeImageViewer/YeImageViewer.rc"
+$appVersionMatch = [regex]::Match(
+    (Get-Content -LiteralPath $versionSourcePath -Raw),
+    'appVersion\s*=\s*L"v([0-9]+(?:\.[0-9]+)*)"')
+if (-not $appVersionMatch.Success) {
+    throw ("Version invariant failed: main.cpp no longer declares appVersion as " +
+        "L`"vX.Y.Z`", so the About page version can no longer be checked.")
+}
+$resourceText = Get-Content -LiteralPath $versionResourcePath -Raw
+$productVersionMatch = [regex]::Match($resourceText,
+    'VALUE\s+"ProductVersion",\s*"([0-9]+(?:\.[0-9]+)*)"')
+$fileVersionMatch = [regex]::Match($resourceText,
+    'VALUE\s+"FileVersion",\s*"([0-9]+(?:\.[0-9]+)*)"')
+if (-not $productVersionMatch.Success -or -not $fileVersionMatch.Success) {
+    throw "Version invariant failed: YeImageViewer.rc no longer carries both version strings."
+}
+$appVersion = $appVersionMatch.Groups[1].Value
+$productVersion = $productVersionMatch.Groups[1].Value
+$fileVersion = $fileVersionMatch.Groups[1].Value
+if ($appVersion -ne $productVersion) {
+    throw ("Version invariant failed: the About page shows v$appVersion while the version " +
+        "resource says $productVersion. Bump appVersion in main.cpp together with the .rc.")
+}
+# FileVersion 多一段修订号，前面几段要和 ProductVersion 一样
+if (-not $fileVersion.StartsWith("$productVersion.")) {
+    throw ("Version invariant failed: FileVersion $fileVersion and ProductVersion " +
+        "$productVersion disagree in YeImageViewer.rc.")
+}
+# 两份 README 开头那句「当前版本」也算一处，而且最容易漏：它离代码最远，
+# 发版时谁都想不起来。实测它一度停在 v1.37.2-rc1，而程序已经是 1.37.4 了。
+foreach ($readmeName in @("README.md", "README_EN.md")) {
+    $readmePath = Join-Path $repoRoot $readmeName
+    $readmeMatch = [regex]::Match((Get-Content -LiteralPath $readmePath -Raw),
+        '(?:当前版本|Current version)[：:]\s*\*\*v([0-9][^*]*)\*\*')
+    if (-not $readmeMatch.Success) {
+        throw ("Version invariant failed: $readmeName no longer states a current version in " +
+            "the form **vX.Y.Z**.")
+    }
+    if ($readmeMatch.Groups[1].Value -ne $appVersion) {
+        throw ("Version invariant failed: $readmeName says v$($readmeMatch.Groups[1].Value) " +
+            "while the program is v$appVersion.")
+    }
+}
+
+Write-Host ("PASS the About page, both READMEs, FileVersion, and ProductVersion all say " +
+    "v$appVersion ($fileVersion).")
