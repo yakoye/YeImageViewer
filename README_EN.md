@@ -57,7 +57,21 @@ The build requires Windows x64, Visual Studio 2026 Build Tools, MSVC v145, and t
 .\packageRelease.ps1 -SkipBuild
 ```
 
-Build outputs are written to `x64/Release`. The install script installs to `%LOCALAPPDATA%\Programs\YeImageViewer`, registers the per-user thumbnail provider, creates Start-menu and desktop shortcuts, reports the install location, and launches the viewer. It does not change default image-file applications automatically. The packaging script creates both a full LZMA2 archive and a one-click setup executable with every supported format; each download must remain below 25 MiB.
+Build outputs are written to `x64/Release`.
+
+**This is a portable application — there is nothing to install.** Copy `YeImageViewer.exe` anywhere and double-click it. It writes no registry keys and leaves no background service. Settings live in `YeImageViewer.db` (about 4 KB) next to the executable: **created when missing, reused when present**; delete it to return to defaults and the viewer still runs. To hand the viewer to someone else or move it to another machine, the single executable is enough; copy `YeImageViewer.db` alongside it to carry your settings (language, theme, shortcuts, registered formats, per-image rotation) across. Deleting the folder removes it completely — nothing is left in the registry. `YeThumbnailProvider.dll` is optional: it only matters if you want Explorer to show thumbnails for RAW/HEIC/AVIF/PSD and the other formats Windows cannot read itself.
+
+`installLocal.ps1` is an optional convenience script: it copies the runtime to `%LOCALAPPDATA%\Programs\YeImageViewer`, registers the per-user thumbnail provider, and creates Start-menu and desktop shortcuts. It does not change default image-file applications. Skipping it changes nothing about how the viewer works.
+
+`packageRelease.ps1` produces three artifacts, each held under the 25 MiB download budget:
+
+| Artifact | Size | Use |
+| --- | --- | --- |
+| `YeImageViewer.exe` | ~27 MiB | Just want to view images — download this alone |
+| `...-portable.zip` | ~15 MiB | Opens in Explorer without extra software; includes the thumbnail DLL |
+| `...-portable.7z` | ~8 MiB | Smallest; needs 7-Zip |
+
+There is no longer a one-click installer. It was built from a 7-Zip SFX module whose version info reads `7z Setup SFX small`, so the Windows Program Compatibility Assistant classified it as an installer; because it never wrote an uninstall entry, **every run ended with a "This program might not have installed correctly" dialog**. The viewer is a portable single file to begin with, so the installer bought nothing worth that dialog.
 
 This repository started as a shallow clone of JarkViewer. To prepare the upstream source again, keep the shallow-clone recommendation:
 

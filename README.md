@@ -57,7 +57,21 @@
 .\packageRelease.ps1 -SkipBuild
 ```
 
-构建产物位于 `x64/Release`。安装脚本默认安装到 `%LOCALAPPDATA%\Programs\YeImageViewer`，注册当前用户的缩略图组件，创建开始菜单和桌面快捷方式，提示安装位置并打开程序；它不会自动改变图片文件的默认打开程序。打包脚本同时生成普通 LZMA2 完整包和可直接双击的一键安装程序，两者都保留全部格式支持并受 25 MiB 下载体积门禁约束。
+构建产物位于 `x64/Release`。
+
+**本程序是绿色版，不需要安装**：`YeImageViewer.exe` 一个文件拷到哪双击就能用，不写注册表、不留后台服务。设置存在它旁边的 `YeImageViewer.db`（约 4 KB）里——**没有就生成，有就直接用**；删掉它恢复出厂默认，程序照常跑。发给别人或者换台机器，拷这一个 exe 就够；想把设置（语言、主题、快捷键、关联过的格式、每张图记住的旋转角度）一起带走，就把 `YeImageViewer.db` 也放到 exe 旁边。想彻底移除：删掉文件夹即可，注册表里没有残留。`YeThumbnailProvider.dll` 是可选的——只有想让资源管理器给 RAW/HEIC/AVIF/PSD 这些 Windows 自己不认的格式显示缩略图时才需要它。
+
+`installLocal.ps1` 是可选的便利脚本：装到 `%LOCALAPPDATA%\Programs\YeImageViewer`、注册当前用户的缩略图组件、建开始菜单和桌面快捷方式；它不会自动改变图片文件的默认打开程序。不跑它完全不影响使用。
+
+`packageRelease.ps1` 产出三样，都受 25 MiB 下载体积门禁约束：
+
+| 产物 | 体积 | 用途 |
+| --- | --- | --- |
+| `YeImageViewer.exe` | 约 27 MiB | 只想看图就下这一个 |
+| `...-portable.zip` | 约 15 MiB | Windows 自带就能解压，含缩略图 DLL 和说明 |
+| `...-portable.7z` | 约 8 MiB | 体积最小，需要 7-Zip |
+
+不再提供一键安装程序：它是 7z SFX 做的，而 SFX 的版本信息写着 `7z Setup SFX small`，Windows 的「程序兼容性助手」据此判定它是安装程序，又因为它退出时不写卸载项，于是**每装一次就弹一次「可能未正确安装此程序」**。本程序本来就是绿色单文件，装不装都一样，没必要为此留一个会吓人的弹窗。
 
 本仓库从 JarkViewer 浅克隆开始开发。若重新准备上游源码，建议保留 README 推荐的浅克隆方式：
 
