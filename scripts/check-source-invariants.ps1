@@ -422,5 +422,22 @@ foreach ($readmeName in @("README.md", "README_EN.md")) {
     }
 }
 
-Write-Host ("PASS the About page, both READMEs, FileVersion, and ProductVersion all say " +
-    "v$appVersion ($fileVersion).")
+# test/README.md 里也写死了一份「EXE 版本为 1.37.x.0（ProductVersion 1.37.x）」。
+# 这是第五处，而且离代码最远——发 v1.37.5 时它还停在 1.37.4，跟 README 上次那回
+# 一模一样。
+$testReadmePath = Join-Path $repoRoot "test/README.md"
+$testReadmeMatch = [regex]::Match((Get-Content -LiteralPath $testReadmePath -Raw),
+    'EXE 版本为 `([0-9]+(?:\.[0-9]+)*)`（ProductVersion `([0-9]+(?:\.[0-9]+)*)`）')
+if (-not $testReadmeMatch.Success) {
+    throw ("Version invariant failed: test/README.md no longer states the expected EXE " +
+        "version in the form `X.Y.Z.0`（ProductVersion `X.Y.Z`）.")
+}
+if ($testReadmeMatch.Groups[1].Value -ne $fileVersion -or
+    $testReadmeMatch.Groups[2].Value -ne $productVersion) {
+    throw ("Version invariant failed: test/README.md says " +
+        "$($testReadmeMatch.Groups[1].Value) / $($testReadmeMatch.Groups[2].Value) " +
+        "while the program is $fileVersion / $productVersion.")
+}
+
+Write-Host ("PASS the About page, both READMEs, the test README, FileVersion, and " +
+    "ProductVersion all say v$appVersion ($fileVersion).")
