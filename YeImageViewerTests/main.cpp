@@ -18,6 +18,7 @@
 #include "InitialWindowLayout.h"
 #include "ImageInfoPresentation.h"
 #include "ExifValueFormat.h"
+#include "ContrastRatio.h"
 #include "WindowTitlePresentation.h"
 #include "PresentationLayout.h"
 #include "OverlayLayout.h"
@@ -1927,6 +1928,26 @@ void expectSettingLayout() {
         aboutHit(SettingLayout::ABOUT_UPSTREAM_BUTTON.x + 10,
             SettingLayout::ABOUT_UPSTREAM_BUTTON.y + 10, true) ==
             SettingCommand::Kind::AboutUpstream);
+
+    // 赞赏那行的两段颜色：红心必须是红的、文字必须是蓝的，而且各自压在卡片底色上
+    // 都要读得清。颜色写错不会报错也不会崩，只会让那行字在某一套主题下糊进背景里，
+    // 或者让「红心」变成一个灰心。
+    using namespace SettingLayout;
+    passOrFail("the donate heart stays red and the words stay blue in both themes",
+        ContrastRatio::isClearlyRed(ABOUT_DONATE_HEART_DARK) &&
+        ContrastRatio::isClearlyRed(ABOUT_DONATE_HEART_LIGHT) &&
+        ContrastRatio::isClearlyBlue(ABOUT_DONATE_WORDS_DARK) &&
+        ContrastRatio::isClearlyBlue(ABOUT_DONATE_WORDS_LIGHT));
+    // 文字按正文的 4.5:1 要求；红心是个图形，按非文字内容的 3:1
+    passOrFail("the donate line stays readable on the About card in both themes",
+        ContrastRatio::between(ABOUT_DONATE_WORDS_DARK, ABOUT_CARD_BACKGROUND_DARK) >= 4.5 &&
+        ContrastRatio::between(ABOUT_DONATE_WORDS_LIGHT, ABOUT_CARD_BACKGROUND_LIGHT) >= 4.5 &&
+        ContrastRatio::between(ABOUT_DONATE_HEART_DARK, ABOUT_CARD_BACKGROUND_DARK) >= 3.0 &&
+        ContrastRatio::between(ABOUT_DONATE_HEART_LIGHT, ABOUT_CARD_BACKGROUND_LIGHT) >= 3.0);
+    // 两段必须是两个颜色——合成一段同色绘制的话，这个入口就只是一行普通灰字了
+    passOrFail("the heart and the words are drawn in two different colours",
+        ABOUT_DONATE_HEART_DARK != ABOUT_DONATE_WORDS_DARK &&
+        ABOUT_DONATE_HEART_LIGHT != ABOUT_DONATE_WORDS_LIGHT);
 
     // 收款码在界面上必须大到还能扫。曾经按 184 逻辑像素画，支付宝那个码模块密，
     // 每模块不到四个像素，边界糊成灰的——界面上看着是个二维码，扫码器认不出来。

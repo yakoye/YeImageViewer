@@ -360,6 +360,9 @@ foreach ($source in Get-ChildItem -Path (Join-Path $repoRoot "YeImageViewer") -R
         }
         # 色彩管理自检要故意造一张「长得像提示图」的真图来验不会误判，那是测试代码
         if ($trimmed -match 'tipsLookalike') { continue }
+        # 编译期常量比较不可能是在认图片像素——设置页就有一条 static_assert 把
+        # 自己那份卡片底色和主题里的值钉在一起，和「猜提示图」毫无关系。
+        if ($trimmed -match '^\s*static_assert\s*\(') { continue }
         $themeGuessOffenders += "$($source.Name):$($hit.LineNumber): $trimmed"
     }
 }
