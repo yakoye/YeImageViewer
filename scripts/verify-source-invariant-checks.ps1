@@ -136,6 +136,13 @@ $cases = @(
         Old = "当前版本：**v1.37.5**"
         New = "当前版本：**v1.37.2-rc1**"
         Expect = "README.md says v1.37.2-rc1 while the program is"
+    },
+    @{
+        Name = "测试文档里那份版本号没跟着发版一起改"
+        File = "test\README.md"
+        Old = 'EXE 版本为 `1.37.5.0`（ProductVersion `1.37.5`）'
+        New = 'EXE 版本为 `1.37.4.0`（ProductVersion `1.37.4`）'
+        Expect = "test/README.md says 1.37.4.0 / 1.37.4 while the program is"
     }
 )
 
