@@ -151,6 +151,32 @@ constexpr Rect associationButtonRect(int index, int buttonsY) {
     return { PAGE_PADDING + index * (width + gap), buttonsY, width, ASSOCIATION_BUTTON_HEIGHT };
 }
 
+// 复制/移动快捷键各自的默认目标。点击路径可直接输入，… 浏览选择，行尾 × 清空；目标目录
+// 后来被删掉也没关系，真正执行复制/移动时会重新创建。
+inline constexpr Rect SHORTCUT_TARGET_HEADER{ 36, 1664, 548, 32 };
+inline constexpr int SHORTCUT_TARGET_ROW_Y = 1700;
+inline constexpr int SHORTCUT_TARGET_ROW_HEIGHT = 46;
+
+constexpr Rect shortcutTargetRow(int index) {
+    return { 36, SHORTCUT_TARGET_ROW_Y + index * SHORTCUT_TARGET_ROW_HEIGHT,
+        548, SHORTCUT_TARGET_ROW_HEIGHT };
+}
+
+constexpr Rect shortcutTargetPath(int index) {
+    const auto row = shortcutTargetRow(index);
+    return { row.x + 116, row.y + 5, 346, row.height - 10 };
+}
+
+constexpr Rect shortcutTargetChoose(int index) {
+    const auto row = shortcutTargetRow(index);
+    return { row.x + 468, row.y + 5, 42, row.height - 10 };
+}
+
+constexpr Rect shortcutTargetClear(int index) {
+    const auto row = shortcutTargetRow(index);
+    return { row.x + 516, row.y + 8, 30, row.height - 16 };
+}
+
 inline constexpr Rect SHORTCUT_WHEEL_HEADER{ 36, 36, 548, 32 };
 inline constexpr int SHORTCUT_WHEEL_ROW_Y = 72;
 inline constexpr int SHORTCUT_WHEEL_ROW_HEIGHT = 42;
@@ -163,7 +189,9 @@ inline constexpr int SHORTCUT_KEYBOARD_ROW_HEIGHT = 40;
 inline constexpr int SHORTCUT_KEYBOARD_ROW_COUNT = 34;
 inline constexpr int SHORTCUT_KEYBOARD_BOTTOM =
     SHORTCUT_KEYBOARD_ROW_Y + SHORTCUT_KEYBOARD_ROW_COUNT * SHORTCUT_KEYBOARD_ROW_HEIGHT;
-inline constexpr Rect SHORTCUT_CARD{ 20, 20, 580, SHORTCUT_KEYBOARD_BOTTOM + 10 - 20 };
+inline constexpr int SHORTCUT_TARGET_BOTTOM =
+    SHORTCUT_TARGET_ROW_Y + 2 * SHORTCUT_TARGET_ROW_HEIGHT;
+inline constexpr Rect SHORTCUT_CARD{ 20, 20, 580, SHORTCUT_TARGET_BOTTOM + 10 - 20 };
 inline constexpr int SHORTCUT_CONTENT_HEIGHT =
     SHORTCUT_CARD.y + SHORTCUT_CARD.height + PAGE_PADDING;
 
@@ -254,6 +282,12 @@ constexpr bool overlaps(const Rect& left, const Rect& right) {
         left.y < right.y + right.height && right.y < left.y + left.height;
 }
 
+constexpr bool contains(const Rect& outer, const Rect& inner) {
+    return inner.x >= outer.x && inner.y >= outer.y &&
+        inner.x + inner.width <= outer.x + outer.width &&
+        inner.y + inner.height <= outer.y + outer.height;
+}
+
 constexpr bool isInsidePage(const Rect& rect, int contentHeight) {
     return rect.x >= 0 && rect.y >= 0 &&
         rect.width > 0 && rect.height > 0 &&
@@ -324,6 +358,16 @@ constexpr bool generalControlsAreSeparated() {
 }
 
 constexpr bool shortcutItemsAreSeparated() {
+    for (int i = 0; i < 2; ++i) {
+        const auto row = shortcutTargetRow(i);
+        const auto path = shortcutTargetPath(i);
+        const auto choose = shortcutTargetChoose(i);
+        const auto clear = shortcutTargetClear(i);
+        if (!isInsidePage(row, SHORTCUT_CONTENT_HEIGHT) ||
+            !contains(row, path) || !contains(row, choose) || !contains(row, clear) ||
+            overlaps(path, choose) || overlaps(path, clear) || overlaps(choose, clear))
+            return false;
+    }
     for (int i = 0; i < SHORTCUT_KEYBOARD_ROW_COUNT; ++i) {
         const auto item = shortcutKeyboardRow(i);
         if (!isInsidePage(item, SHORTCUT_CONTENT_HEIGHT))
@@ -346,12 +390,6 @@ constexpr bool shortcutItemsAreSeparated() {
     // 卡片要装得下最后一行，内容高度要滚得到卡片底部
     return SHORTCUT_CARD.y + SHORTCUT_CARD.height >= SHORTCUT_KEYBOARD_BOTTOM &&
         isInsidePage(SHORTCUT_CARD, SHORTCUT_CONTENT_HEIGHT);
-}
-
-constexpr bool contains(const Rect& outer, const Rect& inner) {
-    return inner.x >= outer.x && inner.y >= outer.y &&
-        inner.x + inner.width <= outer.x + outer.width &&
-        inner.y + inner.height <= outer.y + outer.height;
 }
 
 constexpr bool aboutLayoutIsOrdered() {

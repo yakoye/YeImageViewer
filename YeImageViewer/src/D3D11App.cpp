@@ -786,8 +786,12 @@ HMENU D3D11App::CreateContextMenu(HWND hwnd) {
     const auto buildTargetMenu = [&](bool move) {
         HMENU targetMenu = CreatePopupMenu();
         const auto& targets = GlobalVar::fileTargets.targets;
+        const auto operation = move ? FileTargetConfig::Operation::Move :
+            FileTargetConfig::Operation::Copy;
+        const std::size_t active = FileTargetConfig::activeIndex(
+            GlobalVar::fileTargets, operation);
         for (std::size_t index = 0; index < targets.size(); ++index) {
-            std::wstring label = (index == GlobalVar::fileTargets.active ? L"● " : L"    ") +
+            std::wstring label = (index == active ? L"● " : L"    ") +
                 FileTargetConfig::displayName(targets[index]);
             AppendMenuW(targetMenu, MF_STRING,
                 static_cast<UINT_PTR>(move ? ContextMenu::moveToTargetFirst

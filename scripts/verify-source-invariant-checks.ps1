@@ -50,6 +50,13 @@ function Invoke-CheckerIsolated {
 
 $cases = @(
     @{
+        Name = "停止预读线程时漏掉等待谓词的互斥保护"
+        File = "YeImageViewer\include\LRU.h"
+        Old = '            std::lock_guard<std::mutex> stop_lock(preload_mutex);'
+        New = '            // stop_lock accidentally removed'
+        Expect = "LRU shutdown invariant failed"
+    },
+    @{
         Name = "README 漏掉一个能解码的格式"
         File = "README.md"
         Old = "- 静态：``apng avif avifs blp bmp dds"
@@ -119,30 +126,30 @@ $cases = @(
     @{
         Name = "发版只改了 .rc，关于页的版本号还停在上一版"
         File = "YeImageViewer\src\main.cpp"
-        Old = 'appVersion = L"v1.37.5"'
-        New = 'appVersion = L"v1.37.4"'
-        Expect = "the About page shows v1.37.4 while the version resource says"
+        Old = 'appVersion = L"v1.37.6"'
+        New = 'appVersion = L"v1.37.5"'
+        Expect = "the About page shows v1.37.5 while the version resource says"
     },
     @{
         Name = "FileVersion 和 ProductVersion 对不上"
         File = "YeImageViewer\YeImageViewer.rc"
-        Old = 'VALUE "FileVersion", "1.37.5.0"'
+        Old = 'VALUE "FileVersion", "1.37.6.0"'
         New = 'VALUE "FileVersion", "1.38.0.0"'
         Expect = "disagree in YeImageViewer.rc"
     },
     @{
         Name = "README 的版本号没跟着发版一起改"
         File = "README.md"
-        Old = "当前版本：**v1.37.5**"
+        Old = "当前版本：**v1.37.6**"
         New = "当前版本：**v1.37.2-rc1**"
         Expect = "README.md says v1.37.2-rc1 while the program is"
     },
     @{
         Name = "测试文档里那份版本号没跟着发版一起改"
         File = "test\README.md"
-        Old = 'EXE 版本为 `1.37.5.0`（ProductVersion `1.37.5`）'
-        New = 'EXE 版本为 `1.37.4.0`（ProductVersion `1.37.4`）'
-        Expect = "test/README.md says 1.37.4.0 / 1.37.4 while the program is"
+        Old = 'EXE 版本为 `1.37.6.0`（ProductVersion `1.37.6`）'
+        New = 'EXE 版本为 `1.37.5.0`（ProductVersion `1.37.5`）'
+        Expect = "test/README.md says 1.37.5.0 / 1.37.5 while the program is"
     }
 )
 

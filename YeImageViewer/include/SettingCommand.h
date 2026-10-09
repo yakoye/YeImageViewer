@@ -24,6 +24,9 @@ enum class Kind {
     AssociationNone,
     AssociationApply,
     ShortcutWheel,
+    ShortcutTargetEdit,
+    ShortcutTargetChoose,
+    ShortcutTargetClear,
     ShortcutReset,
     ShortcutBinding,
     ShortcutClear,
@@ -134,6 +137,14 @@ constexpr Command resolve(int tab, int x, int windowY, int scrollOffset,
     }
 
     if (tab == 2) {
+        for (int index = 0; index < 2; ++index) {
+            if (contains(SettingLayout::shortcutTargetClear(index), x, y))
+                return { Kind::ShortcutTargetClear, index, -1 };
+            if (contains(SettingLayout::shortcutTargetPath(index), x, y))
+                return { Kind::ShortcutTargetEdit, index, -1 };
+            if (contains(SettingLayout::shortcutTargetChoose(index), x, y))
+                return { Kind::ShortcutTargetChoose, index, -1 };
+        }
         for (int index = 0; index < 3; ++index) {
             if (contains(SettingLayout::shortcutWheelRow(index), x, y))
                 return { Kind::ShortcutWheel, index, -1 };

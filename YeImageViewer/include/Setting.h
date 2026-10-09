@@ -6,6 +6,8 @@
 #include "SettingCommand.h"
 #include "SettingLayout.h"
 #include "TextDrawer.h"
+#include "TextInputDialog.h"
+#include "RenamePolicy.h"
 
 #include <array>
 #include <cctype>
@@ -462,6 +464,95 @@ private:
         return "";
     }
 
+    static FileTargetConfig::Operation targetOperation(int index) {
+        return index == 1 ? FileTargetConfig::Operation::Move :
+            FileTargetConfig::Operation::Copy;
+    }
+
+    std::wstring pickTargetFolder(int index) {
+        const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        const bool shouldUninitialize = SUCCEEDED(initialized);
+        IFileOpenDialog* dialog = nullptr;
+        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&dialog))) || !dialog) {
+            if (shouldUninitialize)
+                CoUninitialize();
+            return {};
+        }
+
+        std::wstring result;
+        DWORD options = 0;
+        if (SUCCEEDED(dialog->GetOptions(&options)))
+            dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM);
+        dialog->SetTitle(index == 1 ?
+            trW(L"选择移动默认文件夹", L"Choose the default move folder", L"選擇移動預設資料夾") :
+            trW(L"选择复制默认文件夹", L"Choose the default copy folder", L"選擇複製預設資料夾"));
+        if (SUCCEEDED(dialog->Show(m_hwnd))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+                PWSTR rawPath = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
+                    result.assign(rawPath);
+                    CoTaskMemFree(rawPath);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+        if (shouldUninitialize)
+            CoUninitialize();
+        return result;
+    }
+
+    void saveFileTargets() {
+        FileTargetConfig::save(GlobalVar::externalEditorsPath, GlobalVar::fileTargets);
+    }
+
+    void handleShortcutTarget(const SettingCommand::Command& command) {
+        if (command.index < 0 || command.index >= 2)
+            return;
+        const auto operation = targetOperation(command.index);
+        if (command.kind == SettingCommand::Kind::ShortcutTargetClear) {
+            FileTargetConfig::clearActive(GlobalVar::fileTargets, operation);
+        }
+        else {
+            std::wstring selected;
+            if (command.kind == SettingCommand::Kind::ShortcutTargetEdit) {
+                const auto entered = TextInputDialog::show(m_hwnd,
+                    FileTargetConfig::activeTarget(GlobalVar::fileTargets, operation),
+                    command.index == 1 ?
+                        trW(L"移动默认文件夹", L"Default move folder", L"移動預設資料夾") :
+                        trW(L"复制默认文件夹", L"Default copy folder", L"複製預設資料夾"),
+                    trW(L"完整路径（不存在时自动创建文件夹）：",
+                        L"Folder path (created automatically if missing):",
+                        L"完整路徑（不存在時自動建立資料夾）："), 32767);
+                if (!entered)
+                    return;
+                selected = RenamePolicy::trim(*entered);
+                // 设置的是固定位置，不能把相对路径记成随运行目录变化的目标。
+                if (selected.empty())
+                    return;
+                const std::filesystem::path path(selected);
+                if (!path.is_absolute() || selected.find_first_of(L"\"<>|?*") != std::wstring::npos) {
+                    MessageBoxW(m_hwnd,
+                        trW(L"请输入有效的完整文件夹路径。", L"Enter a valid absolute folder path.",
+                            L"請輸入有效的完整資料夾路徑。"),
+                        getUIStringW(14), MB_OK | MB_ICONWARNING);
+                    return;
+                }
+            }
+            else {
+                selected = pickTargetFolder(command.index);
+            }
+            if (selected.empty())
+                return;
+            FileTargetConfig::addTarget(GlobalVar::fileTargets, selected, operation);
+        }
+        saveFileTargets();
+        shortcutCapture.reset();
+        isNeedRefreshUI = true;
+    }
+
     // 录制中的格子实时回显正按住的修饰键，三键、四键组合一眼看得出来是收得到的。
     std::string capturePrompt(bool chinese) const {
         std::string held;
@@ -476,6 +567,39 @@ private:
     void refreshShortcutTab(cv::Mat& page) {
         const bool chinese = isChineseUI();
         drawCard(page, toCanvasRect(SettingLayout::SHORTCUT_CARD));
+        textDrawer.putAlignLeft(page, toCanvasRect(SettingLayout::SHORTCUT_TARGET_HEADER),
+            tr("复制 / 移动快捷键的默认文件夹（目录消失后会自动重建）",
+                "DEFAULT COPY / MOVE FOLDERS (recreated if missing)",
+                "複製 / 移動快速鍵的預設資料夾（目錄消失後會自動重建）"),
+            GlobalVar::currentTheme.CHECK);
+        for (int index = 0; index < 2; ++index) {
+            const cv::Rect row = toCanvasRect(SettingLayout::shortcutTargetRow(index));
+            cv::line(page, { row.x, row.y }, { row.x + row.width, row.y },
+                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
+            textDrawer.putAlignLeft(page,
+                { row.x + S(8), row.y, S(104), row.height },
+                index == 0 ? tr("复制到", "Copy to", "複製到") :
+                    tr("移动到", "Move to", "移動到"), primaryText());
+
+            const cv::Rect pathRect = toCanvasRect(SettingLayout::shortcutTargetPath(index));
+            fillRoundedRect(page, pathRect, GlobalVar::currentTheme.BG_DEEP, 5);
+            const std::wstring target = FileTargetConfig::activeTarget(
+                GlobalVar::fileTargets, targetOperation(index));
+            const std::string pathText = target.empty() ?
+                tr("点击输入路径", "Click to enter a path", "點擊輸入路徑") : jarkUtils::wstringToUtf8(target);
+            textDrawer.putAlignLeft(page,
+                { pathRect.x + S(10), pathRect.y, pathRect.width - S(20), pathRect.height },
+                pathText.c_str(), target.empty() ? secondaryText() : primaryText());
+
+            const cv::Rect chooseRect = toCanvasRect(SettingLayout::shortcutTargetChoose(index));
+            fillRoundedRect(page, chooseRect, GlobalVar::currentTheme.BG_TAG, 5);
+            textDrawer.putAlignCenter(page, chooseRect, "...", primaryText());
+            const cv::Rect clearRect = toCanvasRect(SettingLayout::shortcutTargetClear(index));
+            fillRoundedRect(page, clearRect, GlobalVar::currentTheme.BG_TAG, 5);
+            textDrawer.putAlignCenter(page, clearRect, "x",
+                target.empty() ? secondaryText() : primaryText());
+        }
+
         textDrawer.putAlignLeft(page, toCanvasRect(SettingLayout::SHORTCUT_WHEEL_HEADER),
             tr("鼠标滚轮（点击右侧选项可切换）", "MOUSE WHEEL (click an option to change)", "滑鼠滾輪（點右側選項可切換）"), GlobalVar::currentTheme.CHECK);
         static constexpr std::array<const char*, 3> wheelZH{ "滚轮", "Ctrl + 滚轮", "Shift + 滚轮" };
@@ -1061,6 +1185,11 @@ private:
         case SettingCommand::Kind::AssociationApply:
             handleAssociateTab(contentX, contentY);
             break;
+        case SettingCommand::Kind::ShortcutTargetEdit:
+        case SettingCommand::Kind::ShortcutTargetChoose:
+        case SettingCommand::Kind::ShortcutTargetClear:
+            handleShortcutTarget(command);
+            break;
         case SettingCommand::Kind::ShortcutWheel:
         case SettingCommand::Kind::ShortcutReset:
         case SettingCommand::Kind::ShortcutBinding:
@@ -1218,7 +1347,12 @@ private:
             return;
         memcpy(GlobalVar::settingParameter.header, GlobalVar::settingHeader.data(),
             GlobalVar::settingHeader.length());
-        if (FILE* file = _wfopen(GlobalVar::settingPath.c_str(), L"wb")) {
+        // 只改前 4096 字节，不能用 wb 截断：复制/移动目标、外部编辑器和旋转记录
+        // 都在同一文件的文本尾部。设置窗口里刚选完目标再关闭，尤其会立刻走到这里。
+        FILE* file = _wfopen(GlobalVar::settingPath.c_str(), L"r+b");
+        if (!file)
+            file = _wfopen(GlobalVar::settingPath.c_str(), L"w+b");
+        if (file) {
             fwrite(&GlobalVar::settingParameter, 1, sizeof(SettingParameter), file);
             fclose(file);
         }

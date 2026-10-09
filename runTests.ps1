@@ -75,7 +75,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.37.5.0"
+$expectedFileVersion = "1.37.6.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -83,7 +83,7 @@ if ($actualFileVersion -ne $expectedFileVersion) {
 Write-Host "PASS viewer file version is $expectedFileVersion."
 
 # 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
-$expectedProductVersion = "1.37.5"
+$expectedProductVersion = "1.37.6"
 $actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
@@ -568,6 +568,7 @@ finally {
 }
 Write-Host "PASS live photos decode every frame with real timing and in-sync sound from .livp, MicroVideo and sidecar packaging."
 
+Add-Type -AssemblyName System.Drawing
 if (-not ("YeImageViewerTestNativeV1365" -as [type])) {
 Add-Type @"
 using System;
@@ -580,6 +581,9 @@ public static class YeImageViewerTestNativeV1365
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT { public int X, Y; }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct MONITORINFO
@@ -673,6 +677,9 @@ public static class YeImageViewerTestNativeV1365
 
     [DllImport("user32.dll")]
     public static extern bool GetClientRect(IntPtr window, out RECT rect);
+
+    [DllImport("user32.dll")]
+    public static extern bool ClientToScreen(IntPtr window, ref POINT point);
 
     [DllImport("user32.dll")]
     public static extern uint GetDpiForWindow(IntPtr window);
@@ -885,6 +892,64 @@ function Get-ViewerBackgroundPoint {
     throw ("Cannot find background: the image fills the whole work area " +
         "(${drawnWidth}x${drawnHeight} in ${clientWidth}x${clientHeight}). " +
         "Pick a fixture whose aspect ratio differs from the monitor's.")
+}
+
+# 只截主窗口客户区顶部中央。复制、移动和无确认删除的 Toast 都画在这里，
+# 不需要对整个屏幕做像素比对，也避开标题栏中会变的文件名。
+function Get-ViewerToastSample {
+    param([Parameter(Mandatory = $true)] [IntPtr]$Window)
+
+    $clientRect = New-Object YeImageViewerTestNativeV1365+RECT
+    if (-not [YeImageViewerTestNativeV1365]::GetClientRect($Window, [ref]$clientRect)) {
+        throw "Could not read the viewer client rectangle for the Toast probe."
+    }
+    $clientWidth = $clientRect.Right - $clientRect.Left
+    $clientHeight = $clientRect.Bottom - $clientRect.Top
+    if ($clientWidth -lt 160 -or $clientHeight -lt 112) {
+        throw "The viewer client is too small for the Toast probe (${clientWidth}x${clientHeight})."
+    }
+
+    $origin = New-Object YeImageViewerTestNativeV1365+POINT
+    if (-not [YeImageViewerTestNativeV1365]::ClientToScreen($Window, [ref]$origin)) {
+        throw "Could not map the viewer client origin for the Toast probe."
+    }
+    $sampleWidth = [Math]::Min(480, $clientWidth - 16)
+    $dpi = [YeImageViewerTestNativeV1365]::GetDpiForWindow($Window)
+    if ($dpi -eq 0) { $dpi = 96 }
+    # 只比较提示内部（文字与实色背景），避开半透明边缘及其 DWM 合成带。
+    # 全套回归中顶/底边偶尔各有四行横贯屏幕的桌面背景变化，不能误判为提示残留。
+    $sampleHeight = [int][Math]::Round(18 * $dpi / 96.0)
+    $screenX = $origin.X + [int](($clientWidth - $sampleWidth) / 2)
+    $screenY = $origin.Y + [int][Math]::Round(19 * $dpi / 96.0)
+    $bitmap = New-Object System.Drawing.Bitmap $sampleWidth, $sampleHeight
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.CopyFromScreen($screenX, $screenY, 0, 0, $bitmap.Size)
+    }
+    finally {
+        $graphics.Dispose()
+    }
+    return ,$bitmap
+}
+
+function Get-BitmapPixelDifference {
+    param(
+        [Parameter(Mandatory = $true)] [System.Drawing.Bitmap]$First,
+        [Parameter(Mandatory = $true)] [System.Drawing.Bitmap]$Second
+    )
+
+    if ($First.Width -ne $Second.Width -or $First.Height -ne $Second.Height) {
+        return [int]::MaxValue
+    }
+    $different = 0
+    for ($y = 0; $y -lt $First.Height; $y++) {
+        for ($x = 0; $x -lt $First.Width; $x++) {
+            if ($First.GetPixel($x, $y).ToArgb() -ne $Second.GetPixel($x, $y).ToArgb()) {
+                $different++
+            }
+        }
+    }
+    return $different
 }
 
 # Match the viewer's per-monitor-v2 coordinate space before reading client
@@ -1261,6 +1326,18 @@ try {
 finally {
     Remove-Item -LiteralPath $colorSelfTestResult -Force -ErrorAction SilentlyContinue
 }
+
+Write-Host "Checking Toast text against the production font renderer..."
+$toastTextResult = Join-Path $repoRoot "artifacts\toast-text-selftest.txt"
+$toastTextProcess = Start-Process -FilePath $viewer -ArgumentList @(
+    "--toast-text-selftest", ('"' + $toastTextResult + '"')) -Wait -PassThru -WindowStyle Hidden
+if ($toastTextProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $toastTextResult)) {
+    throw "Toast text regression failed: the production font renderer clipped a complete message."
+}
+if ((Get-Content -LiteralPath $toastTextResult -Raw) -notmatch "SUMMARY\s+9\s+0") {
+    throw "Toast text regression failed: expected all three languages at three font sizes."
+}
+Write-Host "PASS Toast text is complete in all three languages at 16/20/32-pixel font sizes."
 
 Write-Host "Checking that settings, editors, targets, and rotations live in one file..."
 # 绿色版落地只应该有三个文件：本体、缩略图 DLL、一个配置。
@@ -2952,16 +3029,17 @@ try {
     Copy-Item -LiteralPath $viewer -Destination $targetViewer
 
     $targetPictures = Join-Path $targetTestRoot "pics"
-    $targetFolder = Join-Path $targetTestRoot "collected"
+    $copyTargetFolder = Join-Path $targetTestRoot "copied\01"
+    $moveTargetFolder = Join-Path $targetTestRoot "moved\02"
     [void](New-Item -ItemType Directory -Path $targetPictures)
-    [void](New-Item -ItemType Directory -Path $targetFolder)
+    # 复制目标刻意不建：快捷操作必须在执行时连中间目录一起创建。
+    [void](New-Item -ItemType Directory -Path $moveTargetFolder -Force)
     foreach ($name in @("a.png", "b.png", "c.png")) {
         Copy-Item -LiteralPath $commonPngFixture -Destination (Join-Path $targetPictures $name)
     }
     $firstImage = Join-Path $targetPictures "a.png"
 
-    # 先跑一次让程序把 4096 字节的设置区写出来，再往文本区追加目标文件夹。
-    # 直接自己造整个文件不如让程序造——设置区是固定结构，手写容易对不上。
+    # 先跑一次让程序把 4096 字节的设置区写出来；目标随后通过真实设置界面输入。
     $seedProcess = Start-Process -FilePath $targetViewer -ArgumentList ('"' + $firstImage + '"') -PassThru
     $seedDeadline = [DateTime]::UtcNow.AddSeconds(10)
     do {
@@ -2988,17 +3066,6 @@ try {
     if ($databaseBytes.Length -lt 4096) {
         throw "Copy/move regression failed: the configuration file is shorter than its 4096-byte header."
     }
-    $targetLines = "TargetCount=1`r`nTargetActive=0`r`nTarget0=$targetFolder`r`n"
-    $stream = [IO.File]::Open($targetDatabase, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite)
-    try {
-        [void]$stream.Seek(4096, [IO.SeekOrigin]::Begin)
-        $lineBytes = [Text.Encoding]::UTF8.GetBytes($targetLines)
-        $stream.Write($lineBytes, 0, $lineBytes.Length)
-        $stream.SetLength(4096 + $lineBytes.Length)
-    }
-    finally {
-        $stream.Dispose()
-    }
 
     $targetProcess = Start-Process -FilePath $targetViewer -ArgumentList ('"' + $firstImage + '"') -PassThru
     $openDeadline = [DateTime]::UtcNow.AddSeconds(10)
@@ -3020,9 +3087,97 @@ try {
             "'$($targetTitle.ToString())'.")
     }
 
-    # 「复制到第一个目标」= ContextMenu::copyToTargetFirst
-    [void][YeImageViewerTestNativeV1365]::PostMessage($targetWindow, 0x0111, [UIntPtr]1200, [IntPtr]::Zero)
-    $copiedFile = Join-Path $targetFolder "a.png"
+    # 打开再关闭设置页必须保留 4096 字节后的目标配置。这里曾经用 wb 写设置头，
+    # 一关设置就把刚选的复制/移动目录截掉，当前进程还能用，重开后却全丢了。
+    [void][YeImageViewerTestNativeV1365]::SendMessage($targetWindow, 0x0100,
+        [UIntPtr]0x72, [IntPtr]::Zero) # F3
+    $targetSettings = [IntPtr]::Zero
+    $targetSettingsDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $targetSettings = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$targetProcess.Id, "YeImageViewerSettingWnd")
+    } while ($targetSettings -eq [IntPtr]::Zero -and
+        [DateTime]::UtcNow -lt $targetSettingsDeadline)
+    if ($targetSettings -eq [IntPtr]::Zero) {
+        throw "Copy/move regression failed: F3 did not open the Shortcuts settings page."
+    }
+    # 滚到最底部，点击路径直接输入尚不存在的 copied\01，再给两条动作绑定 C/M。
+    # 这样验的是用户可达的完整路径，而不是手写配置绕过设置控件。
+    for ($scroll = 0; $scroll -lt 30; $scroll++) {
+        [void][YeImageViewerTestNativeV1365]::SendMessage($targetSettings, 0x020A,
+            [UIntPtr][uint64]4287102976, [IntPtr]::Zero)
+    }
+    Start-Sleep -Milliseconds 200
+    $targetSettingsRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($targetSettings, [ref]$targetSettingsRect)
+    $targetSettingsScale = ($targetSettingsRect.Right - $targetSettingsRect.Left) / 620.0
+    $targetScrollOffset = 1822 - (620 - 52)
+    for ($operation = 0; $operation -lt 2; $operation++) {
+        $targetPathX = [int][Math]::Round(320 * $targetSettingsScale)
+        $targetPathY = [int][Math]::Round((52 + 1700 + 23 + $operation * 46 -
+            $targetScrollOffset) * $targetSettingsScale)
+        $targetPathPosition = [IntPtr](($targetPathY -shl 16) -bor $targetPathX)
+        [void][YeImageViewerTestNativeV1365]::PostMessage($targetSettings, 0x0201,
+            [UIntPtr]1, $targetPathPosition)
+        [void][YeImageViewerTestNativeV1365]::PostMessage($targetSettings, 0x0202,
+            [UIntPtr]::Zero, $targetPathPosition)
+        $targetInput = [IntPtr]::Zero
+        $targetInputDeadline = [DateTime]::UtcNow.AddSeconds(5)
+        do {
+            Start-Sleep -Milliseconds 100
+            $targetInput = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+                [uint32]$targetProcess.Id, "YeImageViewerRenameWnd")
+        } while ($targetInput -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $targetInputDeadline)
+        if ($targetInput -eq [IntPtr]::Zero) {
+            throw "Copy/move regression failed: clicking default path $operation did not open its input."
+        }
+        $enteredTarget = if ($operation -eq 0) { $copyTargetFolder } else { $moveTargetFolder }
+        $targetEdit = [YeImageViewerTestNativeV1365]::GetDlgItem($targetInput, 1001)
+        # 逐字输入，验证用户真正走的 EDIT 文本路径；跨进程 SetDlgItemText
+        # 在本机会只改控件的外部标题，实际编辑缓冲区仍为空。
+        foreach ($character in $enteredTarget.ToCharArray()) {
+            [void][YeImageViewerTestNativeV1365]::SendMessage($targetEdit, 0x0102,
+                [UIntPtr][int]$character, [IntPtr]::Zero)
+        }
+        [void][YeImageViewerTestNativeV1365]::PostMessage($targetInput, 0x0111,
+            [UIntPtr]1, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 200
+
+        $bindingX = [int][Math]::Round(417 * $targetSettingsScale)
+        $bindingY = [int][Math]::Round((52 + 288 + (32 + $operation) * 40 + 20 -
+            $targetScrollOffset) * $targetSettingsScale)
+        $bindingPosition = [IntPtr](($bindingY -shl 16) -bor $bindingX)
+        [void][YeImageViewerTestNativeV1365]::SendMessage($targetSettings, 0x0201,
+            [UIntPtr]1, $bindingPosition)
+        [void][YeImageViewerTestNativeV1365]::SendMessage($targetSettings, 0x0202,
+            [UIntPtr]::Zero, $bindingPosition)
+        $bindingKey = if ($operation -eq 0) { 0x43 } else { 0x4D }
+        [void][YeImageViewerTestNativeV1365]::SendMessage($targetSettings, 0x0100,
+            [UIntPtr]$bindingKey, [IntPtr]::Zero)
+        [void][YeImageViewerTestNativeV1365]::SendMessage($targetSettings, 0x0101,
+            [UIntPtr]$bindingKey, [IntPtr]::Zero)
+    }
+    if (Test-Path -LiteralPath $copyTargetFolder) {
+        throw "Copy/move regression failed: entering a target should not create it before the operation."
+    }
+    [void][YeImageViewerTestNativeV1365]::SendMessage($targetSettings, 0x0010,
+        [UIntPtr]::Zero, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 500
+    $targetDatabaseBytes = [IO.File]::ReadAllBytes($targetDatabase)
+    $targetDatabaseTail = [Text.Encoding]::UTF8.GetString($targetDatabaseBytes, 4096,
+        $targetDatabaseBytes.Length - 4096)
+    if ($targetDatabaseTail -notmatch "TargetCopyActive=0" -or
+        $targetDatabaseTail -notmatch "TargetMoveActive=1" -or
+        $targetDatabaseTail -notmatch [regex]::Escape("Target0=$copyTargetFolder") -or
+        $targetDatabaseTail -notmatch [regex]::Escape("Target1=$moveTargetFolder")) {
+        throw "Copy/move regression failed: closing Settings discarded the configured targets."
+    }
+
+    # C 直接复制到设置的目标，不弹选择框。
+    [void][YeImageViewerTestNativeV1365]::PostMessage($targetWindow, 0x0100, [UIntPtr]0x43, [IntPtr]::Zero)
+    [void][YeImageViewerTestNativeV1365]::PostMessage($targetWindow, 0x0101, [UIntPtr]0x43, [IntPtr]::Zero)
+    $copiedFile = Join-Path $copyTargetFolder "a.png"
     $copyDeadline = [DateTime]::UtcNow.AddSeconds(8)
     while (-not (Test-Path -LiteralPath $copiedFile -PathType Leaf) -and
         [DateTime]::UtcNow -lt $copyDeadline) {
@@ -3044,10 +3199,12 @@ try {
             "'$($targetTitle.ToString())'.")
     }
 
-    # 「移动到第一个目标」= ContextMenu::moveToTargetFirst。目标里已经有 a.png 了，
-    # 所以这一份应当让路成 a (2).png，源文件要消失，列表要少一张。
-    [void][YeImageViewerTestNativeV1365]::PostMessage($targetWindow, 0x0111, [UIntPtr]1210, [IntPtr]::Zero)
-    $movedFile = Join-Path $targetFolder "a (2).png"
+    # M 直接移动到另一默认目标。先放一份同名文件，
+    # 所以移动过去的这一份应当让路成 a (2).png，源文件要消失，列表要少一张。
+    Copy-Item -LiteralPath $commonPngFixture -Destination (Join-Path $moveTargetFolder "a.png")
+    [void][YeImageViewerTestNativeV1365]::PostMessage($targetWindow, 0x0100, [UIntPtr]0x4D, [IntPtr]::Zero)
+    [void][YeImageViewerTestNativeV1365]::PostMessage($targetWindow, 0x0101, [UIntPtr]0x4D, [IntPtr]::Zero)
+    $movedFile = Join-Path $moveTargetFolder "a (2).png"
     $moveDeadline = [DateTime]::UtcNow.AddSeconds(8)
     while ((Test-Path -LiteralPath $firstImage -PathType Leaf) -and
         [DateTime]::UtcNow -lt $moveDeadline) {
@@ -3059,7 +3216,7 @@ try {
     if (-not (Test-Path -LiteralPath $movedFile -PathType Leaf)) {
         throw ("Copy/move regression failed: the moved file did not get out of the way as " +
             "'a (2).png'; the target folder holds " +
-            (((Get-ChildItem -LiteralPath $targetFolder -File).Name) -join ", ") + ".")
+                (((Get-ChildItem -LiteralPath $moveTargetFolder -File).Name) -join ", ") + ".")
     }
     $targetProcess.Refresh()
     if ($targetProcess.HasExited) {
@@ -3084,8 +3241,8 @@ try {
             "'$($targetTitle.ToString())'.")
     }
 
-    Write-Host ("PASS copy keeps the source and the list, move takes the file away, renames " +
-        "around a collision, and leaves the viewer usable.")
+    Write-Host ("PASS separate copy/move targets persist, missing folders are created, copy " +
+        "keeps the source, and move renames around a collision and leaves the viewer usable.")
 }
 finally {
     if ($targetProcess -and -not $targetProcess.HasExited) {
@@ -3107,6 +3264,9 @@ Write-Host "Checking delete-to-recycle-bin, clipboard copy, and the info overlay
 # 这一环会改写剪贴板（复制图像/信息本来就是往剪贴板写），跑完原有内容不保证还在。
 $fileOpsRoot = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-FileOps-" + [Guid]::NewGuid().ToString("N"))
 $fileOpsProcess = $null
+$toastBefore = $null
+$toastVisible = $null
+$toastAfter = $null
 try {
     [void](New-Item -ItemType Directory -Path $fileOpsRoot)
     $fileOpsViewer = Join-Path $fileOpsRoot "YeImageViewer.exe"
@@ -3280,10 +3440,109 @@ try {
             "'$($fileOpsTitle.ToString())'.")
     }
 
+    # ---- 关闭「删除前提示」后，下一次删除必须直接执行，不再弹框 ----
+    [void][YeImageViewerTestNativeV1365]::SendMessage($fileOpsWindow, 0x0100,
+        [UIntPtr]0x70, [IntPtr]::Zero) # F1 打开常规设置
+    $deleteSettings = [IntPtr]::Zero
+    $settingsDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        Start-Sleep -Milliseconds 100
+        $deleteSettings = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+            [uint32]$fileOpsProcess.Id, "YeImageViewerSettingWnd")
+    } while ($deleteSettings -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $settingsDeadline)
+    if ($deleteSettings -eq [IntPtr]::Zero) {
+        throw "File-operation regression failed: F1 did not open General settings."
+    }
+    $settingsRect = New-Object YeImageViewerTestNativeV1365+RECT
+    [void][YeImageViewerTestNativeV1365]::GetClientRect($deleteSettings, [ref]$settingsRect)
+    $settingsWidth = $settingsRect.Right - $settingsRect.Left
+    if ($settingsWidth -le 0) { $settingsWidth = 620 }
+    # GENERAL_CHECK_BOXES[2]：逻辑中心 (169, 106)，再加 52 高的标签栏。
+    $deleteToggleX = [int][Math]::Round(169 * $settingsWidth / 620.0)
+    $deleteToggleY = [int][Math]::Round((52 + 106) * $settingsWidth / 620.0)
+    $deleteTogglePosition = [IntPtr](($deleteToggleY -shl 16) -bor
+        ($deleteToggleX -band 0xFFFF))
+    [void][YeImageViewerTestNativeV1365]::SendMessage($deleteSettings, 0x0201,
+        [UIntPtr]1, $deleteTogglePosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($deleteSettings, 0x0202,
+        [UIntPtr]0, $deleteTogglePosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($deleteSettings, 0x0010,
+        [UIntPtr]::Zero, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 500
+
+    [void][YeImageViewerTestNativeV1365]::GetWindowText($fileOpsWindow, $fileOpsTitle, 512)
+    if ($fileOpsTitle.ToString() -notmatch "(?:^|\]\s+)(two|three)\.png") {
+        throw ("File-operation regression failed: could not identify the next image before " +
+            "direct deletion: '$($fileOpsTitle.ToString())'.")
+    }
+    $directDeleteName = $Matches[1] + ".png"
+    $directDeleteTarget = Join-Path $fileOpsPictures $directDeleteName
+    # 读屏幕像素前先置顶，否则别的窗口在这 3 秒内闪过也会被当成 Toast。
+    [void][YeImageViewerTestNativeV1365]::SetWindowPos($fileOpsWindow, [IntPtr](-1),
+        0, 0, 0, 0, 0x0013)
+    Start-Sleep -Milliseconds 200
+    $toastBefore = Get-ViewerToastSample -Window $fileOpsWindow
+    [void][YeImageViewerTestNativeV1365]::PostMessage($fileOpsWindow, 0x0111,
+        [UIntPtr]1006, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 700
+    $toastVisible = Get-ViewerToastSample -Window $fileOpsWindow
+    $unexpectedDialog = [YeImageViewerTestNativeV1365]::FindProcessWindow(
+        [uint32]$fileOpsProcess.Id, "#32770")
+    if ($unexpectedDialog -ne [IntPtr]::Zero) {
+        [void][YeImageViewerTestNativeV1365]::SendMessage($unexpectedDialog, 0x0010,
+            [UIntPtr]::Zero, [IntPtr]::Zero)
+        throw ("File-operation regression failed: deletion still asked for confirmation after " +
+            "删除前提示 was turned off.")
+    }
+    if (Test-Path -LiteralPath $directDeleteTarget -PathType Leaf) {
+        throw "File-operation regression failed: direct deletion left the image in place."
+    }
+
+    $toastShownDifference = Get-BitmapPixelDifference -First $toastBefore -Second $toastVisible
+    if ($toastShownDifference -lt 500) {
+        throw ("File-operation regression failed: direct deletion showed no top-center Toast " +
+            "(${toastShownDifference} changed pixels).")
+    }
+
+    # Toast 默认 2.2 秒。从显示采样后再等 2.6 秒，既验自动消失，也能抓住
+    # 「时间到了但主循环睡着，画面上一直留着 Toast」的回归。
+    Start-Sleep -Milliseconds 2600
+    $toastAfter = Get-ViewerToastSample -Window $fileOpsWindow
+    $toastEvidenceRoot = Join-Path $repoRoot "artifacts\toast-regression"
+    [void](New-Item -ItemType Directory -Path $toastEvidenceRoot -Force)
+    $toastBefore.Save((Join-Path $toastEvidenceRoot "before.png"))
+    $toastVisible.Save((Join-Path $toastEvidenceRoot "visible.png"))
+    $toastAfter.Save((Join-Path $toastEvidenceRoot "after.png"))
+    $toastHiddenDifference = Get-BitmapPixelDifference -First $toastBefore -Second $toastAfter
+    if ($toastHiddenDifference -gt 100) {
+        throw ("File-operation regression failed: the direct-delete Toast did not disappear " +
+            "(${toastHiddenDifference} pixels still differ).")
+    }
+    [void][YeImageViewerTestNativeV1365]::SetWindowPos($fileOpsWindow, [IntPtr](-2),
+        0, 0, 0, 0, 0x0013)
+
+    $directRestorable = $false
+    foreach ($item in $recycleBin.Items()) {
+        if ($item.Name -eq $directDeleteName -or
+            $item.Name -eq [IO.Path]::GetFileNameWithoutExtension($directDeleteName)) {
+            $originalFolder = $recycleBin.GetDetailsOf($item, 1)
+            if ($originalFolder -and $originalFolder.StartsWith($fileOpsPictures)) {
+                $directRestorable = $true
+                break
+            }
+        }
+    }
+    if (-not $directRestorable) {
+        throw "File-operation regression failed: direct deletion was not restorable from the Recycle Bin."
+    }
+
     Write-Host ("PASS the image copies to the clipboard, its info matches, the overlay toggles, " +
-        "and delete asks first then moves the file to the recycle bin.")
+        "delete asks by default, and direct delete shows a filename Toast then hides it.")
 }
 finally {
+    foreach ($toastBitmap in @($toastBefore, $toastVisible, $toastAfter)) {
+        if ($null -ne $toastBitmap) { $toastBitmap.Dispose() }
+    }
     if ($fileOpsProcess -and -not $fileOpsProcess.HasExited) {
         [void]$fileOpsProcess.CloseMainWindow()
         if (-not $fileOpsProcess.WaitForExit(4000)) {
@@ -3934,7 +4193,6 @@ Write-Host ("PASS all $($extremeOpsSteps.Count) common operations survive on " +
 # 所以这里逐像素量三件事：静区还在不在（裁的时候容易切掉）、显示尺寸下每个
 # 模块够不够四个像素、黑白比正不正常（防止哪天换成一张糊图或者纯色块）。
 Write-Host "Checking the donation QR codes still scan at their on-screen size..."
-Add-Type -AssemblyName System.Drawing
 
 $donateQrSizeMatch = [regex]::Match(
     (Get-Content -LiteralPath (Join-Path $repoRoot "YeImageViewer/include/SettingLayout.h") -Raw),
