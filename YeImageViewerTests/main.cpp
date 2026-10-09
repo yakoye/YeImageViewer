@@ -26,6 +26,7 @@
 #include "LivePhotoBadge.h"
 #include "FullscreenInfoBar.h"
 #include "FileTargetConfig.h"
+#include "OperationToast.h"
 #include "MotionTiming.h"
 #include "AudioClip.h"
 #include "JpegQuality.h"
@@ -1751,6 +1752,15 @@ void expectSettingLayout() {
     for (int index = 0; index < 3; ++index)
         everySettingControlHasHitTarget &= hasCenter(
             SettingLayout::shortcutWheelRow(index), SettingLayout::SHORTCUT_CONTENT_HEIGHT);
+    for (int index = 0; index < 2; ++index) {
+        everySettingControlHasHitTarget &=
+            hasCenter(SettingLayout::shortcutTargetPath(index),
+                SettingLayout::SHORTCUT_CONTENT_HEIGHT) &&
+            hasCenter(SettingLayout::shortcutTargetChoose(index),
+                SettingLayout::SHORTCUT_CONTENT_HEIGHT) &&
+            hasCenter(SettingLayout::shortcutTargetClear(index),
+                SettingLayout::SHORTCUT_CONTENT_HEIGHT);
+    }
     everySettingControlHasHitTarget &= hasCenter(
         SettingLayout::SHORTCUT_RESET_BUTTON, SettingLayout::SHORTCUT_CONTENT_HEIGHT);
     for (int index = 0; index < SettingLayout::SHORTCUT_KEYBOARD_ROW_COUNT; ++index)
@@ -1865,6 +1875,23 @@ void expectSettingLayout() {
             SettingLayout::TAB_HEIGHT + row.y + row.height / 2, 0);
         everySettingControlRoutes &= command.kind == SettingCommand::Kind::ShortcutWheel &&
             command.index == index;
+    }
+    for (int index = 0; index < 2; ++index) {
+        const auto path = SettingLayout::shortcutTargetPath(index);
+        const auto choose = SettingLayout::shortcutTargetChoose(index);
+        const auto clear = SettingLayout::shortcutTargetClear(index);
+        everySettingControlRoutes &= SettingCommand::resolve(2,
+            path.x + path.width / 2,
+            SettingLayout::TAB_HEIGHT + path.y + path.height / 2, 0) ==
+            SettingCommand::Command{ SettingCommand::Kind::ShortcutTargetEdit, index, -1 };
+        everySettingControlRoutes &= SettingCommand::resolve(2,
+            choose.x + choose.width / 2,
+            SettingLayout::TAB_HEIGHT + choose.y + choose.height / 2, 0) ==
+            SettingCommand::Command{ SettingCommand::Kind::ShortcutTargetChoose, index, -1 };
+        everySettingControlRoutes &= SettingCommand::resolve(2,
+            clear.x + clear.width / 2,
+            SettingLayout::TAB_HEIGHT + clear.y + clear.height / 2, 0) ==
+            SettingCommand::Command{ SettingCommand::Kind::ShortcutTargetClear, index, -1 };
     }
     {
         const auto reset = SettingLayout::SHORTCUT_RESET_BUTTON;
@@ -2036,8 +2063,10 @@ void expectExternalEditorConfig() {
     // 三份配置挤在同一个文件里，谁保存都不能把别人的行抹掉——
     // 这正是 5 个文件并成 3 个之后最容易翻车的地方。
     FileTargetConfig::Model targets;
-    FileTargetConfig::addTarget(targets, L"D:\\相册\\精选");
-    FileTargetConfig::addTarget(targets, L"E:\\backup");
+    FileTargetConfig::addTarget(targets, L"D:\\相册\\精选",
+        FileTargetConfig::Operation::Copy);
+    FileTargetConfig::addTarget(targets, L"E:\\backup",
+        FileTargetConfig::Operation::Move);
     const bool targetsSaved = FileTargetConfig::save(configFile.wstring(), targets);
 
     RotationStore rotations;
@@ -2060,6 +2089,10 @@ void expectExternalEditorConfig() {
         editorsReloaded == editors &&
         targetsReloaded.targets.size() == 2 &&
         targetsReloaded.targets.front() == L"D:\\相册\\精选" &&
+        FileTargetConfig::activeTarget(targetsReloaded,
+            FileTargetConfig::Operation::Copy) == L"D:\\相册\\精选" &&
+        FileTargetConfig::activeTarget(targetsReloaded,
+            FileTargetConfig::Operation::Move) == L"E:\\backup" &&
         reloaded.get(L"D:\\照片\\a 1.png") == 1 &&
         reloaded.get(L"D:\\照片\\b.png") == 3);
 
@@ -2355,38 +2388,52 @@ void expectFileTargetConfig() {
     using namespace FileTargetConfig;
 
     Model model;
-    addTarget(model, LR"(D:\photos\精选)");
-    addTarget(model, LR"(D:\photos\废片)");
-    passOrFail("adding a target makes it the current one",
-        model.targets.size() == 2 && model.active == 1 &&
-        activeTarget(model) == LR"(D:\photos\废片)");
+    addTarget(model, LR"(D:\photos\精选)", Operation::Copy);
+    addTarget(model, LR"(D:\photos\废片)", Operation::Move);
+    passOrFail("copy and move keep independent default target folders",
+        model.targets.size() == 2 && model.copyActive == 0 && model.moveActive == 1 &&
+        activeTarget(model, Operation::Copy) == LR"(D:\photos\精选)" &&
+        activeTarget(model, Operation::Move) == LR"(D:\photos\废片)");
 
     // 同一个位置再加一次不该多出一条，只是把它切回当前
-    addTarget(model, LR"(d:/photos/精选)");
-    passOrFail("re-adding an existing target just switches to it",
-        model.targets.size() == 2 && model.active == 0);
+    addTarget(model, LR"(d:/photos/精选)", Operation::Move);
+    passOrFail("re-adding an existing target only switches that operation",
+        model.targets.size() == 2 && model.copyActive == 0 && model.moveActive == 0);
 
     for (int index = 0; index < 4; ++index)
-        addTarget(model, L"D:\\photos\\第" + std::to_wstring(index));
+        addTarget(model, L"D:\\photos\\第" + std::to_wstring(index), Operation::Copy);
     passOrFail("the target list is capped at five and drops the oldest",
         model.targets.size() == MAX_TARGETS &&
         model.targets.front() != LR"(D:\photos\精选)");
 
     // 删掉当前之前的一项，当前指向的那个位置要跟着往前挪，不能指到别人身上
     Model shifting;
-    addTarget(shifting, L"A");
-    addTarget(shifting, L"B");
-    addTarget(shifting, L"C");
-    setActive(shifting, 2);
+    addTarget(shifting, L"A", Operation::Copy);
+    addTarget(shifting, L"B", Operation::Move);
+    addTarget(shifting, L"C", Operation::Copy);
+    setActive(shifting, 2, Operation::Move);
     removeTarget(shifting, 0);
-    passOrFail("removing an earlier target keeps the current one selected",
-        shifting.targets.size() == 2 && activeTarget(shifting) == L"C");
+    passOrFail("removing an earlier target keeps both defaults on the same folders",
+        shifting.targets.size() == 2 &&
+        activeTarget(shifting, Operation::Copy) == L"C" &&
+        activeTarget(shifting, Operation::Move) == L"C");
     removeTarget(shifting, 1);
-    passOrFail("removing the current target falls back to the last one",
-        shifting.targets.size() == 1 && activeTarget(shifting) == L"B");
+    passOrFail("removing the current targets falls back to the last folder",
+        shifting.targets.size() == 1 &&
+        activeTarget(shifting, Operation::Copy) == L"B" &&
+        activeTarget(shifting, Operation::Move) == L"B");
     removeTarget(shifting, 0);
-    passOrFail("an empty list reports no target instead of an out-of-range index",
-        !hasTarget(shifting) && activeTarget(shifting).empty());
+    passOrFail("an empty list reports no copy or move target",
+        !hasTarget(shifting, Operation::Copy) &&
+        !hasTarget(shifting, Operation::Move) &&
+        activeTarget(shifting, Operation::Copy).empty() &&
+        activeTarget(shifting, Operation::Move).empty());
+
+    const auto legacy = loadFrom({ "TargetCount=2", "TargetActive=1",
+        "Target0=C:\\old", "Target1=D:\\shared" });
+    passOrFail("the old shared target migrates to both independent defaults",
+        activeTarget(legacy, Operation::Copy) == L"D:\\shared" &&
+        activeTarget(legacy, Operation::Move) == L"D:\\shared");
 
     passOrFail("the menu shows the folder name, not the whole path",
         displayName(LR"(D:\photos\精选)") == L"精选" &&
@@ -2407,6 +2454,39 @@ void expectFileTargetConfig() {
     // 交给上层的复制调用去报错，而不是在这里转到天荒地老。
     passOrFail("an impossible collision gives up instead of looping forever",
         uniqueFileName(L"a.png", [](const std::wstring&) { return true; }) == L"a.png");
+}
+
+void expectOperationToast() {
+    using namespace OperationToast;
+
+    passOrFail("copy, move, and recycle feedback share the operation-toast text policy",
+        success(Action::Copy, L"01", UiLanguage::SIMPLIFIED) == L"已复制到 01" &&
+        success(Action::Move, L"02", UiLanguage::SIMPLIFIED) == L"已移动到 02" &&
+        success(Action::Recycle, L"sample.png", UiLanguage::SIMPLIFIED) ==
+            L"sample.png，已移至回收站");
+    passOrFail("recycle feedback includes the filename in all three UI languages",
+        success(Action::Recycle, L"sample.png", UiLanguage::ENGLISH) ==
+            L"sample.png moved to the Recycle Bin" &&
+        success(Action::Recycle, L"sample.png", UiLanguage::TRADITIONAL) ==
+            L"sample.png，已移至資源回收筒");
+
+    const auto normal = place(800, 600, 96, 180, false);
+    const auto longName = place(320, 200, 96, 2000, false);
+    const auto highDpi = place(640, 400, 192, 4000, true);
+    passOrFail("long filename Toasts stay centered and visible in narrow high-DPI windows",
+        normal.x == 297 && normal.y == 14 && normal.width == 206 &&
+        !longName.empty() && longName.x == 8 && longName.width == 304 &&
+        !highDpi.empty() && highDpi.x == 16 && highDpi.width == 608 && highDpi.y == 100 &&
+        place(40, 20, 96, 2000, false).empty());
+    const std::wstring longText = success(Action::Recycle,
+        L"sample-with-a-very-long-camera-filename-20261009.png", UiLanguage::SIMPLIFIED);
+    const auto fitted = fitText(longText, 40,
+        [](const std::wstring& value) { return static_cast<int>(value.size()); });
+    passOrFail("long Toast text retains the filename prefix and operation-result suffix",
+        fitted.size() <= 40 && fitted.starts_with(L"sample-") &&
+        fitted.ends_with(L".png，已移至回收站") && fitted.find(L"…") != std::wstring::npos &&
+        fitText(L"sample.png", 20,
+            [](const std::wstring& value) { return static_cast<int>(value.size()); }) == L"sample.png");
 }
 
 void expectFullscreenInfoBar() {
@@ -2743,6 +2823,14 @@ private:
 };
 
 void expectLruCache() {
+    // 快速建/关空闲预读线程，放大「检查 stop 与进入 wait 之间丢掉通知」的竞态。
+    // 停止标志曾经不在 preload_mutex 下更新，这段可在旧实现上挂住析构。
+    for (int repeat = 0; repeat < 1000; ++repeat) {
+        CountingCache cache;
+        std::this_thread::yield();
+        cache.stopPreloadWorker();
+    }
+    passOrFail("idle preload workers stop reliably across 1000 immediate shutdowns", true);
     // 存进去就能原样取出来
     {
         CountingCache cache;
@@ -3971,6 +4059,7 @@ void expectRationalText() {
 }
 
 int main(int argc, char* argv[]) {
+    std::cout << std::unitbuf;
     // 缩略图组件内部会用到 COM 对象，和资源管理器一样先把 COM 起起来
     const HRESULT comReady = CoInitializeEx(nullptr,
         COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -4012,6 +4101,7 @@ int main(int argc, char* argv[]) {
     expectImageInfoPresentation();
     expectWindowTitlePresentation();
     expectFileTargetConfig();
+    expectOperationToast();
     expectFullscreenInfoBar();
     expectWheelInput();
     expectShortcutConfig();

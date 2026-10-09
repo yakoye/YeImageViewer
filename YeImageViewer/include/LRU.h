@@ -120,7 +120,12 @@ public:
     // 访问已经释放的成员——打开大图后立刻退出程序曾经就是这样崩的。
     // 可重复调用。
     void stopPreloadWorker() {
-        stop_preload = true;
+        {
+            // 与工作线程检查谓词/进入 wait 共用锁，原子标志本身不能防止
+            // notify 落在「谓词已检查、尚未睡眠」之间而丢失唤醒。
+            std::lock_guard<std::mutex> stop_lock(preload_mutex);
+            stop_preload = true;
+        }
         preload_cv.notify_all();
         if (preload_thread.joinable()) {
             preload_thread.join();

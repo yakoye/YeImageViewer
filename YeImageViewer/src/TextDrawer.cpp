@@ -357,7 +357,7 @@ int TextDrawer::putWord(cv::Mat& img, int x, int y, const int codePoint, intUnio
     return codePoint < 256 ? (size / 2) : size;
 }
 
-int TextDrawer::measureWidth(const char* str) const {
+int TextDrawer::measureWidth(const char* str, bool reserveEllipsis) const {
     if (!str || !*str)
         return 0;
     HDC dc = CreateCompatibleDC(nullptr);
@@ -372,8 +372,11 @@ int TextDrawer::measureWidth(const char* str) const {
     RECT bounds{ 0, 0, 0, 0 };
     DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &bounds,
         DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+    TEXTMETRICW metrics{};
+    const int margin = reserveEllipsis && GetTextMetricsW(dc, &metrics) ?
+        metrics.tmAveCharWidth : 0;
     SelectObject(dc, oldFont);
     DeleteObject(font);
     DeleteDC(dc);
-    return static_cast<int>(bounds.right - bounds.left);
+    return static_cast<int>(bounds.right - bounds.left) + margin;
 }

@@ -33,6 +33,16 @@ $expectedOpenWithExt = $Matches[1] -split ","
 
 Write-Host "Checking source-level invariants that no runtime test can catch..."
 
+# 停止标志与 wait 的谓词必须使用同一个互斥量，否则通知可落在检查与睡眠之间。
+$lruSource = [IO.File]::ReadAllText((Join-Path $repoRoot "YeImageViewer\include\LRU.h"))
+$stopMethod = [regex]::Match($lruSource,
+    '(?s)void stopPreloadWorker\(\)\s*\{(?<body>.*?)preload_cv\.notify_all\(\)')
+if (-not $stopMethod.Success -or $stopMethod.Groups['body'].Value -notmatch
+    'std::lock_guard<std::mutex>\s+\w+\(preload_mutex\);\s*stop_preload\s*=\s*true;') {
+    throw "LRU shutdown invariant failed: stop_preload must be updated under preload_mutex before notifying."
+}
+Write-Host "PASS preload shutdown updates its wait predicate under the shared mutex."
+
 # 一、三语字符串表。
 # 这两张表的索引是硬编码的，中间插一条就把后面全错位；而漏填一列会让界面
 # 当场显示空白。两样都不会让程序崩，所以只能在源码上盯。

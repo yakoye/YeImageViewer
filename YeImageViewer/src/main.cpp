@@ -31,6 +31,8 @@
 #include "ZoomEditPolicy.h"
 #include "ToolbarCommand.h"
 #include "OpenWithRegistrar.h"
+#include "OperationToast.h"
+#include "TextInputDialog.h"
 
 #include "D3D11App.h"
 #include <ppl.h>
@@ -50,233 +52,11 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.37.5";
-constinit int appVersionCode = 13630; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.37.6";
+constinit int appVersionCode = 13706; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
-namespace {
-
-constexpr wchar_t RENAME_WINDOW_CLASS[] = L"YeImageViewerRenameWnd";
-constexpr int RENAME_EDIT_ID = 1001;
-
-struct RenameDialogState {
-    std::wstring initialName;
-    std::wstring title;
-    std::wstring prompt;
-    std::optional<std::wstring> result;
-    HWND window = nullptr;
-    HWND edit = nullptr;
-    HFONT font = nullptr;
-    bool finished = false;
-};
-
-int scaleForDpi(int value, UINT dpi) {
-    return MulDiv(value, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
-}
-
-LRESULT CALLBACK RenameDialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
-    auto* state = reinterpret_cast<RenameDialogState*>(
-        GetWindowLongPtrW(window, GWLP_USERDATA));
-
-    if (message == WM_NCCREATE) {
-        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
-        state = static_cast<RenameDialogState*>(create->lpCreateParams);
-        state->window = window;
-        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
-    }
-
-    if (!state)
-        return DefWindowProcW(window, message, wParam, lParam);
-
-    switch (message) {
-    case WM_CREATE: {
-        const UINT dpi = GetDpiForWindow(window);
-        NONCLIENTMETRICSW metrics{ .cbSize = sizeof(NONCLIENTMETRICSW) };
-        if (!SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0, dpi))
-            SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0);
-        state->font = CreateFontIndirectW(&metrics.lfMessageFont);
-
-        const auto makeControl = [&](const wchar_t* className, const wchar_t* text,
-            DWORD style, int x, int y, int width, int height, int id) {
-                HWND control = CreateWindowExW(0, className, text,
-                    WS_CHILD | WS_VISIBLE | style,
-                    scaleForDpi(x, dpi), scaleForDpi(y, dpi),
-                    scaleForDpi(width, dpi), scaleForDpi(height, dpi),
-                    window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
-                    GetModuleHandleW(nullptr), nullptr);
-                if (control && state->font)
-                    SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), TRUE);
-                return control;
-            };
-
-        makeControl(L"STATIC", state->prompt.c_str(), SS_LEFT,
-            20, 16, 380, 22, -1);
-        state->edit = makeControl(L"EDIT", state->initialName.c_str(),
-            WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL,
-            20, 43, 380, 27, RENAME_EDIT_ID);
-        makeControl(L"BUTTON", L"确定", WS_TABSTOP | BS_DEFPUSHBUTTON,
-            226, 88, 82, 30, IDOK);
-        makeControl(L"BUTTON", L"取消", WS_TABSTOP | BS_PUSHBUTTON,
-            318, 88, 82, 30, IDCANCEL);
-        if (!isChineseUI()) {
-            SetDlgItemTextW(window, IDOK, L"OK");
-            SetDlgItemTextW(window, IDCANCEL, L"Cancel");
-        }
-        else if (GlobalVar::settingParameter.UI_LANG == 2) {
-            SetDlgItemTextW(window, IDOK, L"確定");
-            SetDlgItemTextW(window, IDCANCEL, L"取消");
-        }
-        SendMessageW(state->edit, EM_SETLIMITTEXT, 255, 0);
-        return 0;
-    }
-
-    case WM_COMMAND:
-        if (LOWORD(wParam) == RENAME_EDIT_ID && HIWORD(wParam) == EN_CHANGE) {
-            const HWND edit = reinterpret_cast<HWND>(lParam);
-            const int length = GetWindowTextLengthW(edit);
-            std::wstring value(static_cast<size_t>(length) + 1, L'\0');
-            GetWindowTextW(edit, value.data(), length + 1);
-            value.resize(static_cast<size_t>(length));
-            state->initialName = std::move(value);
-            return 0;
-        }
-        if (LOWORD(wParam) == IDOK) {
-            const HWND edit = GetDlgItem(window, RENAME_EDIT_ID);
-            const int length = GetWindowTextLengthW(edit);
-            std::wstring value(static_cast<size_t>(length) + 1, L'\0');
-            GetWindowTextW(edit, value.data(), length + 1);
-            value.resize(static_cast<size_t>(length));
-            state->result = std::move(value);
-            state->finished = true;
-            ShowWindow(window, SW_HIDE);
-            PostThreadMessageW(GetCurrentThreadId(), WM_NULL, 0, 0);
-            return 0;
-        }
-        if (LOWORD(wParam) == IDCANCEL) {
-            state->finished = true;
-            ShowWindow(window, SW_HIDE);
-            PostThreadMessageW(GetCurrentThreadId(), WM_NULL, 0, 0);
-            return 0;
-        }
-        break;
-
-    case WM_CLOSE:
-        state->finished = true;
-        ShowWindow(window, SW_HIDE);
-        PostThreadMessageW(GetCurrentThreadId(), WM_NULL, 0, 0);
-        return 0;
-
-    case WM_DESTROY:
-        state->window = nullptr;
-        if (!state->finished) {
-            state->finished = true;
-            PostThreadMessageW(GetCurrentThreadId(), WM_NULL, 0, 0);
-        }
-        return 0;
-
-    case WM_CTLCOLORSTATIC:
-        SetBkMode(reinterpret_cast<HDC>(wParam), TRANSPARENT);
-        return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
-    }
-    return DefWindowProcW(window, message, wParam, lParam);
-}
-
-std::optional<std::wstring> showTextInputDialog(HWND owner, std::wstring initialName,
-    std::wstring title, std::wstring prompt) {
-    const HINSTANCE instance = GetModuleHandleW(nullptr);
-    WNDCLASSEXW windowClass{ .cbSize = sizeof(WNDCLASSEXW) };
-    windowClass.style = CS_HREDRAW | CS_VREDRAW;
-    windowClass.lpfnWndProc = RenameDialogProc;
-    windowClass.hInstance = instance;
-    windowClass.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_YEIMAGEVIEWER));
-    windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    windowClass.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
-    windowClass.lpszClassName = RENAME_WINDOW_CLASS;
-    windowClass.hIconSm = windowClass.hIcon;
-    if (!RegisterClassExW(&windowClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
-        return std::nullopt;
-
-    RenameDialogState state{ .initialName = std::move(initialName),
-        .title = std::move(title), .prompt = std::move(prompt) };
-    const UINT dpi = owner ? GetDpiForWindow(owner) : USER_DEFAULT_SCREEN_DPI;
-    RECT outer{ 0, 0, scaleForDpi(420, dpi), scaleForDpi(138, dpi) };
-    const DWORD style = WS_CAPTION | WS_SYSMENU | WS_POPUP;
-    const DWORD extendedStyle = WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT;
-    if (!AdjustWindowRectExForDpi(&outer, style, FALSE, extendedStyle, dpi))
-        AdjustWindowRectEx(&outer, style, FALSE, extendedStyle);
-    const int width = outer.right - outer.left;
-    const int height = outer.bottom - outer.top;
-
-    RECT ownerRect{};
-    if (!owner || !GetWindowRect(owner, &ownerRect))
-        ownerRect = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
-    int x = ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2;
-    int y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - height) / 2;
-    MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
-    if (GetMonitorInfoW(MonitorFromRect(&ownerRect, MONITOR_DEFAULTTONEAREST), &monitorInfo)) {
-        x = std::clamp(x, static_cast<int>(monitorInfo.rcWork.left),
-            static_cast<int>(monitorInfo.rcWork.right) - width);
-        y = std::clamp(y, static_cast<int>(monitorInfo.rcWork.top),
-            static_cast<int>(monitorInfo.rcWork.bottom) - height);
-    }
-
-    HWND window = CreateWindowExW(extendedStyle, RENAME_WINDOW_CLASS, state.title.c_str(), style,
-        x, y, width, height, owner, nullptr, instance, &state);
-    if (!window) {
-        if (state.font)
-            DeleteObject(state.font);
-        return std::nullopt;
-    }
-
-    const bool restoreOwner = owner && IsWindowEnabled(owner);
-    ShowWindow(window, SW_SHOW);
-    UpdateWindow(window);
-    SendMessageW(state.edit, EM_SETSEL, 0, -1);
-    SetFocus(state.edit);
-
-    bool repostQuit = false;
-    int quitCode = 0;
-    MSG message{};
-    while (!state.finished) {
-        const BOOL status = GetMessageW(&message, nullptr, 0, 0);
-        if (status <= 0) {
-            repostQuit = status == 0;
-            quitCode = static_cast<int>(message.wParam);
-            break;
-        }
-        const bool outsideMouseDown =
-            message.message == WM_LBUTTONDOWN || message.message == WM_RBUTTONDOWN ||
-            message.message == WM_MBUTTONDOWN || message.message == WM_XBUTTONDOWN ||
-            message.message == WM_NCLBUTTONDOWN || message.message == WM_NCRBUTTONDOWN ||
-            message.message == WM_NCMBUTTONDOWN || message.message == WM_NCXBUTTONDOWN;
-        if (outsideMouseDown && message.hwnd != window &&
-            !IsChild(window, message.hwnd)) {
-            state.finished = true;
-            ShowWindow(window, SW_HIDE);
-            continue;
-        }
-        if (!IsDialogMessageW(window, &message)) {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
-    }
-
-    if (IsWindow(window))
-        DestroyWindow(window);
-    if (state.font)
-        DeleteObject(state.font);
-    if (restoreOwner && IsWindow(owner)) {
-        SetForegroundWindow(owner);
-        SetActiveWindow(owner);
-        SetFocus(owner);
-    }
-    if (repostQuit)
-        PostQuitMessage(quitCode);
-    return state.result;
-}
-
-} // namespace
 
 
 struct CurImageParameter {
@@ -596,8 +376,13 @@ public:
     // 真图仍在后台解码时，这里记着它的路径，主循环据此轮询接手。
     wstring pendingImagePath;
     wstring startupImagePath;
-    wstring transientNotice;
-    std::chrono::steady_clock::time_point transientNoticeUntil{};
+    // 复制、移动、无确认删除等非模态操作统一走顶部 Toast；不另开窗口，也不打断按键流。
+    wstring toastMessage;
+    std::chrono::steady_clock::time_point toastUntil{};
+    int toastTextCanvasWidth = 0;
+    int toastTextDpi = 0;
+    int toastTextWidth = 0;
+    std::string toastText;
     std::chrono::steady_clock::time_point loadingStartedAt{};
     // 模糊预览是否已经顶上去了，避免每帧重复替换
     bool pendingPreviewShown = false;
@@ -715,7 +500,7 @@ public:
 
         const std::wstring automaticName = ExternalEditorConfig::defaultName(selected);
         const bool chinese = isChineseUI();
-        auto requestedName = showTextInputDialog(m_hWnd, automaticName,
+        auto requestedName = TextInputDialog::show(m_hWnd, automaticName,
             trW(L"设置编辑应用", L"Configure editor", L"設定編輯應用程式"),
             trW(L"显示名称（留空则使用程序名称）：", L"Display name (leave blank to use the application name):", L"顯示名稱（留空則使用程式名稱）："));
         if (!requestedName)
@@ -869,8 +654,9 @@ public:
         }
 
         const std::wstring folder = FileTargetConfig::displayName(target);
-        showNotice((move ? trW(L"已移动到 ", L"Moved to ", L"已移動到 ")
-                         : trW(L"已复制到 ", L"Copied to ", L"已複製到 ")) + folder);
+        showToast(OperationToast::success(
+            move ? OperationToast::Action::Move : OperationToast::Action::Copy,
+            folder, GlobalVar::settingParameter.UI_LANG));
 
         // 移动之后源文件已经不在了，把它从浏览列表里摘掉并显示下一张。
         // 这里不能复用 deleteImg：那条路径开头就要求文件还在，移动完正好不在，
@@ -881,21 +667,25 @@ public:
 
     // 目标为空时先问一次位置；问到了就记下来当当前目标。
     void copyOrMoveToCurrentTarget(bool move) {
-        if (!FileTargetConfig::hasTarget(GlobalVar::fileTargets)) {
+        const auto operation = move ? FileTargetConfig::Operation::Move :
+            FileTargetConfig::Operation::Copy;
+        if (!FileTargetConfig::hasTarget(GlobalVar::fileTargets, operation)) {
             const auto picked = pickTargetFolder();
             if (picked.empty())
                 return;
-            FileTargetConfig::addTarget(GlobalVar::fileTargets, picked);
+            FileTargetConfig::addTarget(GlobalVar::fileTargets, picked, operation);
             saveFileTargets();
         }
-        copyOrMoveCurrentImage(FileTargetConfig::activeTarget(GlobalVar::fileTargets), move);
+        copyOrMoveCurrentImage(
+            FileTargetConfig::activeTarget(GlobalVar::fileTargets, operation), move);
     }
 
     void chooseTargetAndRun(bool move) {
         const auto picked = pickTargetFolder();
         if (picked.empty())
             return;
-        FileTargetConfig::addTarget(GlobalVar::fileTargets, picked);
+        FileTargetConfig::addTarget(GlobalVar::fileTargets, picked,
+            move ? FileTargetConfig::Operation::Move : FileTargetConfig::Operation::Copy);
         saveFileTargets();
         copyOrMoveCurrentImage(picked, move);
     }
@@ -934,12 +724,14 @@ public:
             applyHomeWindowSize();
     }
 
-    // 画面顶部一闪而过的一行字。复制文件成功时界面上不会有任何变化，
-    // 没有这行字，用户按完键只能去资源管理器里翻，才知道到底有没有复制成功。
-    void showNotice(std::wstring text, int milliseconds = 2200) {
-        transientNotice = std::move(text);
-        transientNoticeUntil = std::chrono::steady_clock::now() +
+    // 非模态操作反馈统一走这个入口：不打断快捷键流，也不用让用户
+    // 再去资源管理器确认复制、移动或删除到底有没有成功。
+    void showToast(std::wstring text, int milliseconds = OperationToast::DURATION_MS) {
+        toastMessage = std::move(text);
+        toastTextCanvasWidth = 0;
+        toastUntil = std::chrono::steady_clock::now() +
             std::chrono::milliseconds(milliseconds);
+        operateQueue.push({ ActionENUM::refresh });
     }
 
     void renameCurrentImage() {
@@ -953,7 +745,7 @@ public:
 
         std::wstring candidate = source.stem().wstring();
         while (true) {
-            auto requestedName = showTextInputDialog(m_hWnd, candidate,
+            auto requestedName = TextInputDialog::show(m_hWnd, candidate,
                 getUIStringW(48), getUIStringW(49));
             if (!requestedName)
                 return;
@@ -2774,7 +2566,8 @@ public:
             const std::size_t index = static_cast<std::size_t>(commandId - begin);
             if (index >= GlobalVar::fileTargets.targets.size())
                 return true;
-            FileTargetConfig::setActive(GlobalVar::fileTargets, index);
+            FileTargetConfig::setActive(GlobalVar::fileTargets, index,
+                move ? FileTargetConfig::Operation::Move : FileTargetConfig::Operation::Copy);
             saveFileTargets();
             copyOrMoveCurrentImage(GlobalVar::fileTargets.targets[index], move);
             return true;
@@ -4470,37 +4263,46 @@ public:
         textDrawer.putAlignCenter(canvas, { x, y, width, height }, text, 0xFFE8EAF0u);
     }
 
-    // 复制 / 移动成功后顶部一闪而过的一行字。样式与「正在加载」标记一致；
+    // 复制 / 移动 / 无确认删除共用的顶部 Toast。样式与「正在加载」标记一致；
     // 两个同时出现时让到下面一行，不互相压住。
-    void drawTransientNotice(cv::Mat& canvas) {
-        if (transientNotice.empty())
+    void drawToast(cv::Mat& canvas) {
+        if (toastMessage.empty())
             return;
-        if (std::chrono::steady_clock::now() >= transientNoticeUntil) {
-            transientNotice.clear();
+        if (std::chrono::steady_clock::now() >= toastUntil) {
+            // 生命周期只由 DrawScene 更新并安排刷新。若绘制刚好跨过到期时刻，
+            // 在此清空会让下一帧误以为无需刷新，留下上一帧的提示。
             return;
         }
 
         const int dpi = overlayDpi();
         const auto scale = [dpi](int value) { return MulDiv(value, dpi, USER_DEFAULT_SCREEN_DPI); };
 
-        const std::string text = jarkUtils::wstringToUtf8(transientNotice);
-        int textWidth = 0;
-        for (const wchar_t character : transientNotice)
-            textWidth += character > 0xFF ? 14 : 7;
-
-        const int width = scale(std::max(120, textWidth + 26));
-        const int height = scale(28);
-        if (canvas.cols < width + scale(16) || canvas.rows < height * 3)
-            return;
-
-        const int x = (canvas.cols - width) / 2;
-        const int y = scale(14) + (pendingImagePath.empty() ? 0 : height + scale(8));
-        auto surface = roundedSurface(width, height, scale(7), 0xE6103A1Fu, 0x3F4ADE80u);
-        jarkUtils::overlayImg(canvas, surface, x, y);
-
         textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
             TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
-        textDrawer.putAlignCenter(canvas, { x, y, width, height }, text.c_str(), 0xFFE8F7EDu);
+        if (toastTextCanvasWidth != canvas.cols || toastTextDpi != dpi) {
+            const auto measure = [this](const std::wstring& value) {
+                return textDrawer.measureWidth(jarkUtils::wstringToUtf8(value).c_str(), true);
+            };
+            const int maxTextWidth = std::min(canvas.cols - scale(16), scale(560)) - 2 * scale(13);
+            toastText = jarkUtils::wstringToUtf8(
+                OperationToast::fitText(toastMessage, maxTextWidth, measure));
+            toastTextWidth = textDrawer.measureWidth(toastText.c_str(), true);
+            toastTextCanvasWidth = canvas.cols;
+            toastTextDpi = dpi;
+        }
+
+        const auto rect = OperationToast::place(canvas.cols, canvas.rows, dpi,
+            toastTextWidth, !pendingImagePath.empty());
+        if (rect.empty())
+            return;
+
+        auto surface = roundedSurface(rect.width, rect.height, scale(7), 0xE6103A1Fu, 0x3F4ADE80u);
+        jarkUtils::overlayImg(canvas, surface, rect.x, rect.y);
+
+        const int padding = scale(13);
+        textDrawer.putAlignCenter(canvas,
+            { rect.x + padding, rect.y, rect.width - padding * 2, rect.height },
+            toastText.c_str(), 0xFFE8F7EDu);
     }
 
     // 当前图片在画布上的显示区域，与 drawCanvas 的定位算法一致
@@ -4627,7 +4429,7 @@ public:
             return;
 
         drawLoadingBadge(canvas);
-        drawTransientNotice(canvas);
+        drawToast(canvas);
         drawLivePhotoBadge(canvas);
 
         // 空占位图只有 1×1，工具栏、翻页箭头这些都无从谈起。
@@ -4760,6 +4562,10 @@ public:
         }
 
         const auto now = std::chrono::steady_clock::now();
+        if (!toastMessage.empty() && now >= toastUntil) {
+            toastMessage.clear();
+            operateQueue.push({ ActionENUM::refresh });
+        }
         const bool slideshowElapsed = slideshowNextAt != std::chrono::steady_clock::time_point{} &&
             now >= slideshowNextAt;
         if (SlideshowPolicy::shouldAdvance(
@@ -5173,6 +4979,8 @@ public:
             if (!shouldDelete)
                 break;
 
+            const std::wstring deletedFileName =
+                std::filesystem::path(target).filename().wstring();
             std::wstring pathBuffer(target);
             pathBuffer.push_back(L'\0'); // SHFileOperation 需要双零终止
 
@@ -5190,6 +4998,11 @@ public:
                 break;
             }
 
+            if (!GlobalVar::settingParameter.isNoteBeforeDelete) {
+                showToast(OperationToast::success(
+                    OperationToast::Action::Recycle, deletedFileName,
+                    GlobalVar::settingParameter.UI_LANG));
+            }
             removeCurrentImageEntry();
         } break;
 
@@ -5501,6 +5314,38 @@ static int runPngDecodeSelfTest(const std::wstring& directory, const std::wstrin
     return 0;
 }
 
+// 用真实字体与真实绘制路径验证：按测得宽度绘制不得把完整提示变成末尾省略号。
+static int runToastTextSelfTest(const std::wstring& resultPath) {
+    std::ofstream result(std::filesystem::path(resultPath), std::ios::trunc);
+    if (!result)
+        return 3;
+    TextDrawer drawer;
+    int failures = 0;
+    int cases = 0;
+    for (const int size : { 16, 20, 32 }) {
+        drawer.setSize(size);
+        for (uint32_t language = 0; language < 3; ++language) {
+            const auto text = jarkUtils::wstringToUtf8(OperationToast::success(
+                OperationToast::Action::Recycle, L"three.png", language));
+            const int width = drawer.measureWidth(text.c_str(), true);
+            cv::Mat reference(size * 3, 2048, CV_8UC4, cv::Scalar(20, 40, 20, 255));
+            cv::Mat bounded = reference.clone();
+            drawer.putAlignLeft(reference, { 0, 0, reference.cols, reference.rows },
+                text.c_str(), 0xFFE8F7EDu);
+            drawer.putAlignLeft(bounded, { 0, 0, width, bounded.rows },
+                text.c_str(), 0xFFE8F7EDu);
+            const bool equal = cv::norm(reference, bounded, cv::NORM_INF) == 0;
+            result << (equal ? "PASS" : "FAIL") << '\t' << size << '\t' << language
+                << '\t' << width << '\n';
+            ++cases;
+            if (!equal)
+                ++failures;
+        }
+    }
+    result << "SUMMARY\t" << cases << '\t' << failures << '\n';
+    return failures == 0 ? 0 : 2;
+}
+
 static int runColorSelfTest(const std::wstring& resultPath) {
     // 造一张有层次的图。纯色看不出变换有没有生效，也掩盖得了分块错位。
     const int width = 1920;
@@ -5793,6 +5638,13 @@ int WINAPI wWinMain(
     if (arguments != nullptr && argumentCount == 4
         && std::wstring_view(arguments[1]) == L"--png-decode-selftest") {
         const int selfTestResult = runPngDecodeSelfTest(arguments[2], arguments[3]);
+        ::LocalFree(arguments);
+        ::CoUninitialize();
+        return selfTestResult;
+    }
+    if (arguments != nullptr && argumentCount == 3
+        && std::wstring_view(arguments[1]) == L"--toast-text-selftest") {
+        const int selfTestResult = runToastTextSelfTest(arguments[2]);
         ::LocalFree(arguments);
         ::CoUninitialize();
         return selfTestResult;
