@@ -87,8 +87,8 @@ inline bool sameTarget(std::wstring_view left, std::wstring_view right) {
 }
 
 // 加一个目标并设为当前。已经有同一个目标时不重复添加，只是把它设为当前。
-// 满 5 个之后再加，替换掉最早的那个——用户明确说了最多 5 组，
-// 默默不生效比替换更让人困惑。
+// 满 5 个之后再加，替换最早的非默认项。默认位置不能被另一种操作的
+// 历史记录悄悄挤掉，否则「复制到 01」会在用户只改移动目录时改到别处。
 inline void addTarget(Model& model, std::wstring_view target, Operation operation) {
     if (target.empty())
         return;
@@ -99,9 +99,13 @@ inline void addTarget(Model& model, std::wstring_view target, Operation operatio
         }
     }
     if (model.targets.size() >= MAX_TARGETS) {
-        model.targets.erase(model.targets.begin());
-        adjustActiveAfterRemoval(model.copyActive, 0, model.targets.size());
-        adjustActiveAfterRemoval(model.moveActive, 0, model.targets.size());
+        static_assert(MAX_TARGETS > 2); // 至多两个默认项，始终有可淘汰的历史项
+        std::size_t removed = 0;
+        while (removed == model.copyActive || removed == model.moveActive)
+            ++removed;
+        model.targets.erase(model.targets.begin() + removed);
+        adjustActiveAfterRemoval(model.copyActive, removed, model.targets.size());
+        adjustActiveAfterRemoval(model.moveActive, removed, model.targets.size());
     }
     model.targets.emplace_back(target);
     activeIndex(model, operation) = model.targets.size() - 1;
