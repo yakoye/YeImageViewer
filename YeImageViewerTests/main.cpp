@@ -2402,9 +2402,19 @@ void expectFileTargetConfig() {
 
     for (int index = 0; index < 4; ++index)
         addTarget(model, L"D:\\photos\\第" + std::to_wstring(index), Operation::Copy);
-    passOrFail("the target list is capped at five and drops the oldest",
+    passOrFail("the target list is capped at five without evicting the other default",
         model.targets.size() == MAX_TARGETS &&
-        model.targets.front() != LR"(D:\photos\精选)");
+        activeTarget(model, Operation::Move) == LR"(D:\photos\精选)");
+
+    Model pinned;
+    addTarget(pinned, L"C:\\Desktop\\01", Operation::Copy);
+    addTarget(pinned, L"C:\\Desktop\\02", Operation::Move);
+    for (int index = 0; index < 10; ++index)
+        addTarget(pinned, L"D:\\recent\\" + std::to_wstring(index), Operation::Move);
+    passOrFail("a fixed copy folder survives repeated changes to move history",
+        pinned.targets.size() == MAX_TARGETS &&
+        activeTarget(pinned, Operation::Copy) == L"C:\\Desktop\\01" &&
+        activeTarget(pinned, Operation::Move) == L"D:\\recent\\9");
 
     // 删掉当前之前的一项，当前指向的那个位置要跟着往前挪，不能指到别人身上
     Model shifting;
