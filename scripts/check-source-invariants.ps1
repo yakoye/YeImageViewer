@@ -43,6 +43,13 @@ if (-not $stopMethod.Success -or $stopMethod.Groups['body'].Value -notmatch
 }
 Write-Host "PASS preload shutdown updates its wait predicate under the shared mutex."
 
+$progressiveSource = [IO.File]::ReadAllText((Join-Path $repoRoot "tools\image-test-runner\probe-progressive-load.ps1"))
+if ($progressiveSource -match '\[LoadProbe\]::GetForegroundWindow\(' -or
+    $progressiveSource -notmatch '\[LoadProbe\]::FindMainWindow\(\[uint32\]\$proc\.Id\)') {
+    throw "Progressive probe invariant failed: discover the tested process window independently of foreground focus."
+}
+Write-Host "PASS the progressive probe identifies the tested process window without requiring focus."
+
 # 一、三语字符串表。
 # 这两张表的索引是硬编码的，中间插一条就把后面全错位；而漏填一列会让界面
 # 当场显示空白。两样都不会让程序崩，所以只能在源码上盯。
