@@ -229,4 +229,3 @@ inline std::optional<std::wstring> show(HWND owner, std::wstring initialName,
 }
 
 } // namespace TextInputDialog
-

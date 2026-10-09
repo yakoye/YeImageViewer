@@ -50,6 +50,13 @@ function Invoke-CheckerIsolated {
 
 $cases = @(
     @{
+        Name = "窗口探针错误地只认前台窗口"
+        File = "tools\image-test-runner\probe-progressive-load.ps1"
+        Old = '[LoadProbe]::FindMainWindow([uint32]$proc.Id)'
+        New = '[LoadProbe]::GetForegroundWindow()'
+        Expect = "Progressive probe invariant failed"
+    },
+    @{
         Name = "停止预读线程时漏掉等待谓词的互斥保护"
         File = "YeImageViewer\include\LRU.h"
         Old = '            std::lock_guard<std::mutex> stop_lock(preload_mutex);'

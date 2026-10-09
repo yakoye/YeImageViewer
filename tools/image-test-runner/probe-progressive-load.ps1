@@ -40,41 +40,31 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 public class LoadProbe {
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    public delegate bool EnumProc(IntPtr h, IntPtr p);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr parameter);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder name, int size);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
-    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
-    [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int index);
-    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
-    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int val, int size);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
     [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr h);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr h, int index, StringBuilder buf, int length, out int needed);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
-    // 有没有别的窗口压在被测窗口上面。CopyFromScreen 抓的是屏幕，别人盖上来就把
-    // 读数搅乱了，而窗口句柄、窗口矩形一切正常，看不出任何异样。
-    //
-    // 不能用 WindowFromPoint：那是命中测试，而沉浸显示下图片以外那圈是半透明的
-    // 压暗层，取样点会直接穿透到桌面，每轮都报「被遮挡」。Z 序相交不看透明。
-    public static int CountOverlapping(IntPtr hwnd, RECT r) {
-        int count = 0;
-        IntPtr cur = hwnd;
-        // GW_HWNDPREV = 3：Z 序里排在前面的，也就是画在上面的
-        while ((cur = GetWindow(cur, 3)) != IntPtr.Zero) {
-            if (!IsWindowVisible(cur) || IsIconic(cur)) continue;
-            // 输入法候选条、浮动提示这类工具窗口不算遮挡
-            if ((GetWindowLong(cur, -20) & 0x00000080) != 0) continue;
-            // UWP 的后台窗口报「可见」但 DWM 根本没画它。DWMWA_CLOAKED = 14
-            int cloaked;
-            if (DwmGetWindowAttribute(cur, 14, out cloaked, 4) == 0 && cloaked != 0) continue;
-            RECT o;
-            if (!GetWindowRect(cur, out o)) continue;
-            if (o.R - o.L <= 0 || o.B - o.T <= 0) continue;
-            if (o.L < r.R && r.L < o.R && o.T < r.B && r.T < o.B) count++;
-        }
-        return count;
+    // 前台窗口可能被别的应用占着；是否出现只认被测进程自己的可见主窗口。
+    public static IntPtr FindMainWindow(uint processId) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr h, IntPtr p) {
+            uint owner;
+            GetWindowThreadProcessId(h, out owner);
+            if (owner != processId || !IsWindowVisible(h)) return true;
+            var name = new StringBuilder(128);
+            GetClassName(h, name, name.Capacity);
+            if (name.ToString() != "D3D11WndClass") return true;
+            found = h;
+            return false;
+        }, IntPtr.Zero);
+        return found;
     }
 
     // 锁屏或 UAC 安全桌面显示时，输入桌面是 Winlogon，普通进程打不开；
@@ -162,22 +152,24 @@ function Measure-Frame($bmp) {
 Write-Output ("图片: {0}  ({1:F1} MB)" -f $Image, ((Get-Item -LiteralPath $Image).Length / 1MB))
 Write-Output ""
 
+$temporaryBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$runtimeRoot = Join-Path $temporaryBase ("YeImageViewer-Progressive-" + [Guid]::NewGuid().ToString("N"))
+[void](New-Item -ItemType Directory -Path $runtimeRoot)
+$isolatedExe = Join-Path $runtimeRoot "YeImageViewer.exe"
+Copy-Item -LiteralPath $Exe -Destination $isolatedExe
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-$proc = Start-Process -FilePath $Exe -ArgumentList "`"$Image`"" -PassThru
+$proc = Start-Process -FilePath $isolatedExe -ArgumentList "`"$Image`"" -PassThru
 $hwnd = [IntPtr]::Zero
 $windowAt = $null
 $contentAt = $null
 $samples = @()
-$occludedFrames = 0
 
 try {
     while ($sw.Elapsed.TotalSeconds -lt $Duration) {
         if ($hwnd -eq [IntPtr]::Zero) {
-            $fg = [LoadProbe]::GetForegroundWindow()
-            [uint32]$owner = 0
-            [void][LoadProbe]::GetWindowThreadProcessId($fg, [ref]$owner)
-            if ($owner -eq $proc.Id -and [LoadProbe]::IsWindowVisible($fg)) {
-                $hwnd = $fg
+            $candidate = [LoadProbe]::FindMainWindow([uint32]$proc.Id)
+            if ($candidate -ne [IntPtr]::Zero) {
+                $hwnd = $candidate
                 $windowAt = $sw.Elapsed.TotalSeconds
                 Write-Output ("窗口出现  t={0:F2}s" -f $windowAt)
                 Write-Output ""
@@ -204,9 +196,6 @@ try {
                 $g.Dispose()
                 $m = Measure-Frame $bmp
                 $bmp.Dispose()
-                # 这一帧读的时候窗口被别人盖住了没有。盖住了就整轮作废——
-                # 被遮挡的那几帧混在里面，切换点会落在错的地方。
-                if ([LoadProbe]::CountOverlapping($hwnd, $r) -gt 0) { $occludedFrames++ }
                 if ($m) {
                     $t = $sw.Elapsed.TotalSeconds
                     $samples += [pscustomobject]@{
@@ -222,7 +211,15 @@ try {
     }
 }
 finally {
-    if ($proc -and -not $proc.HasExited) { $proc.Kill() }
+    if ($proc -and -not $proc.HasExited) {
+        $proc.Kill()
+        [void]$proc.WaitForExit(3000)
+    }
+    $resolvedRoot = [IO.Path]::GetFullPath($runtimeRoot)
+    if ($resolvedRoot.StartsWith($temporaryBase, [StringComparison]::OrdinalIgnoreCase) -and
+        (Split-Path -Leaf $resolvedRoot).StartsWith("YeImageViewer-Progressive-", [StringComparison]::Ordinal)) {
+        Remove-Item -LiteralPath $resolvedRoot -Recurse -Force
+    }
 }
 
 Write-Output ""
@@ -248,18 +245,6 @@ Write-Output ("画面有内容    {0:F2}s  (阈值 {1}s)" -f $contentAt, $MaxPre
 if ($contentAt -gt $MaxPreviewSeconds) {
     Write-Output "FAIL 模糊预览出现太慢"
     $failed = $true
-}
-
-# 采样期间被别的窗口盖过，这一轮的像素读数就不可信了。这和锁屏、远程桌面断开
-# 是同一类事：与被测行为无关的环境干扰，记未执行而不是失败。实测被盖住那一轮
-# 的非暗像素从 66% 掉到 20%、亮度从 64 掉到 32，判出「画面会跳变」，而同一个
-# 构建单独连跑三轮漂移都只有 0.1。
-# 窗口已经置顶了，还能被盖住就只剩「别的 topmost 窗口压着」这一种可能。
-# 那是真的环境干扰，和被测行为无关，记未执行而不是失败。
-if ($occludedFrames -gt 0) {
-    Write-Output ("SKIPPED 窗口已置顶，采样期间仍有 $occludedFrames 帧被其他置顶窗口遮挡，" +
-        "屏幕读数不可信")
-    exit $EXIT_SKIPPED
 }
 
 # 窗口刚出现的头几帧还没画完，CopyFromScreen 会抓到底下的桌面，丢弃
