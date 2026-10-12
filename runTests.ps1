@@ -75,7 +75,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.37.6.0"
+$expectedFileVersion = "1.38.0.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -83,7 +83,7 @@ if ($actualFileVersion -ne $expectedFileVersion) {
 Write-Host "PASS viewer file version is $expectedFileVersion."
 
 # 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
-$expectedProductVersion = "1.37.6"
+$expectedProductVersion = "1.38.0"
 $actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
@@ -918,9 +918,11 @@ function Get-ViewerToastSample {
     if ($dpi -eq 0) { $dpi = 96 }
     # 只比较提示内部（文字与实色背景），避开半透明边缘及其 DWM 合成带。
     # 全套回归中顶/底边偶尔各有四行横贯屏幕的桌面背景变化，不能误判为提示残留。
-    $sampleHeight = [int][Math]::Round(18 * $dpi / 96.0)
+    $sampleHeight = [int][Math]::Round(12 * $dpi / 96.0)
     $screenX = $origin.X + [int](($clientWidth - $sampleWidth) / 2)
-    $screenY = $origin.Y + [int][Math]::Round(19 * $dpi / 96.0)
+    # 120% DPI 实测原采样第 2~5 行仍会混入 DWM 的整行合成变化；
+    # 移到 28 像素高 Toast 的正中间，不扩大消失断言阈值。
+    $screenY = $origin.Y + [int][Math]::Round(25 * $dpi / 96.0)
     $bitmap = New-Object System.Drawing.Bitmap $sampleWidth, $sampleHeight
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     try {
@@ -4332,5 +4334,9 @@ foreach ($donateName in @("donate-alipay.png", "donate-wechat.png")) {
         $donateBitmap.Dispose()
     }
 }
+
+& (Join-Path $repoRoot 'scripts/test-menu-monitor-regressions.ps1') -Viewer $viewer -Fixture $commonPngFixture
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer
+& (Join-Path $repoRoot 'scripts/test-release-archive.ps1') -Viewer $viewer
 
 Write-Host "All regression tests passed."

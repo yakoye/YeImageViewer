@@ -1,6 +1,7 @@
 #pragma once
 
 #include "UiLanguage.h"
+#include "ContextMenuPolicy.h"
 
 #include <array>
 #include <cstddef>
@@ -150,6 +151,9 @@ constexpr bool isModifierKey(uint32_t virtualKey) {
 
 constexpr bool isStoredBindingValid(uint32_t value) {
     return (value & ~(KEY_MASK | MODIFIER_MASK)) == 0 &&
+        !ContextMenuPolicy::isFixedMenuKey(value & KEY_MASK,
+            (value & MODIFIER_CONTROL) != 0, (value & MODIFIER_SHIFT) != 0,
+            (value & MODIFIER_ALT) != 0) &&
         ((value & KEY_MASK) == 0 || !isModifierKey(value & KEY_MASK));
 }
 

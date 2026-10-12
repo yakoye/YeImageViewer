@@ -33,6 +33,13 @@
 #include "OpenWithRegistrar.h"
 #include "OperationToast.h"
 #include "TextInputDialog.h"
+#include "LongImagePolicy.h"
+#include "ReadingPolicy.h"
+#include "ReadingConfig.h"
+#include "ContinuousZoom.h"
+#include "AnimationControls.h"
+#include "ImageResampling.h"
+#include "ReadingLayout.h"
 
 #include "D3D11App.h"
 #include <ppl.h>
@@ -52,8 +59,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.37.6";
-constinit int appVersionCode = 13706; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.38.0";
+constinit int appVersionCode = 13800; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -78,6 +85,7 @@ struct CurImageParameter {
     // 用户是否手动调过缩放。调过之后拖拽一律作用在图片上，不再改成拖窗口——
     // 「没有可平移余量就拖窗口」那个便利只适用于用户还没接管缩放的时候。
     bool zoomUserAdjusted = false;
+    bool viewingTemporaryZoom = false;
     bool isAnimationPause = false;
     bool flipHorizontal = false;
     bool flipVertical = false;
@@ -102,6 +110,7 @@ struct CurImageParameter {
         bool preventUpscale = false, bool forceFitWindow = false) {
         // 换图就重新开始：上一张图上手动调过缩放，不该影响下一张的拖拽行为
         zoomUserAdjusted = false;
+        viewingTemporaryZoom = false;
 
         curFrameIdx = 0;
         curFrameDelay = 0;
@@ -219,6 +228,7 @@ struct CurImageParameter {
         zoomIndexFix = (it != zoomList.end()) ? (int)std::distance(zoomList.begin(), it) : zoomIndex;
         it = std::find(zoomList.begin(), zoomList.end(), ZOOM_BASE);
         zoomIndex100percent = (it != zoomList.end()) ? (int)std::distance(zoomList.begin(), it) : zoomIndex;
+        selectZoomTarget(zoomTarget);
     }
 
     void setZoom(int64_t zoom) {
@@ -261,7 +271,8 @@ struct CurImageParameter {
     // 规则本身在 ZoomPolicy.h，那边有配套的用例；这里只做转发，免得两处走偏。
     int64_t fitWindowZoom(int windowWidth, int windowHeight) const {
         return ZoomPolicy::fitWindowZoomRotated(width, height, rotation,
-            windowWidth, windowHeight, ZOOM_BASE);
+            windowWidth, windowHeight, ZOOM_BASE,
+            ViewingOptions::enabled(GlobalVar::settingParameter.reserve, ViewingOptions::UPSCALE));
     }
 
     void slideTargetRotateLeft() {
@@ -353,6 +364,41 @@ public:
     ShowExtraUI extraUIFlag = ShowExtraUI::none;
     bool mouseIsPressing = false;
     bool ctrlIsPressing = false;
+    bool rightClickMenuRequested = false;
+    std::wstring fittedGeometryPath;
+    std::wstring displayedImagePath;
+    std::unordered_map<std::wstring, int64_t> rememberedImageZoom;
+    std::chrono::steady_clock::time_point lastBoundaryToast{};
+    WPARAM heldZoomKey = 0;
+    int heldZoomDirection = 0;
+    int64_t heldZoomStart = 0;
+    std::chrono::steady_clock::time_point heldZoomSince{};
+    bool frameDragging = false;
+    std::chrono::steady_clock::time_point frameControlsUntil{};
+    mutable cv::Mat qualityCache;
+    mutable const uint8_t* qualitySource = nullptr;
+    mutable int64_t qualityZoom = 0;
+    ReadingConfig readingConfig;
+    ReadingLayout::Layout readerLayout;
+    std::vector<ReadingLayout::Size> readerSizes;
+    struct ReaderTile {
+        cv::Mat image;
+        int width = 0, height = 0, cropX = 0, cropY = 0, rotation = 0;
+        uint32_t quality = 0;
+        const uint8_t* source = nullptr;
+        bool loading = false;
+        bool flipHorizontal = false, flipVertical = false;
+    };
+    std::unordered_map<int, ReaderTile> readerTiles;
+    std::string readerCollection;
+    int readerShift = 0, readerAnchor = -1, readerEnlargedGroup = -1;
+    double readerOffset = 0, readerCross = 0, readerEnlargement = 1;
+    bool readerDirty = true, readerWaiting = false, readerScrolling = false;
+    bool applyingViewingSettings = false, configuredWindowReady = false;
+    bool lockWasApplied = false;
+    uint32_t lastExplicitScale = 0;
+    std::wstring interactionProbePath;
+    std::string interactionProbeLast;
     bool smoothShift = false;
     bool slideshowPlaying = false;
     bool showExif = false;
@@ -418,7 +464,6 @@ public:
     bool imageInfoHistogramReady = false;
     cv::Rect imageInfoPanelRect;
     cv::Rect imageInfoCloseRect;
-    cv::Rect imageInfoCopyRect;
     int imageInfoScrollOffset = 0;
     int imageInfoContentHeight = 0;
     int imageInfoViewportHeight = 0;
@@ -444,6 +489,15 @@ public:
         }
         rotationStore.setStoragePath(rotationPath);
         rotationStore.load();
+        readingConfig.load(GlobalVar::settingPath);
+        lockWasApplied = viewingLocked();
+        lastExplicitScale = GlobalVar::settingParameter.reserve[ViewingOptions::SCALE];
+        const DWORD probeLength = GetEnvironmentVariableW(L"YEIMAGEVIEWER_INTERACTION_PROBE", nullptr, 0);
+        if (probeLength > 1 && probeLength < 32768) {
+            interactionProbePath.resize(probeLength);
+            GetEnvironmentVariableW(L"YEIMAGEVIEWER_INTERACTION_PROBE", interactionProbePath.data(), probeLength);
+            interactionProbePath.resize(probeLength - 1);
+        }
 
         textDrawer.setSize(TextRenderingPolicy::LOGICAL_FONT_SIZE);
     }
@@ -696,6 +750,7 @@ public:
     // 「文件不存在则直接返回」的判断，而移动完成后源文件正好已经不存在了，
     // 结果就是文件在磁盘上搬走了、界面上却一点反应都没有。
     void removeCurrentImageEntry() {
+        resetReader();
         if (imgFileList.empty() || curFileIdx < 0 || curFileIdx >= (int)imgFileList.size())
             return;
 
@@ -787,10 +842,473 @@ public:
         }
     }
 
+    bool requireCurrentPixels() {
+        if (pendingImagePath.empty() && curPar.imageAssetPtr && !curPar.imageAssetPtr->isLoading) return true;
+        showToast(trW(L"图片仍在加载，请稍后重试", L"Image is still loading; please retry", L"圖片仍在載入，請稍後重試"));
+        return false;
+    }
+
+    void copyCurrentImageInfo() {
+        if (!hasCurrentImagePath() || !requireCurrentPixels()) return;
+        if (jarkUtils::copyToClipboard(jarkUtils::utf8ToWstring(curPar.imageAssetPtr->exifInfo)))
+            showToast(std::format(L"{} {}", trW(L"已复制图像信息：", L"Copied image information:",
+                L"已複製圖像資訊："), std::filesystem::path(imgFileList[curFileIdx]).filename().wstring()));
+    }
+
+    void showBrowseBoundary(bool last) {
+        stopSlideshow();
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastBoundaryToast < std::chrono::milliseconds(900)) return;
+        lastBoundaryToast = now;
+        showToast(last ? trW(L"已到最后一张", L"Last image reached", L"已到最後一張") :
+            trW(L"已到第一张", L"First image reached", L"已到第一張"));
+    }
+
+    void rememberViewingRule(std::size_t slot, uint32_t value) {
+        if (slot == ViewingOptions::SCALE) lastExplicitScale = value;
+        if (viewingLocked() && !applyingViewingSettings) GlobalVar::settingParameter.reserve[slot] = value;
+    }
+
+    bool readingEnabled() const {
+        return hasCurrentImagePath() && ViewingOptions::enabled(
+            GlobalVar::settingParameter.reserve, ViewingOptions::READING);
+    }
+
+    bool readerHorizontal() const { return GlobalVar::settingParameter.reserve[ViewingOptions::AXIS] != 0; }
+    bool readerDouble() const { return GlobalVar::settingParameter.reserve[ViewingOptions::DOUBLE_PAGE] != 0; }
+    int readerViewportExtent() const { return readerHorizontal() ? winWidth : std::max(1, winHeight - 52); }
+
+    void resetReader() {
+        readerLayout = {};
+        readerSizes.clear(); readerTiles.clear(); readerCollection.clear();
+        readerOffset = readerCross = 0; readerEnlargement = 1;
+        readerAnchor = readerEnlargedGroup = -1;
+        readerDirty = true; readerWaiting = false;
+    }
+
+    void prepareReader() {
+        if (!readingEnabled()) return;
+        if (readerSizes.size() != imgFileList.size()) {
+            readerSizes.assign(imgFileList.size(), {});
+            readerTiles.clear(); readerDirty = true;
+        }
+        std::wstring folder = std::filesystem::path(imgFileList[curFileIdx]).parent_path().lexically_normal().wstring();
+        std::transform(folder.begin(), folder.end(), folder.begin(), std::towlower);
+        const auto collection = jarkUtils::wstringToUtf8(folder);
+        if (readerCollection != collection) {
+            readerCollection = collection;
+            readerShift = readingConfig.pairing(collection);
+            readerAnchor = curFileIdx;
+            readerDirty = true;
+        }
+        if (!readerDirty) return;
+        const int oldGroup = ReadingPolicy::groupForPage(curFileIdx, readerDouble(), readerShift);
+        const double oldOffset = oldGroup < static_cast<int>(readerLayout.groups.size()) ?
+            readerLayout.groups[oldGroup].offset : readerOffset;
+        const auto* settings = GlobalVar::settingParameter.reserve;
+        std::vector<double> scales(ReadingPolicy::groupCount(static_cast<int>(imgFileList.size()), readerDouble(), readerShift), 0);
+        for (int g = 0; g < static_cast<int>(scales.size()); ++g) {
+            const auto pages = ReadingPolicy::pages(g, static_cast<int>(imgFileList.size()), readerDouble(), readerShift);
+            for (int page : pages) if (page >= 0) {
+                if (settings[ViewingOptions::SCALE] == 2) {
+                    const auto found = rememberedImageZoom.find(imgFileList[page]);
+                    const int64_t zoom = found == rememberedImageZoom.end() ?
+                        readingConfig.zoom(jarkUtils::wstringToUtf8(imgFileList[page])) : found->second;
+                    if (zoom > 0 && scales[g] == 0) scales[g] = double(zoom) / curPar.ZOOM_BASE;
+                }
+                if (settings[ViewingOptions::LONG_IMAGE] == 0 &&
+                    LongImagePolicy::isLong(static_cast<int>(readerSizes[page].width),
+                        static_cast<int>(readerSizes[page].height), std::max(1, winHeight - 52))) scales[g] = 1;
+            }
+        }
+        readerLayout = ReadingLayout::build(readerSizes, winWidth, std::max(1, winHeight - 52),
+            readerHorizontal(), readerDouble(), readerShift, settings[ViewingOptions::UPSCALE] != 0,
+            settings[ViewingOptions::SCALE] == 1, readerEnlargedGroup, readerEnlargement, 16, scales);
+        const int group = ReadingPolicy::groupForPage(curFileIdx, readerDouble(), readerShift);
+        if (group < static_cast<int>(readerLayout.groups.size())) {
+            if (readerAnchor >= 0) readerOffset = readerLayout.groups[group].offset;
+            else readerOffset += readerLayout.groups[group].offset - oldOffset;
+        }
+        readerOffset = ReadingLayout::clampOffset(readerOffset, readerLayout.total, readerViewportExtent());
+        readerAnchor = -1; readerDirty = false;
+    }
+
+    int readerNeighbor(int page, int direction) const {
+        if (readerLayout.groups.empty()) return page;
+        const int group = ReadingPolicy::groupForPage(page, readerDouble(), readerShift);
+        const int next = std::clamp(group + direction, 0, static_cast<int>(readerLayout.groups.size()) - 1);
+        if (next == group) return page;
+        const auto pages = ReadingPolicy::pages(next, static_cast<int>(imgFileList.size()), readerDouble(), readerShift);
+        return pages[0] >= 0 ? pages[0] : pages[1];
+    }
+
+    void focusReaderPage(int page) {
+        if (page < 0 || page >= static_cast<int>(imgFileList.size()) || page == curFileIdx) return;
+        readerScrolling = true;
+        switchToImage(page, page);
+        readerScrolling = false;
+        readerEnlargement = 1; readerEnlargedGroup = -1; readerCross = 0;
+        readerDirty = true;
+        operateQueue.push({ActionENUM::refresh});
+    }
+
+    void scrollReader(double delta) {
+        prepareReader();
+        readerOffset = ReadingLayout::clampOffset(readerOffset + delta, readerLayout.total, readerViewportExtent());
+        const int group = readerLayout.groupAt(readerOffset + readerViewportExtent() / 2.0);
+        if (group >= 0) {
+            const auto pages = ReadingPolicy::pages(group, static_cast<int>(imgFileList.size()), readerDouble(), readerShift);
+            if (curFileIdx != pages[0] && curFileIdx != pages[1]) focusReaderPage(pages[0] >= 0 ? pages[0] : pages[1]);
+        }
+        operateQueue.push({ActionENUM::refresh});
+    }
+
+    void applyReaderZoom(int64_t oldZoom, ActionENUM action) {
+        if (!readingEnabled()) return;
+        if (action == ActionENUM::zoomFit || action == ActionENUM::zoomActual) {
+            readerEnlargement = 1; readerEnlargedGroup = -1;
+            // 不锁定时这些命令只影响当前组，不能改默认缩放规则。
+            if (!viewingLocked() && action == ActionENUM::zoomActual) {
+                prepareReader();
+                const int group = ReadingPolicy::groupForPage(curFileIdx, readerDouble(), readerShift);
+                if (group < static_cast<int>(readerLayout.groups.size())) {
+                    readerEnlargedGroup = group;
+                    readerEnlargement = 1 / readerLayout.groups[group].scale;
+                }
+            }
+            readerDirty = true;
+        }
+        else if (oldZoom > 0 && curPar.zoomTarget != oldZoom &&
+            (heldZoomKey || action == ActionENUM::zoomIn || action == ActionENUM::zoomOut || action == ActionENUM::zoomPercent)) {
+            readerEnlargedGroup = ReadingPolicy::groupForPage(curFileIdx, readerDouble(), readerShift);
+            readerEnlargement = std::clamp(readerEnlargement * double(curPar.zoomTarget) / oldZoom, 0.01, 100.0);
+            readerDirty = true;
+        }
+    }
+
+    void placeReaderPage(bool right) {
+        prepareReader();
+        readerShift = ReadingPolicy::shiftForPage(curFileIdx, right);
+        readingConfig.setPairing(readerCollection, readerShift);
+        if (!readingConfig.save()) showToast(trW(L"未能保存双页配对", L"Could not save page pairing", L"未能儲存雙頁配對"));
+        readerEnlargement = 1; readerEnlargedGroup = -1;
+        readerAnchor = curFileIdx; readerDirty = true; readerTiles.clear();
+        prepareReader();
+        operateQueue.push({ActionENUM::refresh});
+    }
+
+    bool handleReaderClick(int x, int y) {
+        if (!readingEnabled()) return false;
+        prepareReader();
+        if (y >= winHeight - 44) {
+            const int button = std::clamp((x - 8) * 7 / std::max(1, winWidth - 16), 0, 6);
+            auto* options = GlobalVar::settingParameter.reserve;
+            if (button == 0) options[ViewingOptions::DOUBLE_PAGE] ^= 1;
+            else if (button == 1) options[ViewingOptions::AXIS] ^= 1;
+            else if (button == 2 || button == 3) { if (readerDouble()) placeReaderPage(button == 3); return true; }
+            else if (button == 4 || button == 5) {
+                const int page = readerNeighbor(curFileIdx, button == 4 ? -1 : 1);
+                if (page == curFileIdx) showBrowseBoundary(button == 5);
+                else switchToImage(page, page);
+                return true;
+            }
+            else options[ViewingOptions::READING] = 0;
+            readerAnchor = curFileIdx; readerDirty = true; readerTiles.clear();
+            readerEnlargement = 1; readerEnlargedGroup = -1; readerCross = 0;
+            applyViewingScale(true);
+            operateQueue.push({ActionENUM::refresh});
+            return true;
+        }
+        for (const auto& group : readerLayout.groups) {
+            if (group.offset + group.extent < readerOffset || group.offset > readerOffset + readerViewportExtent()) continue;
+            for (const auto& page : group.pages) {
+                const double px = page.x - (readerHorizontal() ? readerOffset : 0) + (readerHorizontal() ? 0 : readerCross);
+                const double py = page.y - (readerHorizontal() ? 0 : readerOffset) + (readerHorizontal() ? readerCross : 0);
+                if (page.index >= 0 && x >= px && x < px + page.width && y >= py && y < py + page.height) {
+                    focusReaderPage(page.index);
+                    break;
+                }
+            }
+        }
+        // 阅读画布上的点击不会关闭沉浸；仍允许随后拖动阅读画布。
+        presentationClickCandidate = false; mouseIsPressing = true;
+        mousePressPos = {x, y}; SetCapture(m_hWnd);
+        return true;
+    }
+
+    void beginHeldZoom(WPARAM key, int direction) {
+        if (heldZoomKey == key) return;
+        curPar.selectZoomTarget(curPar.zoomTarget);
+        heldZoomKey = key;
+        heldZoomDirection = direction;
+        heldZoomStart = 0;
+        heldZoomSince = std::chrono::steady_clock::now();
+        operateQueue.push({direction > 0 ? ActionENUM::zoomIn : ActionENUM::zoomOut});
+    }
+
+    void updateHeldZoom() {
+        if (!heldZoomKey) return;
+        if (GetForegroundWindow() != m_hWnd) { heldZoomKey = 0; return; }
+        if (!heldZoomStart) heldZoomStart = curPar.zoomTarget;
+        const double elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - heldZoomSince).count();
+        if (elapsed < ContinuousZoom::START_DELAY_MS) return;
+        const auto zoom = ContinuousZoom::at(heldZoomStart, heldZoomDirection, elapsed, curPar.ZOOM_BASE);
+        if (zoom == curPar.zoomTarget) return;
+        const double ratio = static_cast<double>(zoom) / std::max<int64_t>(1, curPar.zoomCur);
+        curPar.slideTarget = Cood{static_cast<int>(std::lround(curPar.slideCur.x * ratio)),
+            static_cast<int>(std::lround(curPar.slideCur.y * ratio))};
+        // 连续缩放每帧变化，不能把每一帧都加入离散档位表。
+        curPar.zoomTarget = zoom;
+        curPar.zoomCur = zoom;
+        curPar.slideCur = curPar.slideTarget;
+        curPar.zoomUserAdjusted = true;
+        smoothShift = false;
+        curPar.viewingTemporaryZoom = true;
+        showZoomIndicator();
+    }
+
+    bool frameControlsVisible() const {
+        if (!curPar.imageAssetPtr || curPar.imageAssetPtr->isLoading ||
+            curPar.imageAssetPtr->frames.size() < 2) return false;
+        const auto setting = GlobalVar::settingParameter.reserve[ViewingOptions::FRAMES];
+        return setting != 0 && (setting == 2 || curPar.isAnimationPause || frameDragging ||
+            extraUIFlag == ShowExtraUI::animationBar || std::chrono::steady_clock::now() < frameControlsUntil);
+    }
+
+    void seekAnimationFrame(int frame) {
+        if (curPar.imageAssetPtr->frames.empty()) return;
+        if (!curPar.isAnimationPause) toggleAnimationPause();
+        curPar.curFrameIdx = std::clamp(frame, 0, curPar.curFrameIdxMax);
+        frameControlsUntil = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        operateQueue.push({ActionENUM::refresh});
+    }
+
+    void seekFrameAt(int x) {
+        const auto rect = AnimationControls::bar(winWidth, overlayDpi());
+        const int padding = 12 * overlayDpi() / 96;
+        seekAnimationFrame(AnimationControls::frameAt(x, rect.x + padding,
+            rect.width - padding * 2 - 80 * overlayDpi() / 96, curPar.curFrameIdxMax + 1));
+    }
+
+    void drawReadingCanvas(cv::Mat& canvas) {
+        prepareReader();
+        fillCanvasBackground(canvas);
+        readerWaiting = false;
+        if (readerLayout.groups.empty()) return;
+        const int extent = readerViewportExtent();
+        const int first = readerLayout.groupAt(readerOffset);
+        const int last = readerLayout.groupAt(readerOffset + extent);
+        std::unordered_map<int, std::shared_ptr<ImageAsset>> resolved;
+        const auto sourceFor = [&](int page, bool force = false) {
+            auto asset = page == curFileIdx && displayedImagePath == imgFileList[page] ?
+                curPar.imageAssetPtr : imgDB.tryGetPtr(imgFileList[page]);
+            if (!asset || asset->isLoading) {
+                if (!force && readerTiles.contains(page) && !readerTiles[page].image.empty() && !readerTiles[page].loading &&
+                    page != curFileIdx && readerSizes[page].width > 0) return std::shared_ptr<ImageAsset>{};
+                auto full = imgDB.tryGetOrRequest(imgFileList[page], imgFileList[page]);
+                if (full) asset = full;
+                else if (!asset) asset = imgDB.tryMakePreviewAsset(imgFileList[page]);
+            }
+            if (asset && (asset->primaryFrame.empty() && asset->frames.empty())) asset.reset();
+            if (asset && asset->isLoading && asset->sourceWidth <= 0) asset.reset();
+            return asset;
+        };
+        for (int g = first; g <= last; ++g) for (const auto& page : readerLayout.groups[g].pages) {
+            if (page.index < 0) continue;
+            auto asset = sourceFor(page.index);
+            if ((!asset && !readerTiles.contains(page.index)) || (asset && asset->isLoading)) readerWaiting = true;
+            if (asset) {
+                resolved[page.index] = asset;
+                const cv::Mat& frame = page.index == curFileIdx && asset->format == ImageFormat::Animated && !asset->frames.empty() ?
+                    asset->frames.front() : (asset->primaryFrame.empty() ? asset->frames.front() : asset->primaryFrame);
+                const int rotation = rotationStore.get(imgFileList[page.index]);
+                const int w = asset->sourceWidth > 0 ? asset->sourceWidth : frame.cols;
+                const int h = asset->sourceHeight > 0 ? asset->sourceHeight : frame.rows;
+                const ReadingLayout::Size size = (rotation & 1) ? ReadingLayout::Size{double(h), double(w)} :
+                    ReadingLayout::Size{double(w), double(h)};
+                if (readerSizes[page.index].width != size.width || readerSizes[page.index].height != size.height) {
+                    readerSizes[page.index] = size; readerDirty = true;
+                }
+            }
+        }
+        prepareReader();
+        const int visibleFirst = readerLayout.groupAt(readerOffset);
+        const int visibleLast = readerLayout.groupAt(readerOffset + extent);
+        std::unordered_set<int> visiblePages;
+        const auto quality = GlobalVar::settingParameter.reserve[ViewingOptions::QUALITY];
+        for (int g = visibleFirst; g <= visibleLast; ++g) for (const auto& page : readerLayout.groups[g].pages) {
+            if (page.index < 0) continue;
+            visiblePages.insert(page.index);
+            const int x = static_cast<int>(std::lround(page.x - (readerHorizontal() ? readerOffset : 0) +
+                (readerHorizontal() ? 0 : readerCross)));
+            const int y = static_cast<int>(std::lround(page.y - (readerHorizontal() ? 0 : readerOffset) +
+                (readerHorizontal() ? readerCross : 0)));
+            const int w = std::max(1, static_cast<int>(std::lround(page.width)));
+            const int h = std::max(1, static_cast<int>(std::lround(page.height)));
+            const cv::Rect target = cv::Rect{x, y, w, h} & cv::Rect{0, 0, canvas.cols, std::max(1, canvas.rows - 52)};
+            if (target.empty()) continue;
+            auto& tile = readerTiles[page.index];
+            auto asset = resolved.contains(page.index) ? resolved[page.index] : sourceFor(page.index);
+            const int rotation = rotationStore.get(imgFileList[page.index]);
+            const bool flipH = page.index == curFileIdx && curPar.flipHorizontal;
+            const bool flipV = page.index == curFileIdx && curPar.flipVertical;
+            const bool cached = !tile.image.empty() && tile.cropX == target.x - x && tile.cropY == target.y - y &&
+                tile.width == w && tile.height == h && tile.rotation == rotation && tile.quality == quality &&
+                tile.flipHorizontal == flipH && tile.flipVertical == flipV &&
+                tile.image.cols == target.width && tile.image.rows == target.height;
+            if (!asset && !cached) asset = sourceFor(page.index, true);
+            if (!asset) {
+                if (cached) {
+                    for (int row = 0; row < target.height; ++row) {
+                        auto* out = canvas.ptr<uint32_t>(target.y + row);
+                        const auto* in = tile.image.ptr<uint32_t>(row);
+                        for (int col = 0; col < target.width; ++col) { intUnion pixel; pixel.u32 = in[col];
+                            out[target.x + col] = compositeSrcPx4(pixel, target.x + col, target.y + row); }
+                    }
+                }
+                else { readerWaiting = true;
+                    textDrawer.putAlignCenter(canvas, target, tr("正在加载", "Loading", "正在載入"), 0xFFAAAAAA); }
+                continue;
+            }
+            if (asset->isLoading) readerWaiting = true;
+            const cv::Mat& frame = page.index == curFileIdx && !asset->frames.empty() &&
+                asset->format == ImageFormat::Animated ? asset->frames[std::clamp(curPar.curFrameIdx, 0,
+                    static_cast<int>(asset->frames.size()) - 1)] :
+                (asset->primaryFrame.empty() ? asset->frames.front() : asset->primaryFrame);
+            if (frame.empty() || (frame.channels() != 1 && frame.channels() != 3 && frame.channels() != 4)) continue;
+            if (tile.source != frame.data || tile.width != w || tile.height != h || tile.rotation != rotation ||
+                tile.cropX != target.x - x || tile.cropY != target.y - y || tile.quality != quality ||
+                tile.flipHorizontal != flipH || tile.flipVertical != flipV ||
+                tile.image.cols != target.width || tile.image.rows != target.height) {
+                tile.image.create(target.height, target.width, CV_8UC4);
+                const double sx = double((rotation & 1) ? frame.rows : frame.cols) / w;
+                const double sy = double((rotation & 1) ? frame.cols : frame.rows) / h;
+                concurrency::parallel_for(0, target.height, [&](int row) {
+                    auto* out = tile.image.ptr<uint32_t>(row);
+                    for (int col = 0; col < target.width; ++col) {
+                        const auto point = ImageViewTransform::displayToSource(
+                            (target.x - x + col + 0.5) * sx - 0.5,
+                            (target.y - y + row + 0.5) * sy - 0.5,
+                            frame.cols, frame.rows, rotation, flipH, flipV);
+                        if (quality == 0 && (sx > 1 || sy > 1))
+                            out[col] = ImageResampling::areaBgra(frame.ptr(), frame.cols, frame.rows,
+                                frame.step, frame.channels(), point.x + 0.5 - sx / 2, point.y + 0.5 - sy / 2,
+                                point.x + 0.5 + sx / 2, point.y + 0.5 + sy / 2);
+                        else if (quality == 2) {
+                            const int px = std::clamp(static_cast<int>(std::lround(point.x)), 0, frame.cols - 1);
+                            const int py = std::clamp(static_cast<int>(std::lround(point.y)), 0, frame.rows - 1);
+                            out[col] = ImageResampling::areaBgra(frame.ptr(), frame.cols, frame.rows, frame.step,
+                                frame.channels(), px, py, px + 1, py + 1);
+                        }
+                        else out[col] = ImageInterpolation::sampleBilinearBgra(frame.ptr(), frame.cols, frame.rows,
+                            frame.step, frame.channels(), static_cast<float>(point.x), static_cast<float>(point.y));
+                    }
+                });
+                tile.source = frame.data; tile.width = w; tile.height = h; tile.rotation = rotation;
+                tile.cropX = target.x - x; tile.cropY = target.y - y; tile.quality = quality;
+                tile.flipHorizontal = flipH; tile.flipVertical = flipV;
+            }
+            tile.loading = asset->isLoading;
+            for (int row = 0; row < target.height; ++row) {
+                auto* out = canvas.ptr<uint32_t>(target.y + row);
+                const auto* in = tile.image.ptr<uint32_t>(row);
+                for (int col = 0; col < target.width; ++col) { intUnion pixel; pixel.u32 = in[col];
+                    out[target.x + col] = compositeSrcPx4(pixel, target.x + col, target.y + row); }
+            }
+            if (page.index == curFileIdx) cv::rectangle(canvas, target, jarkUtils::to_cv_scalar(0xFF62B8FF), 1);
+        }
+        std::erase_if(readerTiles, [&](const auto& entry) { return !visiblePages.contains(entry.first); });
+        const int activeGroup = ReadingPolicy::groupForPage(curFileIdx, readerDouble(), readerShift);
+        if (activeGroup < static_cast<int>(readerLayout.groups.size())) {
+            const auto scale = readerLayout.groups[activeGroup].scale;
+            const auto zoom = std::max<int64_t>(1, static_cast<int64_t>(std::llround(scale * curPar.ZOOM_BASE)));
+            const auto displayZoom = curPar.sourceWidth > 0 ? ZoomPolicy::previewZoom(zoom, curPar.sourceWidth, curPar.width) : zoom;
+            if (curPar.zoomTarget != displayZoom) { curPar.setZoom(displayZoom); operateQueue.push({ActionENUM::refresh}); }
+        }
+        if (visibleLast + 1 < static_cast<int>(readerLayout.groups.size()))
+            for (const auto& page : readerLayout.groups[visibleLast + 1].pages)
+                if (page.index >= 0) imgDB.requestPreload(imgFileList[page.index]);
+    }
+
+    void drawReaderControls(cv::Mat& canvas) {
+        if (!readingEnabled()) return;
+        const int width = std::max(1, (canvas.cols - 16) / 7);
+        const int y = canvas.rows - 44;
+        auto surface = roundedSurface(canvas.cols - 16, 36, 6, 0xEF1B202Au, 0xFF526077u);
+        jarkUtils::overlayImg(canvas, surface, 8, y);
+        const char* labels[] = {readerDouble() ? tr("双页", "Double", "雙頁") : tr("单页", "Single", "單頁"),
+            readerHorizontal() ? tr("横向", "Horizontal", "橫向") : tr("纵向", "Vertical", "縱向"),
+            tr("放左", "Left", "放左"), tr("放右", "Right", "放右"),
+            tr("上一组", "Previous", "上一組"), tr("下一组", "Next", "下一組"),
+            tr("退出阅读", "Exit reader", "退出閱讀")};
+        for (int i = 0; i < 7; ++i) textDrawer.putAlignCenter(canvas,
+            {8 + width * i, y, width, 36}, labels[i], 0xFFF0F3F8);
+    }
+
     // 当前显示的是模糊预览（而不是 1×1 空占位、也不是真图）
     bool showingPreview() const {
         return curPar.imageAssetPtr && curPar.imageAssetPtr->isLoading &&
             curPar.imageAssetPtr->primaryFrame.cols > 1;
+    }
+
+    bool viewingLocked() const {
+        return ViewingOptions::enabled(GlobalVar::settingParameter.reserve, ViewingOptions::LOCK);
+    }
+
+    std::pair<int, int> sourceDisplaySize() const {
+        const int width = curPar.sourceWidth > 0 ? curPar.sourceWidth : curPar.width;
+        const int height = curPar.sourceHeight > 0 ? curPar.sourceHeight : curPar.height;
+        return (curPar.rotation & 1) ? std::pair{height, width} : std::pair{width, height};
+    }
+
+    bool currentIsLongImage() const {
+        const auto [width, height] = sourceDisplaySize();
+        return hasCurrentImagePath() && LongImagePolicy::isLong(width, height, winHeight);
+    }
+
+    void constrainLongImage() {
+        if (!currentIsLongImage() || !ViewingOptions::enabled(
+            GlobalVar::settingParameter.reserve, ViewingOptions::CENTER_LONG)) return;
+        const int height = (curPar.rotation & 1) ? curPar.width : curPar.height;
+        curPar.slideTarget.x = curPar.slideCur.x = 0;
+        curPar.slideTarget.y = LongImagePolicy::clampVertical(curPar.slideTarget.y,
+            height, winHeight, curPar.zoomTarget, curPar.ZOOM_BASE);
+        curPar.slideCur.y = LongImagePolicy::clampVertical(curPar.slideCur.y,
+            height, winHeight, curPar.zoomCur, curPar.ZOOM_BASE);
+    }
+
+    void applyViewingScale(bool force = false) {
+        if (!hasCurrentImagePath() || curPar.width <= 1 || curPar.height <= 1) return;
+        const auto* options = GlobalVar::settingParameter.reserve;
+        const bool longImage = currentIsLongImage();
+        const bool originalLong = longImage && options[ViewingOptions::LONG_IMAGE] ==
+            static_cast<uint32_t>(ViewingOptions::LongImage::OriginalTop);
+        if (!force && !viewingLocked() && !longImage) return;
+        const auto [width, height] = sourceDisplaySize();
+        int64_t zoom = curPar.ZOOM_BASE;
+        const auto rule = static_cast<ViewingOptions::Scale>(options[ViewingOptions::SCALE]);
+        if (!originalLong && (longImage || rule == ViewingOptions::Scale::Fit))
+            zoom = ZoomPolicy::fitWindowZoom(width, height, winWidth, winHeight,
+                curPar.ZOOM_BASE, options[ViewingOptions::UPSCALE] != 0);
+        else if (!originalLong && rule == ViewingOptions::Scale::Remember) {
+            const auto found = rememberedImageZoom.find(imgFileList[curFileIdx]);
+            const int64_t saved = readingConfig.zoom(jarkUtils::wstringToUtf8(imgFileList[curFileIdx]));
+            zoom = found == rememberedImageZoom.end() && saved <= 0 ?
+                ZoomPolicy::fitWindowZoom(width, height, winWidth, winHeight, curPar.ZOOM_BASE,
+                    options[ViewingOptions::UPSCALE] != 0) :
+                (found == rememberedImageZoom.end() ? saved : found->second);
+        }
+        curPar.setZoom(curPar.sourceWidth > 0 ?
+            ZoomPolicy::previewZoom(zoom, curPar.sourceWidth, curPar.width) : zoom);
+        curPar.viewingTemporaryZoom = false;
+        curPar.slideCur = curPar.slideTarget = Cood{};
+        if (originalLong) {
+            const int drawnHeight = (curPar.rotation & 1) ? curPar.width : curPar.height;
+            curPar.slideCur.y = curPar.slideTarget.y = LongImagePolicy::verticalLimit(
+                drawnHeight, winHeight, curPar.zoomCur, curPar.ZOOM_BASE);
+        }
+        constrainLongImage();
     }
 
     void initCurrentImageParameters() {
@@ -803,6 +1321,7 @@ public:
             applyPresentationImageLayout();
         else if (framedWindowAnchored)
             applyAnchoredWindowImageLayout();
+        applyViewingScale();
     }
 
     void persistCurrentRotation() {
@@ -838,34 +1357,33 @@ public:
     // 按设置里的打开方式决定初始窗口形态。沉浸预览是默认；另外两种都留在带边框的
     // 普通窗口里，区别只是窗口尺寸从哪来。
     void applyConfiguredOpenMode() {
-        const auto mode = ViewerOptions::openMode(GlobalVar::settingParameter.reserve);
-        if (ViewerOptions::opensImmersive(mode) || !hasCurrentImagePath()) {
+        struct RestoreFlag { bool& flag; ~RestoreFlag() { flag = false; } } restore{applyingViewingSettings};
+        applyingViewingSettings = true;
+        configuredWindowReady = true;
+        const auto* options = GlobalVar::settingParameter.reserve;
+        const auto shape = static_cast<ViewingOptions::Shape>(options[ViewingOptions::SHAPE]);
+        if (!hasCurrentImagePath()) return;
+        if (shape == ViewingOptions::Shape::Immersive) {
             enterPresentationMode();
+            applyViewingScale();
             return;
         }
-
-        if (mode == ViewerOptions::OpenMode::FitImage)
+        if (shape == ViewingOptions::Shape::Fullscreen) {
+            if (presentationMode) exitPresentationMode();
+            if (!jarkUtils::IsFullScreen(m_hWnd)) jarkUtils::ToggleFullScreen(m_hWnd);
+            applyViewingScale(true);
+            return;
+        }
+        if (presentationMode) exitPresentationMode();
+        if (jarkUtils::IsFullScreen(m_hWnd)) jarkUtils::ToggleFullScreen(m_hWnd);
+        framedWindowAnchored = false;
+        if (options[ViewingOptions::WINDOW] == static_cast<uint32_t>(ViewingOptions::Window::MatchImage)
+            && !curPar.imageAssetPtr->isLoading && !readingEnabled() &&
+            !(currentIsLongImage() && options[ViewingOptions::LONG_IMAGE] == 0)) {
             applyImageFittedWindowSize();
-        // RememberLastSize 不用做任何事：窗口创建时已经用了上次保存的 rect。
-
-        // 「窗口适应图片」和下面的「图片适应窗口」一样不能锚定：
-        // 锚定会按工作区重算缩放，把贴合好的那一对关系覆盖掉。
-        if (mode == ViewerOptions::OpenMode::FitImage) {
-            framedWindowAnchored = false;
-            operateQueue.push({ ActionENUM::refresh });
-            return;
+            fittedGeometryPath = imgFileList[curFileIdx];
         }
-
-        // 图片适应窗口：窗口不动，把图片整张缩进去，一眼看完，不用拖。
-        // 这一种不能锚定窗口——锚定那条路径会按工作区重算缩放，把这里算好的覆盖掉。
-        if (mode == ViewerOptions::OpenMode::FitImageInWindow) {
-            operateQueue.push({ ActionENUM::zoomFit });
-            framedWindowAnchored = false;
-            operateQueue.push({ ActionENUM::refresh });
-            return;
-        }
-
-        framedWindowAnchored = true;
+        else applyViewingScale(true);
         operateQueue.push({ ActionENUM::refresh });
     }
 
@@ -875,6 +1393,7 @@ public:
     // 而锚定那条路径（applyAnchoredWindowImageLayout）会按工作区重算缩放，
     // 把这里刚算好的覆盖掉——窗口变了、画面没跟上，于是四周露出一圈背景。
     void applyImageFittedWindowSize() {
+        if (presentationMode || jarkUtils::IsFullScreen(m_hWnd)) return;
         framedWindowAnchored = false;
 
         MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
@@ -959,6 +1478,10 @@ public:
     void applyPresentationImageLayout() {
         if (!presentationMode)
             return;
+        if (viewingLocked() || currentIsLongImage()) {
+            applyViewingScale(true);
+            return;
+        }
         presentationLayout = calculatePresentationLayout();
         if (presentationLayout.renderedWidth <= 0 || presentationLayout.renderedHeight <= 0)
             return;
@@ -1034,6 +1557,7 @@ public:
         presentationWindowedExtendedStyle = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_EXSTYLE));
         framedWindowAnchored = false;
         presentationMode = true;
+        rememberViewingRule(ViewingOptions::SHAPE, static_cast<uint32_t>(ViewingOptions::Shape::Immersive));
         imageInfoScrollOffset = 0;
 
         MONITORINFO monitorInfo{ .cbSize = sizeof(MONITORINFO) };
@@ -1073,6 +1597,7 @@ public:
             currentPresentationLayout, workWidth, workHeight);
 
         presentationMode = false;
+        rememberViewingRule(ViewingOptions::SHAPE, static_cast<uint32_t>(ViewingOptions::Shape::Normal));
         imageInfoScrollOffset = 0;
         framedWindowAnchored = true;
         presentationClickCandidate = false;
@@ -1165,6 +1690,7 @@ public:
     // （见 onWindowCreated），这里再 clear 一次会把在途的任务作废，白等一场。
     // 其他调用方（重新打开、重命名）必须清，旧路径的缓存和预览都已经失效。
     void initOpenFile(wstring filePath, bool keepWarmCache = false) {
+        resetReader();
         namespace fs = std::filesystem;
 
         stopSlideshow();
@@ -1251,6 +1777,7 @@ public:
         auto ready = imgDB.tryGetOrRequest(currentPath, nextPath);
         beginPendingImage(ready ? wstring{} : currentPath);
         adoptImage(ready ? ready : imgDB.makeLoadingAsset());
+        if (configuredWindowReady) applyConfiguredOpenMode();
     }
 
     // 切到另一张图。不阻塞等待解码：真图没好就先留着当前画面，
@@ -1258,6 +1785,10 @@ public:
     // 返回值表示画面是否已经换成新文件的内容（真图或模糊预览）——
     // 还停在上一张时做切图动画没有意义，跳过。
     bool switchToImage(int newIdx, int neighborIdx) {
+        if (readingEnabled() && !readerScrolling) {
+            readerAnchor = newIdx; readerDirty = true;
+            readerEnlargement = 1; readerEnlargedGroup = -1; readerCross = 0;
+        }
         curFileIdx = newIdx;
         const auto& targetPath = imgFileList[newIdx];
         const auto& neighborPath = imgFileList[neighborIdx];
@@ -1265,7 +1796,7 @@ public:
         if (auto ready = imgDB.tryGetOrRequest(targetPath, neighborPath)) {
             beginPendingImage({});
             adoptImage(ready);
-            return true;
+            return !readingEnabled();
         }
 
         // 先试试模糊预览，拿得到就立刻顶上，省掉一次「还是旧图」的中间态
@@ -1273,18 +1804,22 @@ public:
         if (auto preview = imgDB.tryMakePreviewAsset(targetPath)) {
             pendingPreviewShown = true;
             adoptImage(preview);
-            return true;
+            return !readingEnabled();
         }
         return false;
     }
 
     int neighborIndexBefore(int idx) const {
+        if (readingEnabled()) return readerNeighbor(idx, -1);
         const int count = (int)imgFileList.size();
-        return (idx + count - 1) % count;
+        return ViewingOptions::neighbor(idx, count, -1, ViewingOptions::enabled(
+            GlobalVar::settingParameter.reserve, ViewingOptions::LOOP));
     }
 
     int neighborIndexAfter(int idx) const {
-        return (idx + 1) % (int)imgFileList.size();
+        if (readingEnabled()) return readerNeighbor(idx, 1);
+        return ViewingOptions::neighbor(idx, static_cast<int>(imgFileList.size()), 1,
+            ViewingOptions::enabled(GlobalVar::settingParameter.reserve, ViewingOptions::LOOP));
     }
 
     // ---- 实况照片播放 ----
@@ -1397,6 +1932,16 @@ public:
     // 换上一张图（真图、模糊预览或占位）。上一张实况的声音先停；新图若是实况，
     // 每次打开都从头播放一遍，自动播放是否出声按设置（默认静音）。
     void adoptImage(std::shared_ptr<ImageAsset> asset) {
+        const auto path = hasCurrentImagePath() ? imgFileList[curFileIdx] : std::wstring{};
+        const bool preserveAdjustment = path == displayedImagePath && curPar.imageAssetPtr &&
+            curPar.imageAssetPtr->isLoading && curPar.zoomUserAdjusted;
+        const int64_t oldZoom = static_cast<int64_t>(std::llround(curPar.zoomTarget /
+            (curPar.previewToSource > 0 ? curPar.previewToSource : 1.0)));
+        const auto oldSlide = curPar.slideTarget;
+        const bool oldTemporaryZoom = curPar.viewingTemporaryZoom;
+        if (!displayedImagePath.empty() && curPar.imageAssetPtr && !curPar.imageAssetPtr->isLoading)
+            rememberedImageZoom[displayedImagePath] = oldZoom;
+        qualityCache.release(); qualitySource = nullptr;
         stopLivePlayback();
         liveBadgeHovered = false;
         curPar.imageAssetPtr = std::move(asset);
@@ -1404,6 +1949,23 @@ public:
         if (currentIsLivePhoto())
             curPar.imageAssetPtr->format = ImageFormat::Animated;
         initCurrentImageParameters();
+        displayedImagePath = path;
+        frameControlsUntil = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        if (preserveAdjustment) {
+            curPar.setZoom(curPar.sourceWidth > 0 ?
+                ZoomPolicy::previewZoom(oldZoom, curPar.sourceWidth, curPar.width) : oldZoom);
+            curPar.slideCur = curPar.slideTarget = oldSlide;
+            curPar.zoomUserAdjusted = true;
+            curPar.viewingTemporaryZoom = oldTemporaryZoom;
+        }
+        else if (hasInitWinSize && !path.empty() && !curPar.imageAssetPtr->isLoading &&
+            !presentationMode && !jarkUtils::IsFullScreen(m_hWnd) && !readingEnabled() && fittedGeometryPath != path &&
+            !(currentIsLongImage() && GlobalVar::settingParameter.reserve[ViewingOptions::LONG_IMAGE] == 0) &&
+            GlobalVar::settingParameter.reserve[ViewingOptions::WINDOW] == 1) {
+            applyImageFittedWindowSize();
+            fittedGeometryPath = path;
+        }
+        constrainLongImage();
         if (currentIsLivePhoto())
             startLivePlayback(ViewerOptions::livePhotoAutoSound(GlobalVar::settingParameter.reserve));
     }
@@ -1426,11 +1988,6 @@ public:
             pendingPreviewShown = false;
             adoptImage(ready);
             // 占位期间窗口是按默认尺寸摆的，真图到手才知道该多大。
-            if (!presentationMode &&
-                ViewerOptions::openMode(GlobalVar::settingParameter.reserve) ==
-                    ViewerOptions::OpenMode::FitImage) {
-                applyImageFittedWindowSize();
-            }
             operateQueue.push({ ActionENUM::refresh });
             return true;
         }
@@ -1513,6 +2070,30 @@ public:
         switch ((uint64_t)btnState)
         {
         case WM_LBUTTONDOWN: {//左键
+            if (frameControlsVisible()) {
+                const auto rect = AnimationControls::bar(winWidth, overlayDpi());
+                if (x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height) {
+                    frameControlsUntil = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+                    presentationClickCandidate = false;
+                    mouseIsPressing = false;
+                    if (y >= rect.y + rect.height / 2) {
+                        frameDragging = true;
+                        SetCapture(m_hWnd);
+                        seekFrameAt(x);
+                    }
+                    else {
+                        const int button = std::clamp((x - rect.x) * 4 / rect.width, 0, 3);
+                        if (button == 0) seekAnimationFrame(curPar.curFrameIdx - 1);
+                        else if (button == 1) toggleAnimationPause();
+                        else if (button == 2) seekAnimationFrame(curPar.curFrameIdx + 1);
+                        else { seekAnimationFrame(curPar.curFrameIdx);
+                            handleAnimationControl(extraUIRes.animationBarPlaying.cols * 7 / 8 +
+                                (winWidth - extraUIRes.animationBarPlaying.cols) / 2, 0); }
+                        operateQueue.push({ActionENUM::refresh});
+                    }
+                    return;
+                }
+            }
             if (presentationMode &&
                 OverlayLayout::presentationCloseRect(winWidth, winHeight, overlayDpi()).contains(x, y)) {
                 presentationClickCandidate = false;
@@ -1522,6 +2103,10 @@ public:
                 return;
             }
 
+            if (readingEnabled() && (y >= winHeight - 44 ||
+                !(showExif && imageInfoPanelRect.contains(cv::Point{x, y})))) {
+                if (handleReaderClick(x, y)) return;
+            }
             if (isHomeOpenButtonAt(x, y)) {
                 presentationClickCandidate = false;
                 mouseIsPressing = false;
@@ -1545,10 +2130,6 @@ public:
                     showExif = false;
                     imageInfoScrollOffset = 0;
                     operateQueue.push({ ActionENUM::refresh });
-                }
-                else if (imageInfoCopyRect.contains(cv::Point{ x, y })) {
-                    jarkUtils::copyToClipboard(
-                        jarkUtils::utf8ToWstring(curPar.imageAssetPtr->exifInfo));
                 }
                 return;
             }
@@ -1629,8 +2210,6 @@ public:
                 // 沉浸预览是铺满工作区的无边框半透明窗口，在那里改窗口尺寸没有意义，
                 // 看到的只会是「全屏透明状态下图片被缩小」。所以先退回带边框窗口，
                 // 再把窗口撑成图片的大小。
-                if (presentationMode)
-                    exitPresentationMode();
                 applyImageFittedWindowSize();
                 // 不能锚定：锚定那条路径（applyAnchoredWindowImageLayout）会按工作区
                 // 重算缩放，把刚刚贴合好的窗口与缩放这一对关系覆盖掉，窗口和画面就
@@ -1649,14 +2228,13 @@ public:
                     operateQueue.push({ ActionENUM::preImg });
                 else if (cursorPos == CursorPos::rightEdge)
                     operateQueue.push({ ActionENUM::nextImg });
-                else if (cursorPos == CursorPos::centerTop)
-                    handleAnimationControl(x, y);
                 break;
             }
             return;
         }
 
         case WM_RBUTTONDOWN: {//右键
+            rightClickMenuRequested = (wParam & MK_CONTROL) != 0;
             return;
         }
 
@@ -1686,6 +2264,12 @@ public:
         switch ((uint64_t)btnState)
         {
         case WM_LBUTTONUP: {//左键
+            if (frameDragging) {
+                seekFrameAt(x);
+                frameDragging = false;
+                ReleaseCapture();
+                return;
+            }
             if (windowDragActive) {
                 endWindowDrag();
                 operateQueue.push({ ActionENUM::refresh });
@@ -1719,8 +2303,14 @@ public:
         }
 
         case WM_RBUTTONUP: {//右键
-            if (GlobalVar::settingParameter.rightClickAction == 0) {
-                PostMessageW(m_hWnd, WM_CONTEXTMENU, 0, MAKELPARAM(x, y));
+            const bool controlHeld = rightClickMenuRequested || (wParam & MK_CONTROL) != 0;
+            rightClickMenuRequested = false;
+            if (ContextMenuPolicy::rightClickOpensMenu(
+                GlobalVar::settingParameter.rightClickAction, controlHeld)) {
+                POINT point{ x, y };
+                ClientToScreen(m_hWnd, &point);
+                PostMessageW(m_hWnd, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(m_hWnd),
+                    MAKELPARAM(point.x, point.y));
             }
             else {
                 operateQueue.push({ ActionENUM::requestExit });
@@ -1746,6 +2336,37 @@ public:
     }
 
     void OnMouseMove(WPARAM btnState, int x, int y) override {
+        if (frameDragging) { seekFrameAt(x); return; }
+        if (curPar.imageAssetPtr && !curPar.imageAssetPtr->frames.empty()) {
+            const auto rect = AnimationControls::bar(winWidth, overlayDpi());
+            if (x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height) {
+                frameControlsUntil = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+                operateQueue.push({ActionENUM::refresh});
+            }
+        }
+        if (readingEnabled() && mouseIsPressing) {
+            const Cood delta = Cood{x, y} - mousePressPos;
+            mousePressPos = Cood{x, y};
+            const int speed = ViewingOptions::dragFactor(GlobalVar::settingParameter.reserve);
+            scrollReader(-(readerHorizontal() ? delta.x : delta.y) * speed);
+            readerCross += (readerHorizontal() ? delta.y : delta.x) * speed;
+            const int group = ReadingPolicy::groupForPage(curFileIdx, readerDouble(), readerShift);
+            if (group < static_cast<int>(readerLayout.groups.size())) {
+                const auto& pages = readerLayout.groups[group].pages;
+                if (readerHorizontal()) {
+                    const double height = std::max(pages[0].height, pages[1].height);
+                    readerCross = std::clamp(readerCross, -std::max(0.0, height - (winHeight - 52.0)), 0.0);
+                }
+                else {
+                    const double width = pages[0].width + (readerDouble() ? pages[1].width + 16 : 0);
+                    const double limit = std::max(0.0, (width - winWidth) / 2);
+                    readerCross = std::clamp(readerCross, -limit, limit);
+                    if (currentIsLongImage() && ViewingOptions::enabled(GlobalVar::settingParameter.reserve,
+                        ViewingOptions::CENTER_LONG)) readerCross = 0;
+                }
+            }
+            return;
+        }
         mousePos = { x, y };
         SetCursor(LoadCursorW(nullptr, isHomeOpenButtonAt(x, y) ? IDC_HAND : IDC_ARROW));
 
@@ -1893,7 +2514,8 @@ public:
         if (mouseIsPressing) {
             auto slideDelta = mousePos - mousePressPos;
             mousePressPos = mousePos;
-            operateQueue.push({ ActionENUM::slide, slideDelta.x, slideDelta.y });
+            const int factor = ViewingOptions::dragFactor(GlobalVar::settingParameter.reserve);
+            operateQueue.push({ ActionENUM::slide, slideDelta.x * factor, slideDelta.y * factor });
         }
     }
 
@@ -1922,6 +2544,10 @@ public:
             return;
         }
 
+        if (readingEnabled() && !(nFlags & MK_CONTROL)) {
+            scrollReader(-double(zDelta) / WHEEL_DELTA * readerViewportExtent() / 5.0);
+            return;
+        }
         const int panStep = std::max(1, (winWidth + winHeight) / 16);
         const auto* shortcutStorage = GlobalVar::settingParameter.reserve;
         const auto modifiedWheel = WheelInput::resolve(nFlags, zDelta, panStep,
@@ -2095,11 +2721,7 @@ public:
             ctrlIsPressing = false;
             break;
         case ShortcutConfig::Action::PreviousFrame:
-            if (curPar.imageAssetPtr->format == ImageFormat::Animated && curPar.isAnimationPause) {
-                if (--curPar.curFrameIdx < 0)
-                    curPar.curFrameIdx = curPar.curFrameIdxMax;
-                operateQueue.push({ ActionENUM::refresh });
-            }
+            seekAnimationFrame(curPar.curFrameIdx - 1);
             break;
         case ShortcutConfig::Action::ToggleAnimation:
             if (curPar.imageAssetPtr->format == ImageFormat::Animated) {
@@ -2108,14 +2730,10 @@ public:
             }
             break;
         case ShortcutConfig::Action::NextFrame:
-            if (curPar.imageAssetPtr->format == ImageFormat::Animated && curPar.isAnimationPause) {
-                if (++curPar.curFrameIdx > curPar.curFrameIdxMax)
-                    curPar.curFrameIdx = 0;
-                operateQueue.push({ ActionENUM::refresh });
-            }
+            seekAnimationFrame(curPar.curFrameIdx + 1);
             break;
         case ShortcutConfig::Action::CopyImageInfo:
-            jarkUtils::copyToClipboard(jarkUtils::utf8ToWstring(curPar.imageAssetPtr->exifInfo));
+            copyCurrentImageInfo();
             break;
         case ShortcutConfig::Action::ToggleFullscreen:
             if (presentationMode)
@@ -2142,10 +2760,10 @@ public:
             panByKeyboard(-panStep, 0);
             break;
         case ShortcutConfig::Action::ZoomIn:
-            operateQueue.push({ ActionENUM::zoomIn });
+            beginHeldZoom(keyValue, 1);
             break;
         case ShortcutConfig::Action::ZoomOut:
-            operateQueue.push({ ActionENUM::zoomOut });
+            beginHeldZoom(keyValue, -1);
             break;
         case ShortcutConfig::Action::ZoomFit:
             // 派发 zoomFit 而不是 zoomFix：后者是「适合窗口 ←→ 100%」来回切，
@@ -2221,6 +2839,16 @@ public:
     }
 
     void OnKeyDown(WPARAM keyValue) override {
+        const auto menuModifiers = currentShortcutModifiers();
+        if (ContextMenuPolicy::isFixedMenuKey(static_cast<uint32_t>(keyValue),
+            (menuModifiers & ShortcutConfig::MODIFIER_CONTROL) != 0,
+            (menuModifiers & ShortcutConfig::MODIFIER_SHIFT) != 0,
+            (menuModifiers & ShortcutConfig::MODIFIER_ALT) != 0)) {
+            if (zoomTextEditing)
+                commitZoomTextEdit();
+            PostMessageW(m_hWnd, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(m_hWnd), -1);
+            return;
+        }
         if (zoomTextEditing) {
             if (keyValue == VK_RETURN) {
                 commitZoomTextEdit();
@@ -2386,7 +3014,7 @@ public:
             }break;
 
             case 'C': { // 复制图像信息到剪贴板
-                jarkUtils::copyToClipboard(jarkUtils::utf8ToWstring(curPar.imageAssetPtr->exifInfo));
+                copyCurrentImageInfo();
             }break;
 
             case 'F':
@@ -2514,6 +3142,10 @@ public:
     }
 
     void OnKeyUp(WPARAM keyValue) override {
+        if (keyValue == heldZoomKey) {
+            heldZoomKey = 0;
+            curPar.selectZoomTarget(curPar.zoomTarget);
+        }
         switch (keyValue)
         {
         case VK_CONTROL: {
@@ -2544,8 +3176,64 @@ public:
         }
     }
 
+    void OnContextMenuClosed() override {
+        // 原生菜单的消息循环会消耗 Ctrl 松开消息；同步真实状态，避免后续快捷键卡住。
+        ctrlIsPressing = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        rightClickMenuRequested = false;
+        heldZoomKey = 0;
+    }
+
+    void OnFocusLost() override {
+        heldZoomKey = 0;
+        ctrlIsPressing = false;
+        frameDragging = false;
+        mouseIsPressing = false;
+        endWindowDrag();
+        if (GetCapture() == m_hWnd) ReleaseCapture();
+    }
+
+    void OnDestroy() override {
+        if (hasCurrentImagePath() && !displayedImagePath.empty() && !curPar.imageAssetPtr->isLoading &&
+            GlobalVar::settingParameter.reserve[ViewingOptions::SCALE] == 2) {
+            rememberedImageZoom[displayedImagePath] = static_cast<int64_t>(std::llround(
+                curPar.zoomTarget / (curPar.previewToSource > 0 ? curPar.previewToSource : 1.0)));
+            for (const auto& [path, zoom] : rememberedImageZoom)
+                readingConfig.setZoom(jarkUtils::wstringToUtf8(path), zoom);
+            if (!readingConfig.save())
+                showToast(trW(L"未能保存图片缩放记录", L"Could not save image zooms", L"未能儲存圖片縮放紀錄"));
+        }
+        D3D11App::OnDestroy();
+    }
+
     void OnContextMenuCommand(WPARAM wParam) override {
         const int commandId = static_cast<int>(LOWORD(wParam));
+        if (commandId >= static_cast<int>(ContextMenu::readerToggle) && commandId <= static_cast<int>(ContextMenu::readerNext)) {
+            auto* options = GlobalVar::settingParameter.reserve;
+            const auto command = static_cast<ContextMenu>(commandId);
+            if (command == ContextMenu::readerPlaceLeft || command == ContextMenu::readerPlaceRight) {
+                if (readingEnabled() && readerDouble()) placeReaderPage(command == ContextMenu::readerPlaceRight);
+                return;
+            }
+            if (command == ContextMenu::readerPrevious || command == ContextMenu::readerNext) {
+                if (readingEnabled()) {
+                    prepareReader();
+                    const int page = readerNeighbor(curFileIdx, command == ContextMenu::readerPrevious ? -1 : 1);
+                    if (page == curFileIdx) showBrowseBoundary(command == ContextMenu::readerNext);
+                    else { switchToImage(page, page); operateQueue.push({ActionENUM::refresh}); }
+                }
+                return;
+            }
+            if (command == ContextMenu::readerToggle) options[ViewingOptions::READING] ^= 1;
+            if (command == ContextMenu::readerVertical) options[ViewingOptions::AXIS] = 0;
+            if (command == ContextMenu::readerHorizontal) options[ViewingOptions::AXIS] = 1;
+            if (command == ContextMenu::readerSingle) options[ViewingOptions::DOUBLE_PAGE] = 0;
+            if (command == ContextMenu::readerDouble) options[ViewingOptions::DOUBLE_PAGE] = 1;
+            readerAnchor = curFileIdx; readerDirty = true; readerTiles.clear(); readerCross = 0;
+            readerEnlargement = 1; readerEnlargedGroup = -1;
+            applyViewingScale(true);
+            operateQueue.push({ActionENUM::refresh});
+            return;
+        }
         const int firstEditorCommand = static_cast<int>(ContextMenu::editImageFirst);
         const int lastEditorCommand = static_cast<int>(ContextMenu::editImageLast);
         if (commandId >= firstEditorCommand && commandId <= lastEditorCommand) {
@@ -2583,7 +3271,7 @@ public:
         }break;
 
         case ContextMenu::copyImageInfo: {
-            jarkUtils::copyToClipboard(jarkUtils::utf8ToWstring(curPar.imageAssetPtr->exifInfo));
+            copyCurrentImageInfo();
         }break;
 
         case ContextMenu::copyImagePath: {
@@ -2819,8 +3507,12 @@ public:
         if (winWidth == width && winHeight == height)
             return;
 
+        const int oldHeight = winHeight;
+        const bool originalLong = currentIsLongImage() &&
+            GlobalVar::settingParameter.reserve[ViewingOptions::LONG_IMAGE] == 0;
         winWidth = width;
         winHeight = height;
+        readerDirty = true;
 
         if (winWidth != mainCanvas.cols || winHeight != mainCanvas.rows) {
             mainCanvas = cv::Mat(winHeight, winWidth, CV_8UC4);
@@ -2828,7 +3520,20 @@ public:
         }
 
         if (hasInitWinSize) {
-            if (presentationMode)
+            if (readingEnabled())
+                curPar.updateZoomList(winWidth, winHeight);
+            else if (!applyingViewingSettings && originalLong && currentIsLongImage()) {
+                // 客户区变高时保留图片顶部相对窗口的位置，不重新跳回图顶。
+                curPar.slideCur.y += (oldHeight - static_cast<int>(height)) / 2;
+                curPar.slideTarget.y += (oldHeight - static_cast<int>(height)) / 2;
+                curPar.updateZoomList(winWidth, winHeight);
+                constrainLongImage();
+            }
+            else if (!applyingViewingSettings && curPar.viewingTemporaryZoom)
+                curPar.updateZoomList(winWidth, winHeight);
+            else if (viewingLocked() || currentIsLongImage())
+                applyViewingScale(true);
+            else if (presentationMode)
                 applyPresentationImageLayout();
             else if (framedWindowAnchored)
                 applyAnchoredWindowImageLayout();
@@ -2841,7 +3546,8 @@ public:
             else
                 srcImg = curPar.imageAssetPtr->frames[curPar.curFrameIdx];
 
-            drawCanvas(srcImg, mainCanvas);
+            if (readingEnabled()) drawReadingCanvas(mainCanvas);
+            else drawCanvas(srcImg, mainCanvas);
             drawExifInfo(mainCanvas);
         }
         else {
@@ -2858,7 +3564,7 @@ public:
 
     uint32_t getSrcPx1(const cv::Mat& srcImg, int srcX, int srcY) const {
         uchar srcPx = srcImg.at<uchar>(srcY, srcX);
-        if (curPar.zoomCur < curPar.ZOOM_BASE && srcY > 0 && srcX > 0) { // 简单临近像素平均
+        if (isLowZoom && srcY > 0 && srcX > 0) { // 简单临近像素平均
             const uchar px0 = srcImg.at<uchar>(srcY - 1, srcX - 1);
             const uchar px1 = srcImg.at<uchar>(srcY - 1, srcX);
             const uchar px2 = srcImg.at<uchar>(srcY, srcX - 1);
@@ -3079,9 +3785,53 @@ public:
         }
 
         const float zoomInvert = (float)curPar.ZOOM_BASE / curPar.zoomCur;
-        isLowZoom = curPar.zoomCur < curPar.ZOOM_BASE;
+        const auto quality = static_cast<ViewingOptions::Quality>(GlobalVar::settingParameter.reserve[ViewingOptions::QUALITY]);
+        isLowZoom = curPar.zoomCur < curPar.ZOOM_BASE && quality != ViewingOptions::Quality::Pixel;
 
-        if (curPar.zoomCur > curPar.ZOOM_BASE &&
+        if (quality == ViewingOptions::Quality::High && curPar.zoomCur < curPar.ZOOM_BASE &&
+            (srcImg.channels() == 1 || srcImg.channels() == 3 || srcImg.channels() == 4)) {
+            const int w = std::max(1, static_cast<int>(std::llround(double(srcImg.cols) * curPar.zoomCur / curPar.ZOOM_BASE)));
+            const int h = std::max(1, static_cast<int>(std::llround(double(srcImg.rows) * curPar.zoomCur / curPar.ZOOM_BASE)));
+            // 缓存限 32 MiB；极长图只算可见区域，不构造巨大的缩放位图。
+            const bool useCache = int64_t(w) * h <= 8 * 1024 * 1024;
+            if (useCache && (qualitySource != srcImg.data || qualityZoom != curPar.zoomCur ||
+                qualityCache.cols != w || qualityCache.rows != h)) {
+                qualityCache.create(h, w, CV_8UC4);
+                const double scaleX = double(srcImg.cols) / w, scaleY = double(srcImg.rows) / h;
+                concurrency::parallel_for(0, h, [&](int y) {
+                    auto* row = qualityCache.ptr<uint32_t>(y);
+                    for (int x = 0; x < w; ++x) row[x] = ImageResampling::areaBgra(srcImg.ptr(),
+                        srcImg.cols, srcImg.rows, srcImg.step, srcImg.channels(),
+                        x * scaleX, y * scaleY, (x + 1) * scaleX, (y + 1) * scaleY);
+                });
+                qualitySource = srcImg.data; qualityZoom = curPar.zoomCur;
+            }
+            concurrency::parallel_for(yStart, yEnd, [&](int y) {
+                auto* destination = canvas.ptr<uint32_t>(y);
+                for (int x = xStart; x < xEnd; ++x) {
+                    intUnion pixel;
+                    if (useCache) {
+                        const auto point = ImageViewTransform::displayToSource(double(x - deltaW), double(y - deltaH),
+                            w, h, curPar.rotation, curPar.flipHorizontal, curPar.flipVertical);
+                        pixel.u32 = qualityCache.at<uint32_t>(std::clamp(static_cast<int>(point.y), 0, h - 1),
+                            std::clamp(static_cast<int>(point.x), 0, w - 1));
+                    }
+                    else {
+                        const auto point = ImageViewTransform::displayToSource((x - deltaW + 0.5) * zoomInvert - 0.5,
+                            (y - deltaH + 0.5) * zoomInvert - 0.5, srcImg.cols, srcImg.rows,
+                            curPar.rotation, curPar.flipHorizontal, curPar.flipVertical);
+                        const double radius = zoomInvert / 2;
+                        pixel.u32 = ImageResampling::areaBgra(srcImg.ptr(), srcImg.cols, srcImg.rows,
+                            srcImg.step, srcImg.channels(), point.x + 0.5 - radius, point.y + 0.5 - radius,
+                            point.x + 0.5 + radius, point.y + 0.5 + radius);
+                    }
+                    destination[x] = compositeSrcPx4(pixel, x, y);
+                }
+            });
+            return;
+        }
+
+        if (curPar.zoomCur > curPar.ZOOM_BASE && quality != ViewingOptions::Quality::Pixel &&
             (srcImg.channels() == 1 || srcImg.channels() == 3 || srcImg.channels() == 4)) {
             const int channels = srcImg.channels();
             concurrency::parallel_for(yStart, yEnd, [&](int y) {
@@ -3792,7 +4542,6 @@ public:
     void drawImageInfoCard(cv::Mat& canvas, ImageInfoPresentation::Mode mode) {
         imageInfoPanelRect = {};
         imageInfoCloseRect = {};
-        imageInfoCopyRect = {};
         imageInfoContentHeight = 0;
         imageInfoViewportHeight = 0;
         if (canvas.cols < 160 || canvas.rows < 160)
@@ -3836,7 +4585,7 @@ public:
 
         // 直方图只在完整面板里出现：紧凑面板本来就窄，再塞一块图会把字挤没。
         // 也可以在设置里关掉——纯色截图之类的场景它没有信息量。
-        const bool showHistogram = !compact &&
+        const bool showHistogram =
             ViewerOptions::infoHistogramEnabled(GlobalVar::settingParameter.reserve) &&
             !currentImageHistogram().empty();
         const int histogramHeight = scaled(ImageHistogram::LOGICAL_HEIGHT);
@@ -3972,44 +4721,15 @@ public:
                 jarkUtils::to_cv_scalar(palette.muted), -1, cv::LINE_AA);
         }
 
-        const int footerY = panel.y + panel.height - footerHeight;
-        cv::line(canvas, { panel.x, footerY }, { panel.x + panel.width, footerY },
-            jarkUtils::to_cv_scalar(palette.border), 1);
-        if (!compact) {
-            textDrawer.putAlignLeft(canvas,
-                { panel.x + padding, footerY, scaled(90), footerHeight },
-                "Tab · I", palette.muted);
-        }
-
-        const int copyWidth = scaled(compact ? 96 : 108);
-        const int copyHeight = scaled(24);
-        imageInfoCopyRect = {
-            panel.x + panel.width - padding - copyWidth,
-            footerY + (footerHeight - copyHeight) / 2,
-            copyWidth, copyHeight
-        };
-        auto copyButton = roundedSurface(copyWidth, copyHeight, scaled(7),
-            light ? 0x14000000u : 0x18FFFFFFu);
-        jarkUtils::overlayImg(canvas, copyButton, imageInfoCopyRect.x, imageInfoCopyRect.y);
-        const cv::Rect keyRect{ imageInfoCopyRect.x + scaled(8), imageInfoCopyRect.y + scaled(4),
-            scaled(20), copyHeight - scaled(8) };
-        cv::rectangle(canvas, keyRect, jarkUtils::to_cv_scalar(palette.border), 1, cv::LINE_AA);
-        textDrawer.putAlignCenter(canvas, keyRect, "C", palette.secondary);
-        textDrawer.putAlignLeft(canvas,
-            { keyRect.x + keyRect.width + scaled(7), imageInfoCopyRect.y,
-                imageInfoCopyRect.width - keyRect.width - scaled(18), copyHeight },
-            tr("复制全部", "Copy all", "複製全部"), palette.muted);
     }
 
     void drawExifInfo(cv::Mat& canvas) {
         if (!showExif) {
             imageInfoPanelRect = {};
             imageInfoCloseRect = {};
-            imageInfoCopyRect = {};
             return;
         }
-        drawImageInfoCard(canvas, presentationMode ? ImageInfoPresentation::Mode::Full :
-            ImageInfoPresentation::Mode::Compact);
+        drawImageInfoCard(canvas, ImageInfoPresentation::Mode::Full);
     }
 
     static cv::Mat roundedSurface(int width, int height, int radius,
@@ -4422,6 +5142,90 @@ public:
         textDrawer.putAlignCenter(canvas, { textX, rect.y, textRight - textX, rect.height }, label, 0xFFFFFFFFu);
     }
 
+    // 仅测试环境变量启用：记录实际生产状态，普通运行不做任何探针文件 I/O。
+    void writeInteractionProbe() {
+        if (interactionProbePath.empty()) return;
+        std::ostringstream state;
+        const auto put = [&](const char* name, auto value) { state << name << '=' << value << '\n'; };
+        put("image", hasCurrentImagePath() ? curFileIdx + 1 : 0);
+        put("count", imgFileList.size());
+        put("width", winWidth); put("height", winHeight); put("dpi", overlayDpi());
+        put("shape", presentationMode ? 1 : (jarkUtils::IsFullScreen(m_hWnd) ? 2 : 0));
+        put("zoom", curPar.displayZoomPercent());
+        put("zoomExact", double(curPar.zoomTarget) / curPar.ZOOM_BASE /
+            (curPar.previewToSource > 0 ? curPar.previewToSource : 1));
+        put("slideX", curPar.slideCur.x); put("slideY", curPar.slideCur.y);
+        const auto rect = currentImageRect();
+        put("left", rect.left); put("top", rect.top); put("right", rect.right); put("bottom", rect.bottom);
+        put("loading", curPar.imageAssetPtr->isLoading || !pendingImagePath.empty() ? 1 : 0); put("rotation", curPar.rotation);
+        for (size_t slot = ViewingOptions::BASE; slot < ViewingOptions::BASE + ViewingOptions::SLOTS; ++slot)
+            put(("pref" + std::to_string(slot)).c_str(), GlobalVar::settingParameter.reserve[slot]);
+        put("lock", viewingLocked() ? 1 : 0); put("long", currentIsLongImage() ? 1 : 0);
+        put("reader", readingEnabled() ? 1 : 0); put("axis", readerHorizontal() ? 1 : 0);
+        put("double", readerDouble() ? 1 : 0); put("shift", readerShift);
+        put("readerOffset", readerOffset); put("readerCross", readerCross);
+        put("readerTotal", readerLayout.total); put("readerWaiting", readerWaiting ? 1 : 0);
+        put("tiles", readerTiles.size());
+        const int group = ReadingPolicy::groupForPage(curFileIdx, readerDouble(), readerShift);
+        put("group", group);
+        if (readingEnabled() && group < static_cast<int>(readerLayout.groups.size())) {
+            for (int i = 0; i < 2; ++i) {
+                const auto& page = readerLayout.groups[group].pages[i];
+                const std::string prefix = i == 0 ? "pageLeft" : "pageRight";
+                put((prefix + "Index").c_str(), page.index + 1);
+                put((prefix + "X").c_str(), page.x - (readerHorizontal() ? readerOffset : 0) +
+                    (readerHorizontal() ? 0 : readerCross));
+                put((prefix + "Y").c_str(), page.y - (readerHorizontal() ? 0 : readerOffset) +
+                    (readerHorizontal() ? readerCross : 0));
+                put((prefix + "W").c_str(), page.width); put((prefix + "H").c_str(), page.height);
+            }
+        }
+        put("frames", curPar.imageAssetPtr->frames.size()); put("frame", curPar.curFrameIdx + 1);
+        put("paused", curPar.isAnimationPause ? 1 : 0); put("frameBar", frameControlsVisible() ? 1 : 0);
+        const auto bar = AnimationControls::bar(winWidth, overlayDpi());
+        put("frameBarX", bar.x); put("frameBarY", bar.y); put("frameBarW", bar.width); put("frameBarH", bar.height);
+        put("info", showExif ? 1 : 0); put("histogram", showExif &&
+            ViewerOptions::infoHistogramEnabled(GlobalVar::settingParameter.reserve) &&
+            !currentImageHistogram().empty() ? 1 : 0);
+        put("footer", ImageInfoPresentation::LOGICAL_FOOTER_HEIGHT);
+        put("heldKey", heldZoomKey); put("ctrl", ctrlIsPressing ? 1 : 0);
+        put("zoomLevels", curPar.zoomList.size());
+        put("reserveOffset", offsetof(SettingParameter, reserve));
+        const auto text = state.str();
+        if (text == interactionProbeLast) return;
+        const std::wstring temporary = interactionProbePath + L".tmp";
+        std::ofstream file(std::filesystem::path(temporary), std::ios::binary | std::ios::trunc);
+        if (!file) return;
+        file << text;
+        file.close();
+        if (MoveFileExW(temporary.c_str(), interactionProbePath.c_str(), MOVEFILE_REPLACE_EXISTING))
+            interactionProbeLast = text;
+    }
+
+    void drawFrameControls(cv::Mat& canvas) {
+        if (!frameControlsVisible()) return;
+        const auto rect = AnimationControls::bar(canvas.cols, overlayDpi());
+        const int padding = std::max(1, 12 * overlayDpi() / 96);
+        auto surface = roundedSurface(rect.width, rect.height, padding, 0xE51B202Au, 0xFF526077u);
+        jarkUtils::overlayImg(canvas, surface, rect.x, rect.y);
+        const char* labels[] = {tr("上一帧", "Previous", "上一影格"),
+            curPar.isAnimationPause ? tr("播放", "Play", "播放") : tr("暂停", "Pause", "暫停"),
+            tr("下一帧", "Next", "下一影格"), tr("保存帧", "Save frame", "儲存影格")};
+        for (int i = 0; i < 4; ++i)
+            textDrawer.putAlignCenter(canvas, {rect.x + rect.width * i / 4, rect.y,
+                rect.width / 4, rect.height / 2}, labels[i], 0xFFF0F3F8);
+        const int left = rect.x + padding;
+        const int width = std::max(1, rect.width - padding * 2 - 80 * overlayDpi() / 96);
+        const int y = rect.y + rect.height * 3 / 4;
+        cv::line(canvas, {left, y}, {left + width - 1, y}, jarkUtils::to_cv_scalar(0xFF667080), std::max(2, padding / 3));
+        const int current = curPar.curFrameIdxMax > 0 ? left + width * curPar.curFrameIdx / curPar.curFrameIdxMax : left;
+        cv::line(canvas, {left, y}, {current, y}, jarkUtils::to_cv_scalar(0xFF62B8FF), std::max(2, padding / 3));
+        cv::circle(canvas, {current, y}, std::max(3, padding / 3), jarkUtils::to_cv_scalar(0xFFEAF4FF), -1, cv::LINE_AA);
+        const auto count = std::format("{} / {}", curPar.curFrameIdx + 1, curPar.curFrameIdxMax + 1);
+        textDrawer.putAlignCenter(canvas, {left + width, rect.y + rect.height / 2,
+            rect.width - width - padding, rect.height / 2}, count.c_str(), 0xFFF0F3F8);
+    }
+
     void drawExtraUI(cv::Mat& canvas) {
         const int canvasHeight = canvas.rows;
         const int canvasWidth = canvas.cols;
@@ -4429,6 +5233,8 @@ public:
             return;
 
         drawLoadingBadge(canvas);
+        drawFrameControls(canvas);
+        drawReaderControls(canvas);
         drawToast(canvas);
         drawLivePhotoBadge(canvas);
 
@@ -4441,6 +5247,7 @@ public:
 
         switch (extraUIFlag) {
         case ShowExtraUI::bottomToolbar: {
+            if (readingEnabled()) break;
             drawViewerToolbar(canvas);
         } break;
         case ShowExtraUI::leftArrow:
@@ -4461,8 +5268,7 @@ public:
                 iconBox);
         } break;
         case ShowExtraUI::animationBar: {
-            auto& img = curPar.isAnimationPause ? extraUIRes.animationBarPausing : extraUIRes.animationBarPlaying;
-            jarkUtils::overlayImg(canvas, img, (canvasWidth - img.cols) / 2, 0);
+            // 新控制栏统一绘制，包含逐帧按钮、帧号与进度条。
         } break;
         case ShowExtraUI::none:
             break;
@@ -4539,6 +5345,23 @@ public:
             DwmSetWindowAttribute(m_hWnd, 20, &themeMode, sizeof(BOOL));
             operateQueue.push({ ActionENUM::refresh });
         }
+        if (ViewingOptions::changed && !Setting::isWorking) {
+            const uint32_t changes = ViewingOptions::changed;
+            ViewingOptions::changed = 0;
+            auto* options = GlobalVar::settingParameter.reserve;
+            if ((changes & 8) && viewingLocked() && !lockWasApplied) {
+                if (!(changes & 16)) options[ViewingOptions::SHAPE] = static_cast<uint32_t>(presentationMode ?
+                    ViewingOptions::Shape::Immersive : (jarkUtils::IsFullScreen(m_hWnd) ?
+                        ViewingOptions::Shape::Fullscreen : ViewingOptions::Shape::Normal));
+                if (!(changes & 32)) options[ViewingOptions::SCALE] = lastExplicitScale;
+            }
+            if (changes & 32) lastExplicitScale = options[ViewingOptions::SCALE];
+            lockWasApplied = viewingLocked();
+            if (changes & 1) { fittedGeometryPath.clear(); applyConfiguredOpenMode(); applyViewingScale(true); }
+            if (changes & 2) readerAnchor = curFileIdx;
+            readerDirty = true; readerTiles.clear(); qualityCache.release(); qualitySource = nullptr;
+            operateQueue.push({ActionENUM::refresh});
+        }
 
         if (GlobalVar::isNeedReloadImageCache) {
             GlobalVar::isNeedReloadImageCache = false;
@@ -4575,18 +5398,23 @@ public:
         }
 
         auto operateAction = operateQueue.get();
+        const int64_t oldReaderZoom = curPar.zoomTarget;
         if (operateAction.action == ActionENUM::none &&
             curPar.zoomCur == curPar.zoomTarget &&
             curPar.slideCur == curPar.slideTarget &&
             zoomIndicatorStartedAt == std::chrono::steady_clock::time_point{} &&
+            heldZoomKey == 0 &&
+            (!readingEnabled() || !readerWaiting) &&
             (curPar.imageAssetPtr->format != ImageFormat::Animated || 
                 (curPar.imageAssetPtr->format == ImageFormat::Animated && curPar.isAnimationPause))) {
 
+            writeInteractionProbe();
             Sleep(1); // Windows机制限制，实际时长最小只能 15.6ms
             return;
         }
 
         if (operateAction.action == ActionENUM::printImage) {
+            if (!requireCurrentPixels()) return;
             if (Printer::isWorking) {
                 jarkUtils::activateWindow(Printer::hwnd);
             }
@@ -4646,6 +5474,7 @@ public:
         }
 
         if (operateAction.action == ActionENUM::copyImage) {
+            if (!requireCurrentPixels()) return;
             cv::Mat source;
             if (curPar.imageAssetPtr->format == ImageFormat::None ||
                 curPar.imageAssetPtr->format == ImageFormat::Still)
@@ -4714,6 +5543,7 @@ public:
             }
 
             const int targetIdx = neighborIndexBefore(curFileIdx);
+            if (targetIdx == curFileIdx) { showBrowseBoundary(false); break; }
             if (switchToImage(targetIdx, neighborIndexBefore(targetIdx))) {
                 if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
                     mainCanvasSlideToPreAnimationVertical();      // 竖直滑动
@@ -4743,6 +5573,7 @@ public:
             }
 
             const int targetIdx = neighborIndexAfter(curFileIdx);
+            if (targetIdx == curFileIdx) { showBrowseBoundary(true); break; }
             if (switchToImage(targetIdx, neighborIndexAfter(targetIdx))) {
                 if (GlobalVar::settingParameter.switchImageAnimationMode == 1)
                     mainCanvasSlideToNextAnimationVertical();   // 竖直滑动
@@ -4843,6 +5674,7 @@ public:
                 }
                 curPar.zoomTarget = zoomNext;
                 curPar.zoomUserAdjusted = true;
+                curPar.viewingTemporaryZoom = true;
                 smoothShift = true;
                 showZoomIndicator();
             }
@@ -4858,6 +5690,7 @@ public:
                 }
                 curPar.zoomTarget = zoomNext;
                 curPar.zoomUserAdjusted = true;
+                curPar.viewingTemporaryZoom = true;
                 smoothShift = true;
                 showZoomIndicator();
             }
@@ -4873,6 +5706,7 @@ public:
             if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
                 computeZoomSlide(zoomNext);
             curPar.selectZoomTarget(zoomNext);
+            curPar.viewingTemporaryZoom = true;
             smoothShift = true;
             showZoomIndicator();
         } break;
@@ -4887,15 +5721,18 @@ public:
                 computeZoomSlide(zoomNext);
             curPar.selectZoomTarget(zoomNext);
             curPar.zoomUserAdjusted = true;
+            curPar.viewingTemporaryZoom = true;
             smoothShift = true;
         } break;
 
         case ActionENUM::zoomFit: {
+            rememberViewingRule(ViewingOptions::SCALE, static_cast<uint32_t>(ViewingOptions::Scale::Fit));
             const auto zoomNext = curPar.fitWindowZoom(winWidth, winHeight);
             if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
                 computeZoomSlide(zoomNext);
             curPar.selectZoomTarget(zoomNext);
             curPar.zoomUserAdjusted = true;
+            curPar.viewingTemporaryZoom = false;
             // 完整显示就该居中，不留偏移（Cood 的赋值返回 void，不能连等）
             curPar.slideTarget = Cood{};
             curPar.slideCur = Cood{};
@@ -4904,11 +5741,13 @@ public:
         } break;
 
         case ActionENUM::zoomActual: {
+            rememberViewingRule(ViewingOptions::SCALE, static_cast<uint32_t>(ViewingOptions::Scale::Actual));
             const auto zoomNext = curPar.ZOOM_BASE;
             if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
                 computeZoomSlide(zoomNext);
             curPar.selectZoomTarget(zoomNext);
             curPar.zoomUserAdjusted = true;
+            curPar.viewingTemporaryZoom = false;
             smoothShift = true;
             showZoomIndicator();
         } break;
@@ -5015,6 +5854,8 @@ public:
         } break;
         }
 
+        updateHeldZoom();
+        applyReaderZoom(oldReaderZoom, operateAction.action);
         if (curPar.zoomCur != curPar.zoomTarget || curPar.slideCur != curPar.slideTarget) {
             if (GlobalVar::settingParameter.isAllowZoomAnimation && smoothShift) {
                 static auto animationStart = std::chrono::steady_clock::now();
@@ -5054,6 +5895,7 @@ public:
             }
         }
 
+        constrainLongImage();
         cv::Mat srcImg;
         if (curPar.imageAssetPtr->format == ImageFormat::None ||
             curPar.imageAssetPtr->format == ImageFormat::Still) {
@@ -5102,13 +5944,20 @@ public:
         // 画面要在标题算完之后再画：全屏信息条显示的就是这一行标题，
         // 内容由同一个 build() 生成，两处永远不会写成两种格式。
         currentTitleText = title;
-        drawCanvas(srcImg, mainCanvas);
+        if (readingEnabled()) drawReadingCanvas(mainCanvas);
+        else drawCanvas(srcImg, mainCanvas);
         drawExifInfo(mainCanvas);
         drawExtraUI(mainCanvas);
         drawFullscreenInfoBar(mainCanvas);
         drawZoomIndicator(mainCanvas);
 
         updateMainCanvas();
+        if (configuredWindowReady && viewingLocked() && hasCurrentImagePath() && !applyingViewingSettings &&
+            !Setting::isWorking && ViewingOptions::changed == 0)
+            GlobalVar::settingParameter.reserve[ViewingOptions::SHAPE] = static_cast<uint32_t>(presentationMode ?
+                ViewingOptions::Shape::Immersive : (jarkUtils::IsFullScreen(m_hWnd) ?
+                    ViewingOptions::Shape::Fullscreen : ViewingOptions::Shape::Normal));
+        writeInteractionProbe();
 
         if (curPar.imageAssetPtr->format == ImageFormat::Animated && curPar.isAnimationPause == false) {
             if (delayRemain <= 0)
@@ -5312,6 +6161,59 @@ static int runPngDecodeSelfTest(const std::wstring& directory, const std::wstrin
     }
     result << "OK\tcompared=" << compared << "\tskipped=" << skipped << '\n';
     return 0;
+}
+
+// 固定菜单键的生产路由自检。
+// 修改的只是自检线程的键盘状态，不向用户桌面发送按键；仍走生产 OnKeyDown。
+static int runMenuKeySelfTest(const std::wstring& resultPath) {
+    std::ofstream result(std::filesystem::path(resultPath), std::ios::trunc);
+    if (!result)
+        return 3;
+    MSG message{};
+    PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE); // 建立本线程消息队列
+    BYTE original[256]{};
+    if (!GetKeyboardState(original))
+        return 3;
+    struct RestoreKeys {
+        BYTE* state;
+        ~RestoreKeys() { SetKeyboardState(state); }
+    } restore{ original };
+    auto app = std::make_unique<YeImageViewerApp>();
+    auto* bindings = GlobalVar::settingParameter.reserve;
+    for (std::size_t index = 0; index < ShortcutConfig::DEFAULT_BINDINGS.size(); ++index)
+        bindings[ShortcutConfig::BINDING_BASE_INDEX + index] = 0;
+    // 直接制造旧配置冲突，验证即使绕过校验，固定入口仍先于「退出」执行。
+    bindings[ShortcutConfig::BINDING_BASE_INDEX +
+        ShortcutConfig::actionIndex(ShortcutConfig::Action::CloseViewer)] =
+        ShortcutConfig::binding(VK_F10, ShortcutConfig::MODIFIER_SHIFT);
+    int failures = 0;
+    int cases = 0;
+    for (uint32_t rightClickAction : { 0u, 1u }) {
+        GlobalVar::settingParameter.rightClickAction = rightClickAction;
+        for (uint32_t modifiers : { ShortcutConfig::MODIFIER_SHIFT, 0u,
+            ShortcutConfig::MODIFIER_SHIFT | ShortcutConfig::MODIFIER_CONTROL,
+            ShortcutConfig::MODIFIER_SHIFT | ShortcutConfig::MODIFIER_ALT }) {
+            BYTE keys[256]{};
+            keys[VK_SHIFT] = (modifiers & ShortcutConfig::MODIFIER_SHIFT) ? 0x80 : 0;
+            keys[VK_CONTROL] = (modifiers & ShortcutConfig::MODIFIER_CONTROL) ? 0x80 : 0;
+            keys[VK_MENU] = (modifiers & ShortcutConfig::MODIFIER_ALT) ? 0x80 : 0;
+            const bool set = SetKeyboardState(keys) != FALSE;
+            app->ctrlIsPressing = keys[VK_CONTROL] != 0;
+            app->OnKeyDown(VK_F10);
+            const bool posted = PeekMessageW(&message, nullptr,
+                WM_CONTEXTMENU, WM_CONTEXTMENU, PM_REMOVE) != FALSE;
+            const bool expected = modifiers == ShortcutConfig::MODIFIER_SHIFT;
+            const bool passed = set && posted == expected &&
+                (!posted || message.lParam == -1) &&
+                app->operateQueue.get().action == ActionENUM::none;
+            result << (passed ? "PASS" : "FAIL") << '\t' << rightClickAction
+                << '\t' << modifiers << '\n';
+            ++cases;
+            if (!passed) ++failures;
+        }
+    }
+    result << "SUMMARY\t" << cases << '\t' << failures << '\n';
+    return failures == 0 ? 0 : 2;
 }
 
 // 用真实字体与真实绘制路径验证：按测得宽度绘制不得把完整提示变成末尾省略号。
@@ -5638,6 +6540,13 @@ int WINAPI wWinMain(
     if (arguments != nullptr && argumentCount == 4
         && std::wstring_view(arguments[1]) == L"--png-decode-selftest") {
         const int selfTestResult = runPngDecodeSelfTest(arguments[2], arguments[3]);
+        ::LocalFree(arguments);
+        ::CoUninitialize();
+        return selfTestResult;
+    }
+    if (arguments != nullptr && argumentCount == 3
+        && std::wstring_view(arguments[1]) == L"--menu-key-selftest") {
+        const int selfTestResult = runMenuKeySelfTest(arguments[2]);
         ::LocalFree(arguments);
         ::CoUninitialize();
         return selfTestResult;

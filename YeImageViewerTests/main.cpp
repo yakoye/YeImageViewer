@@ -41,6 +41,14 @@
 #include "UiLanguage.h"
 #include "ShortcutConfig.h"
 #include "ViewerOptions.h"
+#include "ViewingOptions.h"
+#include "LongImagePolicy.h"
+#include "ReadingPolicy.h"
+#include "ReadingConfig.h"
+#include "ContinuousZoom.h"
+#include "AnimationControls.h"
+#include "ImageResampling.h"
+#include "ReadingLayout.h"
 #include "TextRenderingPolicy.h"
 #include "ToolbarCommand.h"
 #include "WheelInput.h"
@@ -1317,6 +1325,140 @@ void expectImageViewTransform() {
         combined.x == 3 && combined.y == 5);
 }
 
+void expectViewingPolicies() {
+    const std::array<ReadingLayout::Size, 5> sizes{{{800, 1200}, {1200, 800}, {600, 900}, {400, 1600}, {160, 80}}};
+    for (bool horizontal : {false, true}) for (bool doubled : {false, true}) for (int shift : {0, 1}) {
+        const auto layout = ReadingLayout::build(sizes, 900, 650, horizontal, doubled, shift, false, false);
+        bool valid = layout.groups.size() == ReadingPolicy::groupCount(5, doubled, shift);
+        int seen[5]{};
+        double previous = -1;
+        for (const auto& group : layout.groups) {
+            valid &= group.offset > previous && group.extent > 0 && group.scale > 0 && group.scale <= 1;
+            previous = group.offset;
+            for (const auto& page : group.pages) if (page.index >= 0) {
+                ++seen[page.index];
+                valid &= page.width > 0 && page.height > 0 &&
+                    std::abs(page.width / page.height - sizes[page.index].width / sizes[page.index].height) < 1e-9;
+            }
+        }
+        for (int n : seen) valid &= n == 1;
+        passOrFail("continuous layouts retain all pages and aspect ratios in every axis/page/alignment combination", valid);
+    }
+    const auto vertical = ReadingLayout::build(sizes, 900, 650, false, false, 0, false, false);
+    passOrFail("continuous reading clamps scroll bounds and locates the next group",
+        ReadingLayout::clampOffset(-10, vertical.total, 650) == 0 &&
+        ReadingLayout::clampOffset(1e9, vertical.total, 650) == vertical.total - 650 &&
+        vertical.groupAt(vertical.groups[1].offset) == 1);
+    const auto enlarged = ReadingLayout::build(sizes, 900, 650, false, false, 0, false, false, 1, 2);
+    passOrFail("temporary reading enlargement affects only the current group",
+        enlarged.groups[0].scale == vertical.groups[0].scale &&
+        enlarged.groups[1].scale == vertical.groups[1].scale * 2 &&
+        enlarged.groups[2].scale == vertical.groups[2].scale);
+    const std::array<ReadingLayout::Size, 3> smallPages{{{40, 30}, {40, 30}, {40, 30}}};
+    const auto tight = ReadingLayout::build(smallPages, 900, 650, false, false, 0, false, false);
+    const auto tightHorizontal = ReadingLayout::build(smallPages, 900, 650, true, false, 0, false, false);
+    passOrFail("continuous pages join at their edges instead of adding viewport-sized blank gaps",
+        tight.groups[0].extent == 62 && tight.groups[1].pages[0].y - tight.groups[0].pages[0].y == 78 &&
+        tightHorizontal.groups[0].extent == 72 && tightHorizontal.groups[1].pages[0].x - tightHorizontal.groups[0].pages[0].x == 88);
+    const auto configPath = std::filesystem::temp_directory_path() /
+        ("YeViewerReader-" + std::to_string(GetCurrentProcessId()) + ".db");
+    {
+        std::ofstream file(configPath, std::ios::binary | std::ios::trunc);
+        const std::string head(4096, 'R'); file << head;
+    }
+    ConfigFile::writeLines(configPath.wstring(), {"editor.0.name=Paint", "target.copy.active=2", "rotation.sample=1"});
+    ReadingConfig readerConfig;
+    readerConfig.load(configPath.wstring());
+    readerConfig.setPairing("C:/一本书", 1);
+    readerConfig.setZoom("C:/一本书/01.png", 131072);
+    const bool saved = readerConfig.save();
+    ReadingConfig reloaded;
+    reloaded.load(configPath.wstring());
+    const auto lines = ConfigFile::readLines(configPath.wstring());
+    std::ifstream configFile(configPath, std::ios::binary);
+    std::string header(4096, '\0'); configFile.read(header.data(), 4096); configFile.close();
+    passOrFail("reader preferences persist per collection without changing the fixed header or foreign configuration keys",
+        saved && reloaded.pairing("C:/一本书") == 1 && reloaded.pairing("C:/另一本") == 0 &&
+        reloaded.zoom("C:/一本书/01.png") == 131072 && header == std::string(4096, 'R') &&
+        std::ranges::find(lines, "editor.0.name=Paint") != lines.end() &&
+        std::ranges::find(lines, "target.copy.active=2") != lines.end() &&
+        std::ranges::find(lines, "rotation.sample=1") != lines.end());
+    std::error_code configError; std::filesystem::remove(configPath, configError);
+    const int64_t base = 65536;
+    passOrFail("continuous zoom measures elapsed time, not the number of repeated keyboard messages",
+        ContinuousZoom::at(base, 1, 280, base) == base &&
+        ContinuousZoom::at(base, 1, 1280, base) == base * 4 &&
+        ContinuousZoom::at(base, -1, 1280, base) == base / 4);
+    passOrFail("continuous zoom clamps long key holds to valid limits",
+        ContinuousZoom::at(base, 1, 50000, base) == base * 100 &&
+        ContinuousZoom::at(base, -1, 50000, base) == base / 100);
+    passOrFail("frame progress maps both endpoints and the exact middle without frame overflow",
+        AnimationControls::frameAt(10, 10, 101, 71) == 0 &&
+        AnimationControls::frameAt(60, 10, 101, 71) == 35 &&
+        AnimationControls::frameAt(111, 10, 101, 71) == 70 &&
+        AnimationControls::frameAt(200, 0, 0, 0) == 0);
+    const std::array<uint8_t, 8> transparentEdge{255, 0, 0, 0, 0, 0, 255, 255};
+    passOrFail("high-quality area filtering uses premultiplied alpha at transparent edges",
+        ImageResampling::areaBgra(transparentEdge.data(), 2, 1, 8, 4, 0, 0, 2, 1) == 0x80FF0000u);
+    std::array<uint8_t, 64> checker{};
+    for (int y = 0; y < 8; ++y) for (int x = 0; x < 8; ++x) checker[y * 8 + x] = (x + y) % 2 ? 255 : 0;
+    passOrFail("area filtering suppresses aliasing rather than picking a single checkerboard corner",
+        ImageResampling::areaBgra(checker.data(), 8, 8, 8, 1, 0, 0, 8, 8) == 0xFF808080u);
+    std::array<uint32_t, 777> storage{};
+    ViewerOptions::initialize(storage.data(), storage.size());
+    storage[ViewingOptions::BASE - 1] = 0x12345678;
+    storage[ViewingOptions::BASE + ViewingOptions::SLOTS] = 0x23456789;
+    ViewingOptions::initialize(storage.data(), storage.size(), false);
+    passOrFail("new viewing storage does not overlap earlier settings or adjacent reserve fields",
+        storage[ViewingOptions::BASE - 1] == 0x12345678 &&
+        storage[ViewingOptions::BASE + ViewingOptions::SLOTS] == 0x23456789 &&
+        storage[ViewingOptions::SHAPE] == 1 && storage[ViewingOptions::LONG_IMAGE] == 0);
+    storage[ViewingOptions::LOCK] = 1;
+    storage[ViewingOptions::SHAPE] = 2;
+    storage[ViewingOptions::SCALE] = 1;
+    ViewingOptions::initialize(storage.data(), storage.size());
+    passOrFail("locked viewing rules retain window shape and zoom rule across reinitialization",
+        storage[ViewingOptions::LOCK] == 1 && storage[ViewingOptions::SHAPE] == 2 &&
+        storage[ViewingOptions::SCALE] == 1);
+    std::array<uint32_t, 777> legacy{};
+    ViewerOptions::initialize(legacy.data(), legacy.size());
+    ViewerOptions::setOpenMode(legacy.data(), ViewerOptions::OpenMode::FitImage);
+    ViewingOptions::initialize(legacy.data(), legacy.size());
+    passOrFail("legacy fit-image settings migrate independently from the startup window shape",
+        legacy[ViewingOptions::SHAPE] == 0 && legacy[ViewingOptions::WINDOW] == 1 &&
+        legacy[ViewingOptions::LONG_IMAGE] == 1 && legacy[ViewingOptions::LOCK] == 0);
+    passOrFail("navigation clamps both ends without wrapping when disabled",
+        ViewingOptions::neighbor(0, 5, -1, false) == 0 &&
+        ViewingOptions::neighbor(4, 5, 1, false) == 4 &&
+        ViewingOptions::neighbor(0, 5, -1, true) == 4 &&
+        ViewingOptions::neighbor(0, 0, 1, true) == -1);
+    passOrFail("upscale is optional and never changes the default fit-window limit",
+        ZoomPolicy::fitWindowZoom(100, 100, 800, 600, 65536) == 65536 &&
+        ZoomPolicy::fitWindowZoom(100, 100, 800, 600, 65536, true) == 65536 * 6);
+    passOrFail("long-image detection excludes ordinary portraits, rotated landscapes and non-overflowing images",
+        LongImagePolicy::isLong(300, 3000, 800) && !LongImagePolicy::isLong(500, 1000, 800) &&
+        !LongImagePolicy::isLong(3000, 300, 800) && !LongImagePolicy::isLong(100, 400, 800));
+    passOrFail("long-image panning stops at top and bottom at each zoom",
+        LongImagePolicy::verticalLimit(3000, 800, 65536, 65536) == 1100 &&
+        LongImagePolicy::clampVertical(2000, 3000, 800, 65536, 65536) == 1100 &&
+        LongImagePolicy::clampVertical(-5000, 3000, 800, 32768, 65536) == -350);
+    storage[ViewingOptions::DRAG_SPEED] = 2;
+    passOrFail("drag speed is bounded to the requested one two or three times",
+        ViewingOptions::dragFactor(storage.data()) == 3 && ViewingOptions::dragFactor(nullptr) == 1);
+    bool allPagesExactlyOnce = true;
+    for (int count = 1; count <= 17; ++count) for (int shift = 0; shift < 2; ++shift) {
+        std::array<int, 17> seen{};
+        for (int group = 0; group < ReadingPolicy::groupCount(count, true, shift); ++group)
+            for (int page : ReadingPolicy::pages(group, count, true, shift)) if (page >= 0) ++seen[page];
+        for (int page = 0; page < count; ++page) allPagesExactlyOnce &= seen[page] == 1;
+    }
+    passOrFail("both double-page alignments retain every odd or even page exactly once", allPagesExactlyOnce);
+    passOrFail("placing the current page left or right changes pairing rather than page order",
+        ReadingPolicy::shiftForPage(1, false) == 1 && ReadingPolicy::shiftForPage(1, true) == 0 &&
+        ReadingPolicy::pages(0, 6, true, 1) == std::array{-1, 0} &&
+        ReadingPolicy::pages(0, 6, true, 0) == std::array{0, 1});
+}
+
 void expectViewerOptions() {
     std::array<uint32_t, 777> storage{};
     ViewerOptions::initialize(storage.data(), storage.size());
@@ -1514,9 +1656,22 @@ void expectMonitorPlacement() {
         monitors, 1, true, L"\\\\.\\DISPLAY1");
     const auto missingCursor = MonitorPlacement::selectForImageOpen(
         monitors, MonitorPlacement::NO_MONITOR, true, L"\\\\.\\DISPLAY2");
-    passOrFail("image launch prefers the monitor under the mouse cursor",
-        cursorOpen.index == 1 && !cursorOpen.matchedRememberedMonitor &&
+    passOrFail("remembered monitor takes priority over the mouse on image launch",
+        cursorOpen.index == 0 && cursorOpen.matchedRememberedMonitor &&
         missingCursor.index == 1 && missingCursor.matchedRememberedMonitor);
+
+    const auto cursorFallback = MonitorPlacement::selectForImageOpen(
+        monitors, 1, true, L"\\\\.\\DISPLAY9");
+    const auto disabledCursor = MonitorPlacement::selectForImageOpen(
+        monitors, 1, false, L"\\\\.\\DISPLAY1");
+    const auto firstOpen = MonitorPlacement::selectForImageOpen(monitors, 1, true, {});
+    passOrFail("disabled, disconnected, or unset monitor memory uses the cursor monitor",
+        cursorFallback.index == 1 && !cursorFallback.matchedRememberedMonitor &&
+        disabledCursor.index == 1 && !disabledCursor.matchedRememberedMonitor &&
+        firstOpen.index == 1 && !firstOpen.matchedRememberedMonitor);
+    const auto noMonitors = MonitorPlacement::selectForImageOpen({}, 0, true, L"display1");
+    passOrFail("an empty monitor list remains safe on image launch",
+        noMonitors.index == MonitorPlacement::NO_MONITOR);
 
     const MonitorPlacement::Rect secondaryWindow{ -1180, 100, -380, 700 };
     const auto relative = MonitorPlacement::toRelative(secondaryWindow, monitors[1].workArea);
@@ -1786,7 +1941,8 @@ void expectSettingLayout() {
     //   {73,66,67} {74,75,76,77,78} {79,80,81} {85,66,67}
     // 两边必须相等——先前这条测试直接照抄了 SettingCommand 那张表，于是
     // 「加繁體中文时漏改选项数」这种错两边一起错，测试照样绿。
-    constexpr std::array<int, 12> radioOptions{ 3, 3, 3, 2, 4, 4, 2, 2, 2, 4, 2, 2 };
+    constexpr std::array<int, 25> radioOptions{ 3, 3, 3, 2, 2, 4, 2, 2, 2, 4, 2, 2,
+        3, 3, 2, 2, 2, 3, 3, 2, 2, 2, 2, 2, 3 };
     static_assert(radioOptions.size() == SettingLayout::GENERAL_RADIOS.size());
     for (std::size_t index = 0; index < radioOptions.size(); ++index) {
         if (radioOptions[index] != SettingCommand::GENERAL_RADIO_OPTION_COUNTS[index]) {
@@ -2549,6 +2705,28 @@ void expectWheelInput() {
 void expectShortcutConfig() {
     std::array<uint32_t, 777> storage{};
     ShortcutConfig::initialize(storage.data(), storage.size());
+    passOrFail("Ctrl right-click always opens the menu without changing plain right-click",
+        ContextMenuPolicy::rightClickOpensMenu(0, false) &&
+        ContextMenuPolicy::rightClickOpensMenu(0, true) &&
+        ContextMenuPolicy::rightClickOpensMenu(1, true) &&
+        !ContextMenuPolicy::rightClickOpensMenu(1, false));
+    passOrFail("the fixed keyboard menu entry is exactly Shift F10",
+        ContextMenuPolicy::isFixedMenuKey(0x79, false, true, false) &&
+        !ContextMenuPolicy::isFixedMenuKey(0x79, false, false, false) &&
+        !ContextMenuPolicy::isFixedMenuKey(0x79, true, true, false) &&
+        !ContextMenuPolicy::isFixedMenuKey(0x79, false, true, true) &&
+        !ContextMenuPolicy::isFixedMenuKey(0x78, false, true, false));
+    const auto fixedMenuBinding = ShortcutConfig::binding(0x79, ShortcutConfig::MODIFIER_SHIFT);
+    ShortcutConfig::setBinding(storage.data(), ShortcutConfig::Action::CloseViewer, fixedMenuBinding);
+    passOrFail("custom actions cannot claim the fixed menu shortcut",
+        !ShortcutConfig::isStoredBindingValid(fixedMenuBinding) &&
+        ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::CloseViewer) ==
+            ShortcutConfig::DEFAULT_BINDINGS[ShortcutConfig::actionIndex(ShortcutConfig::Action::CloseViewer)]);
+    storage[ShortcutConfig::BINDING_BASE_INDEX +
+        ShortcutConfig::actionIndex(ShortcutConfig::Action::RotateLeft)] = fixedMenuBinding;
+    ShortcutConfig::initialize(storage.data(), storage.size());
+    passOrFail("old conflicting bindings are sanitized without occupying the fixed menu entry",
+        ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::RotateLeft) != fixedMenuBinding);
     passOrFail("shortcut storage upgrades old settings to the requested defaults",
         storage[ShortcutConfig::MAGIC_INDEX] == ShortcutConfig::STORAGE_MAGIC &&
         ShortcutConfig::getWheelAction(storage.data(), 0) == ShortcutConfig::WheelAction::PanVertical &&
@@ -4101,6 +4279,7 @@ int main(int argc, char* argv[]) {
     expectDecodeEstimate();
     expectImageViewTransform();
     expectViewerOptions();
+    expectViewingPolicies();
     expectInitialWindowLayout();
     expectPresentationLayout();
     expectMonitorPlacement();

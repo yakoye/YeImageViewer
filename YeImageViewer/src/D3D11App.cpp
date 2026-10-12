@@ -243,7 +243,8 @@ void D3D11App::saveSettings() const {
         GlobalVar::settingParameter.showCmd = wp.showCmd == SW_MAXIMIZE ? SW_MAXIMIZE : SW_NORMAL;
         GlobalVar::settingParameter.rect = wp.rcNormalPosition;
 
-        HMONITOR monitor = MonitorFromRect(&wp.rcNormalPosition, MONITOR_DEFAULTTONEAREST);
+        // 记的是正在使用的显示器，而不是最大化/全屏前的还原位置所在屏。
+        HMONITOR monitor = MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST);
         MONITORINFOEXW monitorInfo{};
         monitorInfo.cbSize = sizeof(MONITORINFOEXW);
         if (GetMonitorInfoW(monitor, &monitorInfo)) {
@@ -643,11 +644,15 @@ LRESULT D3D11App::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             GetClientRect(hwnd, &rc);
             int x = (rc.right - rc.left) / 2;
             int y = (rc.bottom - rc.top) / 2;
-            ShowContextMenu(hwnd, x, y);
+            POINT point{ x, y };
+            ClientToScreen(hwnd, &point);
+            ShowContextMenu(hwnd, point.x, point.y);
         }
         else {
-            ShowContextMenu(hwnd, LOWORD(lParam), HIWORD(lParam));
+            ShowContextMenu(hwnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         }
+        if (auto* app = reinterpret_cast<D3D11App*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)))
+            app->OnContextMenuClosed();
         return S_OK;
     }
     }
@@ -700,6 +705,10 @@ LRESULT D3D11App::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_MOUSEWHEEL:
         pApp->OnMouseWheel(LOWORD(wParam), HIWORD(wParam), LOWORD(lParam), HIWORD(lParam));
         return S_OK;
+
+    case WM_KILLFOCUS:
+        pApp->OnFocusLost();
+        break;
 
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
@@ -759,6 +768,22 @@ HMENU D3D11App::CreateContextMenu(HWND hwnd) {
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::toggleExifDisplay, getUIStringW(28));
+    HMENU readerMenu = CreatePopupMenu();
+    const auto* readingOptions = GlobalVar::settingParameter.reserve;
+    const bool readingOn = readingOptions[ViewingOptions::READING] != 0;
+    AppendMenuW(readerMenu, MF_STRING, (UINT_PTR)ContextMenu::readerToggle,
+        readingOn ? trW(L"退出连续阅读", L"Exit continuous reading", L"退出連續閱讀") :
+            trW(L"进入连续阅读", L"Enter continuous reading", L"進入連續閱讀"));
+    AppendMenuW(readerMenu, MF_STRING, (UINT_PTR)ContextMenu::readerVertical, trW(L"纵向连续", L"Vertical", L"縱向連續"));
+    AppendMenuW(readerMenu, MF_STRING, (UINT_PTR)ContextMenu::readerHorizontal, trW(L"横向连续", L"Horizontal", L"橫向連續"));
+    AppendMenuW(readerMenu, MF_STRING, (UINT_PTR)ContextMenu::readerSingle, trW(L"单页", L"Single page", L"單頁"));
+    AppendMenuW(readerMenu, MF_STRING, (UINT_PTR)ContextMenu::readerDouble, trW(L"双页", L"Double page", L"雙頁"));
+    const UINT pairFlags = MF_STRING | (readingOn && readingOptions[ViewingOptions::DOUBLE_PAGE] ? MF_ENABLED : MF_GRAYED);
+    AppendMenuW(readerMenu, pairFlags, (UINT_PTR)ContextMenu::readerPlaceLeft, trW(L"当前页放左边", L"Place current page left", L"目前頁放左邊"));
+    AppendMenuW(readerMenu, pairFlags, (UINT_PTR)ContextMenu::readerPlaceRight, trW(L"当前页放右边", L"Place current page right", L"目前頁放右邊"));
+    AppendMenuW(readerMenu, MF_STRING, (UINT_PTR)ContextMenu::readerPrevious, trW(L"上一组", L"Previous group", L"上一組"));
+    AppendMenuW(readerMenu, MF_STRING, (UINT_PTR)ContextMenu::readerNext, trW(L"下一组", L"Next group", L"下一組"));
+    AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)readerMenu, trW(L"连续阅读", L"Continuous reading", L"連續閱讀"));
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::openContainerFloder, getUIStringW(29));
 
     HMENU editMenu = CreatePopupMenu();
@@ -846,7 +871,6 @@ HMENU D3D11App::CreateContextMenu(HWND hwnd) {
 void D3D11App::ShowContextMenu(HWND hwnd, int x, int y) {
     HMENU hMenu = CreateContextMenu(hwnd);
     POINT pt = { x, y };
-    ClientToScreen(hwnd, &pt);
 
     PopupMenuThemeScope popupMenuThemeScope(GlobalVar::isCurrentUIDarkMode);
     UINT flags = TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY;

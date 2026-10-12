@@ -36,6 +36,7 @@ using std::unordered_map;
 #include "resource.h"
 #include "ShortcutConfig.h"
 #include "ViewerOptions.h"
+#include "ViewingOptions.h"
 #include "AudioClip.h"
 
 #include "psapi.h"
@@ -211,6 +212,7 @@ struct SettingParameter {
         UI_LANG = defaultUILanguage();
         ShortcutConfig::initialize(reserve, std::size(reserve));
         ViewerOptions::initialize(reserve, std::size(reserve));
+        ViewingOptions::initialize(reserve, std::size(reserve), false);
     }
 
     SettingParameter(const SettingParameter& other) {
@@ -293,6 +295,7 @@ struct SettingParameter {
                 escapeClosesImage ? ShortcutConfig::binding(VK_ESCAPE) : 0);
         }
         ViewerOptions::initialize(reserve, std::size(reserve));
+        ViewingOptions::initialize(reserve, std::size(reserve));
 
         // 确保扩展名列表字符串以空字符结尾
         extCheckedListStr[sizeof(extCheckedListStr) - 1] = 0;
@@ -455,6 +458,8 @@ enum class ContextMenu :int {
     moveToTargetFirst = 1210,
     moveToTargetLast = 1214,
     moveToTargetChoose = 1215,
+    readerToggle = 1300, readerVertical, readerHorizontal, readerSingle, readerDouble,
+    readerPlaceLeft, readerPlaceRight, readerPrevious, readerNext,
 };
 
 struct Action {

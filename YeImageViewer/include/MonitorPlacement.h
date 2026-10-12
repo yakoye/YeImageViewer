@@ -64,9 +64,12 @@ inline Selection select(std::span<const Monitor> monitors, bool rememberLastMoni
 inline Selection selectForImageOpen(std::span<const Monitor> monitors,
     size_t cursorMonitorIndex, bool rememberLastMonitor,
     std::wstring_view rememberedDeviceName) {
+    const auto remembered = select(monitors, rememberLastMonitor, rememberedDeviceName);
+    if (remembered.matchedRememberedMonitor)
+        return remembered;
     if (cursorMonitorIndex < monitors.size())
         return { cursorMonitorIndex, false };
-    return select(monitors, rememberLastMonitor, rememberedDeviceName);
+    return remembered;
 }
 
 inline Rect toRelative(Rect absoluteWindow, Rect workArea) {
