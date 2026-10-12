@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = $PSScriptRoot
+$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $releaseDirectory = Join-Path $repoRoot "x64\Release"
 $viewer = Join-Path $releaseDirectory "YeImageViewer.exe"
 $thumbnailProvider = Join-Path $releaseDirectory "YeThumbnailProvider.dll"
@@ -125,7 +126,10 @@ installLocal.ps1         可选。想要开始菜单/桌面快捷方式、或者
         [IO.File]::Delete([IO.Path]::GetFullPath($archive))
     }
 
-    & $sevenZip a -t7z -mx=9 -m0=lzma2 -md=64m -ms=on -mmt=on $archive $stagingRoot | Out-Null
+    Push-Location $stagingRoot
+    try {
+        & $sevenZip a -t7z -mx=9 -m0=lzma2 -md=64m -ms=on -mmt=on $archive '.\*' | Out-Null
+    } finally {Pop-Location}
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $archive -PathType Leaf)) {
         throw "7-Zip package creation failed with exit code $LASTEXITCODE."
     }
@@ -150,7 +154,7 @@ installLocal.ps1         可选。想要开始菜单/桌面快捷方式、或者
     if (Test-Path -LiteralPath $zip) {
         [IO.File]::Delete([IO.Path]::GetFullPath($zip))
     }
-    Compress-Archive -LiteralPath $stagingRoot -DestinationPath $zip -CompressionLevel Optimal
+    Compress-Archive -Path (Join-Path $stagingRoot '*') -DestinationPath $zip -CompressionLevel Optimal
     $zipInfo = Get-Item -LiteralPath $zip
     if ($zipInfo.Length -gt $maximumDownloadBytes) {
         throw "Portable zip is $([math]::Round($zipInfo.Length / 1MB, 2)) MiB, above the 25 MiB release limit."
@@ -164,6 +168,7 @@ installLocal.ps1         可选。想要开始菜单/桌面快捷方式、或者
     }
     $checksumPath = Join-Path $OutputDirectory "SHA256SUMS.txt"
     [IO.File]::WriteAllLines($checksumPath, $checksums, [Text.UTF8Encoding]::new($false))
+    & (Join-Path $repoRoot 'scripts/archive-release.ps1') -ReleaseDirectory $OutputDirectory
 
     [PSCustomObject]@{
         Version = $version

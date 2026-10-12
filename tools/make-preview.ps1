@@ -51,6 +51,11 @@ Add-Type -Namespace PreviewShot -Name N -MemberDefinition @'
     public static extern uint GetCurrentThreadId();
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     public static extern bool SetCursorPos(int x, int y);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern System.IntPtr SetThreadDpiAwarenessContext(System.IntPtr context);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool GetCursorPos(out POINT point);
+    public struct POINT { public int X, Y; }
     public struct RECT { public int Left, Top, Right, Bottom; }
 '@
 
@@ -76,8 +81,15 @@ catch {
         "也可能是锁屏。把会话放到前台再跑一次。")
 }
 New-Item -ItemType Directory -Force -Path $PhotoDir | Out-Null
+if ((Test-Path -LiteralPath $sample) -and
+    (Get-FileHash -LiteralPath $sample).Hash -ne (Get-FileHash -LiteralPath $sampleSource).Hash) {
+    throw "样图目标已有不同文件，不能覆盖：$sample"
+}
 Copy-Item -LiteralPath $sampleSource -Destination $sample -Force
 
+$oldDpiContext = [PreviewShot.N]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$oldCursor = New-Object PreviewShot.N+POINT
+[void][PreviewShot.N]::GetCursorPos([ref]$oldCursor)
 $screen = [System.Windows.Forms.Screen]::PrimaryScreen
 $work = $screen.WorkingArea
 $bounds = $screen.Bounds
@@ -95,7 +107,12 @@ $backdrop.ShowInTaskbar = $false
 $backdrop.Show()
 1..20 | ForEach-Object { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 25 }
 
-$process = Start-Process -FilePath $viewer -ArgumentList ('"' + $sample + '"') -PassThru
+$temporaryBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$previewRoot = Join-Path $temporaryBase ('YeViewer-Preview-' + [Guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $previewRoot)
+$previewViewer = Join-Path $previewRoot 'YeImageViewer.exe'
+Copy-Item -LiteralPath $viewer -Destination $previewViewer
+$process = Start-Process -FilePath $previewViewer -ArgumentList ('"' + $sample + '"') -PassThru
 try {
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     do { Start-Sleep -Milliseconds 300; $process.Refresh() }
@@ -115,10 +132,7 @@ try {
     }
     Write-Host "标题：$($titleBuffer.ToString())"
 
-    # 保持沉浸显示（无边框）：完整的 EXIF 面板只在这个模式下出
-    # （main.cpp: presentationMode ? Mode::Full : Mode::Compact），带边框窗口下
-    # 只有格式/大小/分辨率那几项基础信息，相机、光圈、快门全看不到。
-    # 无边框也顺带避开了 Win11 的圆角和 DWM 阴影——那圈不可见边框会把背后的窗口截进来。
+    # 无边框避开 Win11 圆角和 DWM 阴影；信息面板现在在各模式都能显示完整信息。
 
     # 窗口整体收一点，让 README 里不用缩太多还能看清字。
     # HWND_TOPMOST(-1) + SWP_SHOWWINDOW：截图时别的程序的窗口可能压在上面，
@@ -130,6 +144,11 @@ try {
     [void][PreviewShot.N]::SetWindowPos($window, [IntPtr](-1), $windowX, $windowY,
         $windowWidth, $windowHeight, 0x0040)
     Start-Sleep -Milliseconds 1200
+    $physicalClient = New-Object PreviewShot.N+RECT
+    [void][PreviewShot.N]::GetClientRect($window, [ref]$physicalClient)
+    if ($physicalClient.Right -ne $windowWidth -or $physicalClient.Bottom -ne $windowHeight) {
+        throw '截图坐标与窗口客户区不是同一物理像素口径，拒绝生成被裁切的预览图'
+    }
 
     # 打开信息面板：ContextMenu::toggleExifDisplay = 1004
     [void][PreviewShot.N]::PostMessageW($window, 0x0111, [UIntPtr]1004, [IntPtr]::Zero)
@@ -185,5 +204,12 @@ finally {
     if (-not $process.HasExited) {
         [void]$process.CloseMainWindow()
         if (-not $process.WaitForExit(6000)) { Stop-Process -Id $process.Id -Force }
+    }
+    [void][PreviewShot.N]::SetCursorPos($oldCursor.X,$oldCursor.Y)
+    [void][PreviewShot.N]::SetThreadDpiAwarenessContext($oldDpiContext)
+    $resolvedPreviewRoot = [IO.Path]::GetFullPath($previewRoot)
+    if ($resolvedPreviewRoot.StartsWith($temporaryBase,[StringComparison]::OrdinalIgnoreCase) -and
+        (Split-Path -Leaf $resolvedPreviewRoot).StartsWith('YeViewer-Preview-')) {
+        Remove-Item -LiteralPath $resolvedPreviewRoot -Recurse -Force
     }
 }

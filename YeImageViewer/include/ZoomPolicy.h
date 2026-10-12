@@ -84,22 +84,22 @@ constexpr int indicatorAlpha(int elapsedMs) {
 // 图片比窗口小就停在 100%——把一张 100x100 的小图撑满 2000 像素宽的窗口只会
 // 糊成一片，多数看图软件都是这个规矩。想放大有滚轮和「输入缩放倍率」。
 inline int64_t fitWindowZoom(int sourceWidth, int sourceHeight,
-    int windowWidth, int windowHeight, int64_t zoomBase) {
+    int windowWidth, int windowHeight, int64_t zoomBase, bool allowUpscale = false) {
     if (sourceWidth <= 0 || sourceHeight <= 0 ||
         windowWidth <= 0 || windowHeight <= 0 || zoomBase <= 0)
         return zoomBase;
     const int64_t fitted = std::min(
         static_cast<int64_t>(windowWidth) * zoomBase / sourceWidth,
         static_cast<int64_t>(windowHeight) * zoomBase / sourceHeight);
-    return std::clamp<int64_t>(fitted, 1, zoomBase);
+    return std::clamp<int64_t>(fitted, 1, allowUpscale ? zoomBase * MAX_PERCENT / 100 : zoomBase);
 }
 
 // 旋转 90/270 度时宽高互换，缩放要按旋转后的样子算。
 inline int64_t fitWindowZoomRotated(int imageWidth, int imageHeight, int rotation,
-    int windowWidth, int windowHeight, int64_t zoomBase) {
+    int windowWidth, int windowHeight, int64_t zoomBase, bool allowUpscale = false) {
     const bool upright = (rotation % 2) == 0;
     return fitWindowZoom(upright ? imageWidth : imageHeight,
-        upright ? imageHeight : imageWidth, windowWidth, windowHeight, zoomBase);
+        upright ? imageHeight : imageWidth, windowWidth, windowHeight, zoomBase, allowUpscale);
 }
 
 // 预览图（系统缩略图）的像素尺寸和真图无关——一张 280x288 的 SVG，系统给的

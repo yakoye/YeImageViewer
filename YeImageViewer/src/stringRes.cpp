@@ -99,6 +99,39 @@ std::string_view UIStringTable[STRING_MAX_NUM][3] = {
     {"下一张", "Next Image", "下一張"},  // 双击动作第四项
     {"全屏信息条", "Fullscreen Info Bar", "全螢幕資訊列"},  // 全屏时左上角显示标题那一行
     {"繁體中文", "繁體中文", "繁體中文"},  // 86  语言单选的第三项
+    {"普通窗口尺寸", "Window size", "一般視窗大小"},
+    {"启动窗口形态", "Start window", "啟動視窗模式"},
+    {"普通窗口", "Framed", "一般視窗"},
+    {"默认缩放规则", "Default zoom", "預設縮放規則"}, // 90
+    {"实际大小", "Actual size", "實際大小"},
+    {"记忆每图", "Per-image", "記憶每圖"},
+    {"锁定看图方式", "Lock viewing", "鎖定觀看方式"},
+    {"关闭", "Off", "關閉"},
+    {"开启", "On", "開啟"},
+    {"适应时放大小图", "Upscale small", "適應時放大小圖"},
+    {"循环浏览图片", "Wrap images", "循環瀏覽圖片"},
+    {"图片缩放质量", "Zoom quality", "圖片縮放品質"},
+    {"高质量", "High quality", "高品質"},
+    {"快速", "Fast", "快速"}, // 100
+    {"像素清晰", "Pixel sharp", "像素清晰"},
+    {"动图控制栏", "Frame controls", "動圖控制列"},
+    {"自动隐藏", "Auto-hide", "自動隱藏"},
+    {"常显", "Always", "常顯"},
+    {"连续阅读", "Continuous read", "連續閱讀"},
+    {"阅读方向", "Reading axis", "閱讀方向"},
+    {"纵向", "Vertical", "縱向"},
+    {"横向", "Horizontal", "橫向"},
+    {"每组页数", "Pages per group", "每組頁數"},
+    {"单页", "Single", "單頁"}, // 110
+    {"双页", "Double", "雙頁"},
+    {"长图显示", "Tall images", "長圖顯示"},
+    {"原始比例顶部", "100% from top", "原始比例頂部"},
+    {"长图水平居中", "Center tall image", "長圖水平置中"},
+    {"图片拖拽加速", "Image drag speed", "圖片拖曳加速"},
+    {"1倍", "1x", "1倍"},
+    {"2倍", "2x", "2倍"},
+    {"3倍", "3x", "3倍"},
+    {"全屏", "Fullscreen", "全螢幕"},
 };
 
 

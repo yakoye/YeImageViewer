@@ -36,7 +36,7 @@ inline constexpr int LOGICAL_ROW_PADDING = 5;
 inline constexpr int LOGICAL_COMPACT_HEADER_HEIGHT = 36;
 inline constexpr int LOGICAL_FULL_HEADER_HEIGHT = 40;
 inline constexpr int LOGICAL_SECTION_HEIGHT = 24;
-inline constexpr int LOGICAL_FOOTER_HEIGHT = 36;
+inline constexpr int LOGICAL_FOOTER_HEIGHT = 0;
 inline constexpr int LOGICAL_COMPACT_MAX_HEIGHT = 360;
 // 标签列要放得下四个汉字：字号 12，四个字正好 48，一点余量都没有，最后一个字会被裁掉。
 // 简体的「文件大小」「色彩空间」「质量因子」和繁體的「檔案大小」「色彩空間」

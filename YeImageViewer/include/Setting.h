@@ -169,8 +169,8 @@ private:
                 { toCvRect(SettingLayout::GENERAL_RADIOS[3]), {36, 37, 38}, &GlobalVar::settingParameter.rightClickAction },
                 // 这四组存在 reserve 里（设置结构固定 4096 字节，加不了新成员），
                 // 正好都是 uint32_t，可以直接交给单选组按值编辑。
-                { toCvRect(SettingLayout::GENERAL_RADIOS[4]), {57, 58, 59, 60, 83},
-                    &GlobalVar::settingParameter.reserve[ViewerOptions::OPEN_MODE_INDEX] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[4]), {87, 60, 59},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::WINDOW] },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[5]), {61, 62, 63, 64, 84},
                     &GlobalVar::settingParameter.reserve[ViewerOptions::DOUBLE_CLICK_INDEX] },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[6]), {65, 66, 67},
@@ -188,6 +188,32 @@ private:
                 // 全屏和沉浸预览没有标题栏，那一行信息改在画面左上角显示
                 { toCvRect(SettingLayout::GENERAL_RADIOS[11]), {85, 66, 67},
                     &GlobalVar::settingParameter.reserve[ViewerOptions::FULLSCREEN_INFO_INDEX] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[12]), {88, 89, 58, 119},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::SHAPE] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[13]), {90, 83, 91, 92},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::SCALE] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[14]), {93, 94, 95},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::LOCK] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[15]), {96, 94, 95},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::UPSCALE] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[16]), {97, 94, 95},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::LOOP] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[17]), {98, 99, 100, 101},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::QUALITY] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[18]), {102, 66, 103, 104},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::FRAMES] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[19]), {105, 94, 95},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::READING] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[20]), {106, 107, 108},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::AXIS] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[21]), {109, 110, 111},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::DOUBLE_PAGE] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[22]), {112, 113, 83},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::LONG_IMAGE] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[23]), {114, 94, 95},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::CENTER_LONG] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[24]), {115, 116, 117, 118},
+                    &GlobalVar::settingParameter.reserve[ViewingOptions::DRAG_SPEED] },
             };
         }
 
@@ -620,6 +646,10 @@ private:
         const cv::Rect reset = toCanvasRect(SettingLayout::SHORTCUT_RESET_BUTTON);
         fillRoundedRect(page, reset, GlobalVar::currentTheme.BG_TAG, 6);
         textDrawer.putAlignCenter(page, reset, tr("恢复默认", "Restore defaults", "恢復預設"), primaryText());
+        textDrawer.putAlignLeft(page, toCanvasRect(SettingLayout::SHORTCUT_FIXED_MENU_HINT),
+            tr("固定菜单：Ctrl + 右键 / Shift + F10",
+                "Menu: Ctrl+right-click / Shift+F10",
+                "固定選單：Ctrl + 右鍵 / Shift + F10"), secondaryText());
 
         textDrawer.putAlignLeft(page, toCanvasRect(SettingLayout::SHORTCUT_KEYBOARD_HEADER),
             tr("键盘快捷键（点按键后按新组合，可带 Ctrl / Shift / Alt；× 取消）", "KEYBOARD (click a key, press a new combination; x clears it)", "鍵盤快速鍵（點按鍵後按新組合，可帶 Ctrl / Shift / Alt；× 取消）"),
@@ -894,6 +924,16 @@ private:
             const int itemWidth = segments.width / optionCount;
             const int selected = std::clamp((x - segments.x) / itemWidth, 0, optionCount - 1);
             *radio.valuePtr = selected;
+            if (radio.stringIDs.front() >= 87) {
+                const auto id = radio.stringIDs.front();
+                uint32_t changes = 4;
+                if (id == 87 || id == 88 || id == 90 || id == 93 || id == 96 || id == 112) changes = 1;
+                if (id == 105 || id == 106 || id == 109) changes = 2;
+                if (id == 93) changes |= 8;
+                if (id == 88) changes |= 16;
+                if (id == 90) changes |= 32;
+                ViewingOptions::changed |= changes;
+            }
             if (radio.stringIDs.front() == 24) {
                 GlobalVar::isCurrentUIDarkMode = GlobalVar::settingParameter.UI_Mode == 0 ?
                     GlobalVar::isSystemDarkMode : GlobalVar::settingParameter.UI_Mode == 2;
@@ -1244,6 +1284,17 @@ private:
                 modifiers |= ShortcutConfig::MODIFIER_SHIFT;
             if ((GetKeyState(VK_MENU) & 0x8000) != 0)
                 modifiers |= ShortcutConfig::MODIFIER_ALT;
+            if (ContextMenuPolicy::isFixedMenuKey(static_cast<uint32_t>(key),
+                (modifiers & ShortcutConfig::MODIFIER_CONTROL) != 0,
+                (modifiers & ShortcutConfig::MODIFIER_SHIFT) != 0,
+                (modifiers & ShortcutConfig::MODIFIER_ALT) != 0)) {
+                MessageBoxW(m_hwnd,
+                    trW(L"Shift + F10 是固定菜单快捷键，请选择其他组合。",
+                        L"Shift + F10 opens the menu. Choose another shortcut.",
+                        L"Shift + F10 是固定選單快速鍵，請選擇其他組合。"),
+                    getUIStringW(39), MB_OK | MB_ICONINFORMATION);
+                return;
+            }
             ShortcutConfig::setBinding(GlobalVar::settingParameter.reserve,
                 *shortcutCapture,
                 ShortcutConfig::binding(static_cast<uint16_t>(key), modifiers));
