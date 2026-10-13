@@ -54,7 +54,7 @@ inline constexpr int GENERAL_DISPLAY_CARD_Y =
 
 // 单选组的几何。定义在卡片之前，好让卡片高度和编辑器起点从行数推导出来——
 // 写死数字的话，每次增减单选组都得手算一遍，漏改就会和下面的编辑器卡片重叠。
-inline constexpr int GENERAL_RADIO_COUNT = 25;
+inline constexpr int GENERAL_RADIO_COUNT = 27;
 inline constexpr int GENERAL_RADIO_FIRST_Y = GENERAL_DISPLAY_CARD_Y + 38;
 inline constexpr int GENERAL_RADIO_PITCH = 48;
 inline constexpr int GENERAL_RADIO_HEIGHT = 38;

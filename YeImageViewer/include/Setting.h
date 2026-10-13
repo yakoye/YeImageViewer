@@ -214,6 +214,10 @@ private:
                     &GlobalVar::settingParameter.reserve[ViewingOptions::CENTER_LONG] },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[24]), {120, 121, 122, 123, 124, 125, 126, 127, 128, 129},
                     &GlobalVar::settingParameter.reserve[PanOptions::SENSITIVITY] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[25]), {130, 94, 95},
+                    &GlobalVar::settingParameter.reserve[KineticOptions::ENABLED] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[26]), {131, 121, 122, 123, 124, 125, 126, 127, 128, 129},
+                    &GlobalVar::settingParameter.reserve[KineticOptions::SENSITIVITY] },
             };
         }
 
@@ -335,7 +339,10 @@ private:
             drawSegment(page, radio);
         textDrawer.putAlignLeft(page,
             scaleRect({36, SettingLayout::GENERAL_RADIOS.back().y + 38, 548, 18}),
-            tr("仅自动拖拽模式生效；按住 Shift 精细拖动", "Auto mode only; hold Shift for precision", "僅自動拖曳模式生效；按住 Shift 精細拖曳"), secondaryText());
+            tr("智能灵敏度仅影响自动拖拽；惯性灵敏度仅影响松手后", "Auto sensitivity: drag; inertia sensitivity: release", "智慧靈敏度僅影響自動拖曳；慣性靈敏度僅影響鬆手後"), secondaryText());
+        textDrawer.putAlignLeft(page,
+            scaleRect({36, SettingLayout::GENERAL_RADIOS.back().y + 56, 548, 18}),
+            tr("Shift 精细拖动不触发惯性", "Shift precision drag does not coast", "Shift 精細拖曳不觸發慣性"), secondaryText());
 
         const int editorCount = static_cast<int>(GlobalVar::externalEditors.size());
         const auto editorCard = SettingLayout::generalEditorCard(editorCount);

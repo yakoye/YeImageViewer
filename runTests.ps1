@@ -83,7 +83,7 @@ if ($actualFileVersion -ne $expectedFileVersion) {
 Write-Host "PASS viewer file version is $expectedFileVersion."
 
 # 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
-$expectedProductVersion = "1.38.1-rc1"
+$expectedProductVersion = "1.38.1-rc2"
 $actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
@@ -4360,6 +4360,7 @@ foreach ($donateName in @("donate-alipay.png", "donate-wechat.png")) {
 & (Join-Path $repoRoot 'scripts/test-menu-monitor-regressions.ps1') -Viewer $viewer -Fixture $commonPngFixture
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -PanOnly
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -InertiaOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -PanVisualOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -SettingsDpiOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -ActualSizeOnly
