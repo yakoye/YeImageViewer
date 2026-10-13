@@ -13,7 +13,7 @@
 
 **YeImageViewer** is a minimal, fast native Windows image viewer. It supports common still images, animations, RAW files, iOS Live Photos, and Android Motion Photos, together with EXIF display, printing, simple editing, and file associations.
 
-Current version: **v1.38.0** · [Changelog](CHANGELOG.md)
+Current version: **v1.38.1-rc1**（本地候选版，未公开发布；公开正式版仍为 v1.38.0） · [Changelog](CHANGELOG.md)
 
 This project is based on [JarkViewer](https://github.com/jark006/JarkViewer) and is licensed under GNU GPL v3. Thanks to upstream author JARK006 and all contributors.
 
@@ -61,7 +61,7 @@ The build requires Windows x64, Visual Studio 2026 Build Tools, MSVC v145, and t
 
 Build outputs are written to `x64/Release`.
 
-**This is a portable application — there is nothing to install.** Copy `YeImageViewer.exe` anywhere and double-click it. It writes no registry keys and leaves no background service. Settings live in `YeImageViewer.db` (about 4 KB) next to the executable: **created when missing, reused when present**; delete it to return to defaults and the viewer still runs. To hand the viewer to someone else or move it to another machine, the single executable is enough; copy `YeImageViewer.db` alongside it to carry your settings (language, theme, shortcuts, registered formats, per-image rotation) across. Deleting the folder removes it completely — nothing is left in the registry. `YeThumbnailProvider.dll` is optional: it only matters if you want Explorer to show thumbnails for RAW/HEIC/AVIF/PSD and the other formats Windows cannot read itself.
+**This is a portable application — there is nothing to install.** Copy `YeImageViewer.exe` anywhere and double-click it. 普通看图不写注册表；DB 前 4096 字节为兼容设置，后续文本保存文件目标、编辑器、旋转与阅读记录。使用「立即关联」仅登记打开方式，Windows 10/11 默认应用需系统设置确认。移除前先撤销格式登记、系统默认选择，以及便利脚本创建的快捷方式和缩略图注册，不能仅删除文件夹就认为系统登记全部消失。`YeThumbnailProvider.dll` 为可选组件。
 
 `installLocal.ps1` is an optional convenience script: it copies the runtime to `%LOCALAPPDATA%\Programs\YeImageViewer`, registers the per-user thumbnail provider, and creates Start-menu and desktop shortcuts. It does not change default image-file applications. Skipping it changes nothing about how the viewer works.
 

@@ -13,7 +13,7 @@
 
 **YeImageViewer** 是一款简约、快速的原生 Windows 图片查看器，支持常见静态图、动图、RAW、iOS Live Photo 和 Android Motion Photo，并提供 EXIF 查看、打印、简单编辑和文件关联功能。
 
-当前版本：**v1.38.0** · [修改记录](CHANGELOG.md)
+当前版本：**v1.38.1-rc1**（本地候选版，未公开发布；公开正式版仍为 v1.38.0） · [修改记录](CHANGELOG.md)
 
 本项目基于 [JarkViewer](https://github.com/jark006/JarkViewer) 开发，并遵循 GNU GPL v3 许可证。感谢上游作者 JARK006 与所有贡献者。
 
@@ -80,7 +80,11 @@
 
 构建产物位于 `x64/Release`。
 
-**本程序是绿色版，不需要安装**：`YeImageViewer.exe` 一个文件拷到哪双击就能用，不写注册表、不留后台服务。设置存在它旁边的 `YeImageViewer.db`（约 4 KB）里——**没有就生成，有就直接用**；删掉它恢复出厂默认，程序照常跑。发给别人或者换台机器，拷这一个 exe 就够；想把设置（语言、主题、快捷键、关联过的格式、每张图记住的旋转角度）一起带走，就把 `YeImageViewer.db` 也放到 exe 旁边。想彻底移除：删掉文件夹即可，注册表里没有残留。`YeThumbnailProvider.dll` 是可选的——只有想让资源管理器给 RAW/HEIC/AVIF/PSD 这些 Windows 自己不认的格式显示缩略图时才需要它。
+**本程序是绿色版，不需要安装**：`YeImageViewer.exe` 一个文件拷到哪双击就能用，普通看图不写注册表、不留后台服务。设置存在旁边的 `YeImageViewer.db` 中：前 4096 字节为兼容设置，后续文本保存外部编辑器、文件目标、旋转及阅读记录。没有就生成，有就直接用；删掉它恢复默认。换机器可复制 EXE 与 DB。`YeThumbnailProvider.dll` 为可选缩略图组件。
+
+文件关联页的「立即关联」登记打开方式与默认应用能力，Windows 10/11 的受保护默认应用需用户在系统「默认应用」中确认，不覆盖其他程序的用户选择。更换程序路径后请重新登记。使用过关联时，删除程序前先选「全不选」并「立即关联」撤销格式登记；系统默认应用另行改回。使用过 `installLocal.ps1` 时还需移除其快捷方式和缩略图注册，不能只删除文件夹就认为这些系统登记也消失了。
+
+候选版打包可用 `./packageRelease.ps1 -SkipBuild -NoArchive -OutputDirectory artifacts/candidates/v1.38.1-rc1`；不公开推送，验收后单独复制到两个归档根目录的「候选版」子目录。默认不加 `-NoArchive` 的正式打包仍自动双归档、核对哈希且拒绝覆盖历史产物。
 
 `installLocal.ps1` 是可选的便利脚本：装到 `%LOCALAPPDATA%\Programs\YeImageViewer`、注册当前用户的缩略图组件、建开始菜单和桌面快捷方式；它不会自动改变图片文件的默认打开程序。不跑它完全不影响使用。
 

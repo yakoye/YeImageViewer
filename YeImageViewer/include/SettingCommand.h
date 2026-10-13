@@ -61,7 +61,7 @@ inline constexpr std::array<int, 25> GENERAL_RADIO_OPTION_COUNTS{
     4,  // 信息面板不透明度
     2,  // 实况声音
     2,  // 全屏信息条
-    3, 3, 2, 2, 2, 3, 3, 2, 2, 2, 2, 2, 3,
+    3, 3, 2, 2, 2, 3, 3, 2, 2, 2, 2, 2, 9,
 };
 static_assert(GENERAL_RADIO_OPTION_COUNTS.size() == SettingLayout::GENERAL_RADIOS.size());
 

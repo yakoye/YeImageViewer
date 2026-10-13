@@ -679,14 +679,14 @@ LRESULT D3D11App::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_MBUTTONDOWN:
     case WM_RBUTTONDOWN:
     case WM_XBUTTONDOWN:
-        pApp->OnMouseDown(message, LOWORD(lParam), HIWORD(lParam), wParam);
+        pApp->OnMouseDown(message, static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam)), wParam);
         return S_OK;
 
     case WM_LBUTTONUP:
     case WM_MBUTTONUP:
     case WM_RBUTTONUP:
     case WM_XBUTTONUP:
-        pApp->OnMouseUp(message, LOWORD(lParam), HIWORD(lParam), wParam);
+        pApp->OnMouseUp(message, static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam)), wParam);
         return S_OK;
 
     case WM_MOUSEMOVE:
@@ -694,7 +694,8 @@ LRESULT D3D11App::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             tme.hwndTrack = hwnd;
             TrackMouseEvent(&tme);
         }
-        pApp->OnMouseMove(message, LOWORD(lParam), HIWORD(lParam));
+        // 修饰键状态在 wParam；捕获后坐标可以为负，不能按无符号 WORD 解释。
+        pApp->OnMouseMove(wParam, static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam)));
         return S_OK;
 
     case WM_MOUSELEAVE:
@@ -708,6 +709,10 @@ LRESULT D3D11App::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
     case WM_KILLFOCUS:
         pApp->OnFocusLost();
+        break;
+
+    case WM_CAPTURECHANGED:
+        if (reinterpret_cast<HWND>(lParam) != hwnd) pApp->OnCaptureLost();
         break;
 
     case WM_KEYDOWN:

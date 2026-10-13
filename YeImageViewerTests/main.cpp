@@ -42,6 +42,8 @@
 #include "ShortcutConfig.h"
 #include "ViewerOptions.h"
 #include "ViewingOptions.h"
+#include "PanPolicy.h"
+#include "PanPopoverLayout.h"
 #include "LongImagePolicy.h"
 #include "ReadingPolicy.h"
 #include "ReadingConfig.h"
@@ -64,6 +66,7 @@
 #include <shlwapi.h>
 #include <shobjidl.h>
 #include <thumbcache.h>
+#include "FileAssociationManager.h"
 
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -84,6 +87,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include <regex>
 
 namespace {
 
@@ -366,7 +370,7 @@ void expectOverlayLayout() {
         toolbarNext.width == OverlayLayout::BASE_BUTTON_SIZE);
     // 播放键在工具栏里大致居中即可，不再要求严格对齐窗口中心：右侧比左侧多一个
     // 按钮，想严格居中就得在左边留一块空白，那比偏十几像素难看得多。
-    constexpr int playCenterOffset = 265 + OverlayLayout::BASE_BUTTON_SIZE / 2 +
+    constexpr int playCenterOffset = 265 + OverlayLayout::PAN_INSERT_WIDTH + OverlayLayout::BASE_BUTTON_SIZE / 2 +
         OverlayLayout::BASE_TOOLBAR_PADDING;
     passOrFail("previous, slideshow, and next form the centered primary toolbar group",
         std::abs(playCenterOffset - OverlayLayout::BASE_TOOLBAR_WIDTH / 2) <= 24 &&
@@ -1941,9 +1945,19 @@ void expectSettingLayout() {
     //   {73,66,67} {74,75,76,77,78} {79,80,81} {85,66,67}
     // 两边必须相等——先前这条测试直接照抄了 SettingCommand 那张表，于是
     // 「加繁體中文时漏改选项数」这种错两边一起错，测试照样绿。
-    constexpr std::array<int, 25> radioOptions{ 3, 3, 3, 2, 2, 4, 2, 2, 2, 4, 2, 2,
-        3, 3, 2, 2, 2, 3, 3, 2, 2, 2, 2, 2, 3 };
-    static_assert(radioOptions.size() == SettingLayout::GENERAL_RADIOS.size());
+    // 直接从界面声明读取条数，而不是手抄另一张可同时写错的期望表。
+    std::array<int, SettingLayout::GENERAL_RADIO_COUNT> radioOptions{};
+    const auto settingSourcePath = std::filesystem::path(__FILE__).parent_path().parent_path() /
+        "YeImageViewer/include/Setting.h";
+    const auto settingBytes = readFile(settingSourcePath.string());
+    const std::string settingSource(settingBytes.begin(), settingBytes.end());
+    const std::regex radioPattern(R"(GENERAL_RADIOS\[(\d+)\]\)\s*,\s*\{([^}]+)\})");
+    for (auto match=std::sregex_iterator(settingSource.begin(),settingSource.end(),radioPattern);
+        match!=std::sregex_iterator(); ++match) {
+        const auto index = static_cast<size_t>(std::stoul((*match)[1].str()));
+        const auto ids = (*match)[2].str();
+        if (index < radioOptions.size()) radioOptions[index] = static_cast<int>(std::count(ids.begin(),ids.end(),','));
+    }
     for (std::size_t index = 0; index < radioOptions.size(); ++index) {
         if (radioOptions[index] != SettingCommand::GENERAL_RADIO_OPTION_COUNTS[index]) {
             everySettingControlRoutes = false;
@@ -1954,6 +1968,7 @@ void expectSettingLayout() {
     }
     for (int rowIndex = 0; rowIndex < static_cast<int>(SettingLayout::GENERAL_RADIOS.size()); ++rowIndex) {
         const auto row = SettingLayout::GENERAL_RADIOS[rowIndex];
+        if (radioOptions[rowIndex] <= 0) { everySettingControlRoutes = false; continue; }
         const int segmentX = row.x + 138;
         const int segmentWidth = (row.width - 138) / radioOptions[rowIndex];
         for (int option = 0; option < radioOptions[rowIndex]; ++option) {
@@ -4246,6 +4261,123 @@ void expectRationalText() {
 }
 }
 
+void expectAssociationRegistration() {
+    const std::wstring sandboxKey = L"Software\\YeImageViewerTests\\Association-" +
+        std::to_wstring(GetCurrentProcessId());
+    HKEY sandbox = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, sandboxKey.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS,
+        nullptr, &sandbox, nullptr) != ERROR_SUCCESS) {
+        passOrFail("association registry sandbox can be created", false); return;
+    }
+    const auto overridden = RegOverridePredefKey(HKEY_CURRENT_USER, sandbox);
+    if (overridden != ERROR_SUCCESS) {
+        RegCloseKey(sandbox); RegistryWriter::deleteKey(HKEY_CURRENT_USER,sandboxKey);
+        passOrFail("association registry sandbox can be activated", false); return;
+    }
+    // 所有生产注册操作只落在此进程的沙箱，绝不触碰用户默认应用。
+    FileAssociationManager manager(L"C:\\YeViewer Association Test\\YeImageViewer.exe");
+    RegistryWriter::setString(HKEY_CURRENT_USER,L"Software\\Classes\\.png",L"",L"Other.Image");
+    RegistryWriter::setString(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.png\\UserChoice",L"ProgId",L"Other.Image");
+    const auto registered = manager.ManageFileAssociations({L"png",L"jpg"},{});
+    passOrFail("association registers capabilities and quoted open commands without overriding user defaults",
+        registered.associationSucceeded && registered.defaultSelectionRequired &&
+        RegistryWriter::queryString(HKEY_CURRENT_USER,L"Software\\RegisteredApplications",L"YeImageViewer") == L"Software\\YeImageViewer\\Capabilities" &&
+        RegistryWriter::queryString(HKEY_CURRENT_USER,L"Software\\YeImageViewer\\Capabilities\\FileAssociations",L".png") == FileAssociationNaming::BuildProgId(L"png") &&
+        RegistryWriter::queryString(HKEY_CURRENT_USER,FileAssociationNaming::BuildProgIdKey(L"png")+L"\\shell\\open\\command",L"") == L"\"C:\\YeViewer Association Test\\YeImageViewer.exe\" \"%1\"" &&
+        RegistryWriter::queryString(HKEY_CURRENT_USER,L"Software\\Classes\\.png",L"") == L"Other.Image" &&
+        RegistryWriter::queryString(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.png\\UserChoice",L"ProgId") == L"Other.Image");
+    const auto removed = manager.ManageFileAssociations({}, {L"png",L"jpg"});
+    passOrFail("unregistering cleans our capabilities but preserves another app and UserChoice",
+        removed.associationSucceeded && !removed.defaultSelectionRequired &&
+        RegistryWriter::queryString(HKEY_CURRENT_USER,L"Software\\YeImageViewer\\Capabilities\\FileAssociations",L".png").empty() &&
+        RegistryWriter::queryString(HKEY_CURRENT_USER,L"Software\\Classes\\.png",L"") == L"Other.Image" &&
+        RegistryWriter::queryString(HKEY_CURRENT_USER,L"Software\\Classes\\.jpg",L"").empty());
+    RegOverridePredefKey(HKEY_CURRENT_USER,nullptr);
+    RegCloseKey(sandbox);
+    passOrFail("association registry sandbox is removed after tests", RegistryWriter::deleteKey(HKEY_CURRENT_USER,sandboxKey));
+}
+
+void expectPanPolicies() {
+    std::array<uint32_t,777> oldActual{};
+    ViewingOptions::initialize(oldActual.data(), oldActual.size(), true, true);
+    passOrFail("legacy preferred actual size migrates to the shared default scaling rule", oldActual[ViewingOptions::SCALE] == 1);
+    const auto handSource = readFile((std::filesystem::path(__FILE__).parent_path().parent_path() /
+        "YeImageViewer/file/icons/hand.svg").string());
+    const auto handRenderer = SvgRenderer::create(handSource);
+    passOrFail("hand icon uses the existing SVG rendering pipeline", handRenderer && !handRenderer->renderToBitmap(80,80).empty());
+    std::array<uint32_t, 777> options{};
+    PanOptions::initialize(options.data(), options.size(), false);
+    passOrFail("new drag defaults are automatic with independent sensitivity five",
+        options[PanOptions::MODE] == 0 && options[PanOptions::SENSITIVITY] == 4 && options[PanOptions::FIXED] == 4);
+    for (uint32_t old = 0; old < 3; ++old) {
+        std::array<uint32_t, 777> legacy{};
+        legacy[ViewingOptions::DRAG_SPEED] = old;
+        legacy[0] = 99; legacy[700] = 123;
+        PanOptions::initialize(legacy.data(), legacy.size());
+        passOrFail("legacy drag multiplier migrates without changing other settings",
+            legacy[PanOptions::MODE] == 1 && PanOptions::FACTORS[legacy[PanOptions::FIXED]] == old + 1 &&
+            legacy[0] == 99 && legacy[700] == 123);
+    }
+    options[PanOptions::MODE] = 1;
+    for (uint32_t level = 0; level < 12; ++level) {
+        options[PanOptions::FIXED] = level;
+        PanPolicy::Gesture gesture;
+        const auto delta = gesture.move(100, -100, .02, 96, options.data(), false);
+        passOrFail("all twelve fixed drag levels use their exact multiplier",
+            delta.x == static_cast<int>(100 * PanOptions::FACTORS[level]) && delta.y == -delta.x);
+        gesture.reset();
+        const auto fine = gesture.move(100, -100, .001, 96, options.data(), true);
+        passOrFail("Shift overrides every fixed level with independent quarter speed", fine.x == 25 && fine.y == -25);
+    }
+    PanPolicy::Gesture gesture;
+    int accumulated = 0;
+    for (int i=0; i<100; ++i) accumulated += gesture.move(1, 0, .01, 96, options.data(), true).x;
+    passOrFail("precision preserves subpixel residual instead of losing one-pixel moves", accumulated == 25);
+    gesture.reset(); options[PanOptions::FIXED] = 4;
+    const auto first = gesture.move(100,0,.1,96,options.data(),false);
+    const auto held = gesture.move(100,0,.1,96,options.data(),true);
+    const auto last = gesture.move(100,0,.1,96,options.data(),false);
+    passOrFail("Shift changes only subsequent gesture increments without jumps", first.x == 100 && held.x == 25 && last.x == 100);
+    options[PanOptions::MODE] = 0;
+    for (uint32_t sensitivity=0; sensitivity<9; ++sensitivity) {
+        gesture.reset(); options[PanOptions::SENSITIVITY] = sensitivity;
+        int slow=0;
+        for (int i=0; i<1000; ++i) slow += gesture.move(1,0,.025,96,options.data(),false).x;
+        passOrFail("slow long-distance auto drag stays strictly one-to-one at every sensitivity", slow == 1000);
+        gesture.reset();
+        const auto coalesced = gesture.move(50, 0, 2, 96, options.data(), false);
+        passOrFail("coalesced slow pointer input must not be interpreted as fast movement", coalesced.x == 50);
+        gesture.reset(); int fast=0;
+        for (int i=0; i<20; ++i) fast += gesture.move(20,0,.02,96,options.data(),false).x;
+        passOrFail("fast auto drag accelerates at every sensitivity", fast > 400);
+        const auto reverse = gesture.move(-20,0,.02,96,options.data(),false);
+        const auto decelerate = gesture.move(1,0,.1,96,options.data(),false);
+        passOrFail("reversal and slow-down immediately reduce acceleration", reverse.x >= -21 && decelerate.x <= 2);
+        const auto stationary = gesture.move(0,0,.05,96,options.data(),false);
+        passOrFail("stationary pointer never creates motion", stationary.x == 0 && stationary.y == 0);
+    }
+    gesture.reset(); options[PanOptions::MODE] = 1; options[PanOptions::FIXED] = 11;
+    const auto locked = gesture.move(100,100,.01,96,options.data(),false,false,true);
+    passOrFail("non-overflow axis remains locked even at nine-times drag", locked.x == 0 && locked.y == 900);
+    passOrFail("drag boundaries use viewport overflow rather than image half-size",
+        PanPolicy::limit(300,800) == 0 && PanPolicy::limit(1200,800) == 200);
+    for (int dpi : {96,120,144,192,288}) for (int width : {240,620,1280,3840}) {
+        const auto panel = PanPopoverLayout::panel(width,720,dpi);
+        const auto track = PanPopoverLayout::slider(panel);
+        passOrFail("drag popover fits narrow and high-DPI viewports with twelve reachable levels",
+            panel.x >= 0 && panel.y >= 0 && panel.x+panel.width <= width && panel.y+panel.height <= 720 &&
+            PanPopoverLayout::levelAt(panel,track.x)==0 && PanPopoverLayout::levelAt(panel,track.x+track.width)==11 &&
+            PanPopoverLayout::sliderHit(panel).contains(track.x+track.width,track.y+track.height/2));
+    }
+    const auto flip = OverlayLayout::flipVerticalRect(1280,720);
+    const auto hand = OverlayLayout::panMultiplierRect(1280,720);
+    const auto previous = OverlayLayout::toolbarPreviousRect(1280,720);
+    passOrFail("hand control is inserted after vertical flip without overlapping navigation",
+        flip.x+flip.width <= hand.x && hand.x+hand.width < previous.x &&
+        OverlayLayout::hitTest(1280,720,hand.x+hand.width/2,hand.y+hand.height/2)==OverlayLayout::Hit::PanMultiplier);
+}
+
 int main(int argc, char* argv[]) {
     std::cout << std::unitbuf;
     // 缩略图组件内部会用到 COM 对象，和资源管理器一样先把 COM 起起来
@@ -4280,6 +4412,8 @@ int main(int argc, char* argv[]) {
     expectImageViewTransform();
     expectViewerOptions();
     expectViewingPolicies();
+    expectPanPolicies();
+    expectAssociationRegistration();
     expectInitialWindowLayout();
     expectPresentationLayout();
     expectMonitorPlacement();

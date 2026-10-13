@@ -1,6 +1,8 @@
 ﻿param(
     [string]$OutputDirectory = (Join-Path $PSScriptRoot "artifacts\release"),
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    # 候选／开发包留在指定输出目录，验收后再显式归档；正式发布默认仍双归档。
+    [switch]$NoArchive
 )
 
 $ErrorActionPreference = "Stop"
@@ -108,13 +110,16 @@ installLocal.ps1         可选。想要开始菜单/桌面快捷方式、或者
 想把设置（界面语言、主题、快捷键、关联过的格式、每张图记住的旋转角度）一起
 带走，就把 YeImageViewer.db 也拷过去，放在 exe 旁边即可。
 
-想彻底移除：删掉这个文件夹即可，注册表里没有残留。
-（如果用过「立即关联」，先在设置 → 文件关联里点「全不选」再「立即关联」，
-把关联关系撤掉。）
+未使用文件关联或 installLocal.ps1 时：删除这个文件夹即可。
+使用过「立即关联」时，先在设置 → 文件关联里点「全不选」再「立即关联」，
+撤销本程序的格式登记；若修改过系统默认应用，还需在 Windows 设置中改回。
+installLocal.ps1 创建的快捷方式及缩略图注册需按 README 的移除说明单独撤销。
 
 把本程序设成图片的默认打开方式
 ------------------------------
 程序里：右键菜单 → 设置 → 文件关联 → 选格式 → 立即关联。
+此操作登记打开方式，Windows 10/11 的受保护默认应用仍需用户在系统设置中确认。
+结果对话框可打开系统「默认应用」；本程序不覆盖其他程序的用户选择。
 换位置之后需要重新关联一次（绿色软件记的是当前路径）。
 "@
     [IO.File]::WriteAllText((Join-Path $stagingRoot "使用说明.txt"),
@@ -168,7 +173,9 @@ installLocal.ps1         可选。想要开始菜单/桌面快捷方式、或者
     }
     $checksumPath = Join-Path $OutputDirectory "SHA256SUMS.txt"
     [IO.File]::WriteAllLines($checksumPath, $checksums, [Text.UTF8Encoding]::new($false))
-    & (Join-Path $repoRoot 'scripts/archive-release.ps1') -ReleaseDirectory $OutputDirectory
+    if (-not $NoArchive) {
+        & (Join-Path $repoRoot 'scripts/archive-release.ps1') -ReleaseDirectory $OutputDirectory
+    }
 
     [PSCustomObject]@{
         Version = $version

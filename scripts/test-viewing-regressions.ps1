@@ -1,7 +1,15 @@
 ﻿param(
     [string]$Viewer = (Join-Path $PSScriptRoot '../x64/Release/YeImageViewer.exe'),
     [string]$Animation = (Join-Path $PSScriptRoot '../test/format corpus/files/animated.gif'),
-    [switch]$KeepEvidence
+    [switch]$KeepEvidence,
+    [switch]$SettingsDpiOnly,
+    [switch]$PanOnly,
+    [switch]$SettingsAuditOnly,
+    [switch]$ActualSizeOnly,
+    [switch]$ReaderPanOnly,
+    [switch]$ShortcutAuditOnly,
+    [switch]$RapidPanOnly,
+    [switch]$PanVisualOnly
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -14,6 +22,9 @@ using System.Runtime.InteropServices;
 public static class ViewingRegressionNative {
     public delegate bool Callback(IntPtr hwnd, IntPtr data);
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X,Y; }
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left,Top,Right,Bottom; }
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hwnd,out RECT rect);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd,out RECT rect);
     [DllImport("user32.dll")] public static extern bool EnumWindows(Callback callback, IntPtr data);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint process);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd,StringBuilder name,int count);
@@ -60,6 +71,8 @@ $testRoot = Join-Path $tempBase ('YeViewer-Viewing-' + [Guid]::NewGuid().ToStrin
 $statePath = Join-Path $testRoot 'state.txt'
 $oldProbe = $env:YEIMAGEVIEWER_INTERACTION_PROBE
 $oldMonitor = $env:YEIMAGEVIEWER_TEST_PRIMARY_MONITOR
+$oldRegistrySandbox = $env:YEIMAGEVIEWER_TEST_REGISTRY_SANDBOX
+$registrySandbox = 'Software\YeImageViewerTests\Native-' + [Guid]::NewGuid().ToString('N')
 $oldDpi = [ViewingRegressionNative]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $oldCursor = New-Object ViewingRegressionNative+POINT
 [void][ViewingRegressionNative]::GetCursorPos([ref]$oldCursor)
@@ -126,7 +139,19 @@ function Click([IntPtr]$Target,[int]$X,[int]$Y) {
     Message $Target 0x0201 1 $point
     Message $Target 0x0202 0 $point
 }
-function Set-Option([int]$Row,[int]$Option,[int]$Slot) {
+function Save-ClientEvidence([IntPtr]$Target,[string]$Name) {
+    $client=New-Object ViewingRegressionNative+RECT
+    $origin=New-Object ViewingRegressionNative+POINT
+    [void][ViewingRegressionNative]::GetClientRect($Target,[ref]$client)
+    [void][ViewingRegressionNative]::ClientToScreen($Target,[ref]$origin)
+    $bitmap=[Drawing.Bitmap]::new($client.Right,$client.Bottom)
+    $graphics=[Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.CopyFromScreen($origin.X,$origin.Y,0,0,$bitmap.Size)
+        $bitmap.Save((Join-Path $evidence $Name),[Drawing.Imaging.ImageFormat]::Png)
+    } finally {$graphics.Dispose(); $bitmap.Dispose()}
+}
+function Set-Option([int]$Row,[int]$Option,[int]$Slot,[string]$Field='') {
     Message $window 0x0100 0x70
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
     do {
@@ -135,7 +160,7 @@ function Set-Option([int]$Row,[int]$Option,[int]$Slot) {
         Start-Sleep -Milliseconds 50
     } while ([DateTime]::UtcNow -lt $deadline)
     if ($settings -eq [IntPtr]::Zero) { throw '设置窗口未打开' }
-    $counts = @(3,3,3,2,2,4,2,2,2,4,2,2,3,3,2,2,2,3,3,2,2,2,2,2,3)
+    $counts = @(3,3,3,2,2,4,2,2,2,4,2,2,3,3,2,2,2,3,3,2,2,2,2,2,9)
     $naturalY = 52 + 216 + $Row*48 + 19
     $steps = [Math]::Max(0,[int][Math]::Ceiling(($naturalY-500)/72.0))
     for ($step=0; $step -lt $steps; $step++) { Message $settings 0x020A 4287102976 }
@@ -147,8 +172,9 @@ function Set-Option([int]$Row,[int]$Option,[int]$Slot) {
     Message $settings 0x0010
     # 窗口销毁先于设置线程释放 isWorking；等待线程收尾后才能再次打开。
     Start-Sleep -Milliseconds 200
-    $state = Wait-State { param($s) $s.ContainsKey('pref'+$Slot) -and [int]$s['pref'+$Slot] -eq $Option } ('设置单选行 '+$Row+' 未生效')
-    Assert-True ([int]$state['pref'+$Slot] -eq $Option) ('设置行 '+$Row+' 的选项 '+$Option+' 可点击并生效')
+    if (-not $Field) {$Field='pref'+$Slot}
+    $state = Wait-State { param($s) $s.ContainsKey($Field) -and [int]$s[$Field] -eq $Option } ('设置单选行 '+$Row+' 未生效')
+    Assert-True ([int]$state[$Field] -eq $Option) ('设置行 '+$Row+' 的选项 '+$Option+' 可点击并生效')
     return $state
 }
 function Command([uint32]$Id) { Message $window 0x0111 $Id }
@@ -190,6 +216,506 @@ function Drag([int]$X,[int]$Y,[int]$DX,[int]$DY) {
     Start-Sleep -Milliseconds 320
 }
 
+function Set-Pan([int]$Level = -1) {
+    $s = Read-State
+    $x=[int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)
+    $y=[int]((Number $s 'panButtonY')+(Number $s 'panButtonH')/2)
+    $origin=New-Object ViewingRegressionNative+POINT
+    [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
+    [void][ViewingRegressionNative]::SetCursorPos($origin.X+$x,$origin.Y+$y)
+    Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
+    Start-Sleep -Milliseconds 60
+    Click $window $x $y
+    $s=Wait-State {param($v) $v.panPopover -eq '1'} '倍率浮层未打开'
+    if ($Level -lt 0) {
+        Click $window ([int]((Number $s 'panPanelX')+(Number $s 'panPanelW')/2)) ([int]((Number $s 'panPanelY')+(Number $s 'panPanelH')/4))
+    } else {
+        Click $window ([int]((Number $s 'panTrackX')+(Number $s 'panTrackW')*$Level/11)) ([int]((Number $s 'panTrackY')+(Number $s 'panTrackH')/2))
+    }
+    Message $window 0x0100 0x1B
+    return Wait-State {param($v) $v.panPopover -eq '0' -and $v.panMode -eq $(if($Level -lt 0){'0'}else{'1'}) -and
+        ($Level -lt 0 -or [int]$v.panFixed -eq $Level)} '倍率选项未生效'
+}
+
+function Pan-Drag([int]$Dx,[int]$Dy,[int]$Flags=1,[int]$Steps=1,[int]$Delay=20) {
+    $s=Read-State; $x=[int]((Number $s 'width')/2); $y=[int]((Number $s 'height')/2)
+    $origin=New-Object ViewingRegressionNative+POINT
+    [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
+    [void][ViewingRegressionNative]::SetCursorPos($origin.X+$x,$origin.Y+$y)
+    Message $window 0x0200 0 (($x -band 65535) -bor (($y -band 65535) -shl 16))
+    Start-Sleep -Milliseconds 330
+    Message $window 0x0201 $Flags (($x -band 65535) -bor (($y -band 65535) -shl 16))
+    if ($ReaderPanOnly) {Start-Sleep -Milliseconds 80; $debug=Read-State; Write-Host ("DOWN 拖动=$($debug.imageDragging)，窗口=$($debug.windowDragging)，锚点=$($debug.readerAnchor)")}
+    for($i=1;$i -le $Steps;$i++) {
+        Start-Sleep -Milliseconds $Delay
+        $mx=$x+[int][Math]::Round($Dx*$i/$Steps); $my=$y+[int][Math]::Round($Dy*$i/$Steps)
+        Message $window 0x0200 $Flags (($mx -band 65535) -bor (($my -band 65535) -shl 16))
+        if ($ReaderPanOnly) {Start-Sleep -Milliseconds 80; $debug=Read-State; Write-Host ("MOVE 拖动=$($debug.imageDragging)，增量=$($debug.panDeltaY)，次数=$($debug.panMoves)，offset=$($debug.readerOffset)")}
+    }
+    Message $window 0x0202 0 (($mx -band 65535) -bor (($my -band 65535) -shl 16))
+    Start-Sleep -Milliseconds 100
+    return Read-State
+}
+
+function Test-RapidPan {
+    $s=Set-Option 12 0 323
+    $s=Set-Option 22 0 333
+    $s=Set-Pan 4
+    $s=Read-State; $x=[int]((Number $s 'width')/2); $y=[int]((Number $s 'height')/2)
+    $before=Number $s 'slideY'
+    $origin=New-Object ViewingRegressionNative+POINT
+    [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
+    [void][ViewingRegressionNative]::SetCursorPos($origin.X+$x,$origin.Y+$y)
+    Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
+    Start-Sleep -Milliseconds 330
+    for($i=0;$i -lt 2;$i++) {
+        Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
+        Message $window 0x0201 1 (($x -band 65535) -bor ($y -shl 16))
+        Start-Sleep -Milliseconds 30
+        Message $window 0x0200 1 (($x -band 65535) -bor (($y-50) -shl 16))
+        Message $window 0x0202 0 (($x -band 65535) -bor (($y-50) -shl 16))
+        Start-Sleep -Milliseconds 50
+    }
+    Start-Sleep -Milliseconds 150; $s=Read-State
+    Assert-True ($s.shape -eq '0' -and [Math]::Abs((Number $s 'slideY')-$before+100) -le 1) `
+        ("TB-24 快速连续拖动不会误触双击或改变窗口形态：形态=$($s.shape)，位移=$((Number $s 'slideY')-$before)，次数=$($s.panMoves)")
+}
+
+function Test-PanVisual {
+    $s=Set-Option 12 0 323
+    foreach($width in @(340,1000)) {
+        [void][ViewingRegressionNative]::SetWindowPos($window,[IntPtr]::Zero,20,20,$width,700,0x0014)
+        Start-Sleep -Milliseconds 250
+        $s=Set-Pan 11
+        $x=[int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)
+        $y=[int]((Number $s 'panButtonY')+(Number $s 'panButtonH')/2)
+        Click $window $x $y
+        $s=Wait-State {param($v) $v.panPopover -eq '1'} '窄窗倍率浮层未打开'
+        Assert-True ((Number $s 'panPanelX') -ge 0 -and (Number $s 'panPanelY') -ge 0 -and
+            (Number $s 'panPanelX')+(Number $s 'panPanelW') -le (Number $s 'width') -and
+            (Number $s 'panPanelY')+(Number $s 'panPanelH') -le (Number $s 'height')) `
+            ("TB-21 宽 $width 像素的靠边窗口浮层不裁剪，9× 可点击")
+        Start-Sleep -Milliseconds 100
+        Save-ClientEvidence $window ("拖拽浮层-$width.png")
+        if ($width -eq 1000) {
+            $bitmap=[Drawing.Bitmap]::new((Join-Path $evidence "拖拽浮层-$width.png"))
+            try {
+                $columns=0
+                for($ix=[int](Number $s 'panButtonX')+2;$ix -lt [int](Number $s 'panButtonX')+30;$ix++) {
+                    $ink=$false
+                    for($iy=[int](Number $s 'panButtonY')+3;$iy -lt [int](Number $s 'panButtonY')+[int](Number $s 'panButtonH')-3;$iy++) {
+                        $color=$bitmap.GetPixel($ix,$iy)
+                        if($color.R -gt 190 -and $color.G -gt 190 -and $color.B -gt 190) {$ink=$true;break}
+                    }
+                    if($ink){$columns++}
+                }
+                # 24 格 viewBox 中手掌约占 16 格；20px 图标扣除抗锯齿边缘应至少占 11 列。
+                # 旧的二次缩小只剩约 8px 图标，其手掌最多约 6 列，无法满足此下限。
+                Assert-True ($columns -ge 11) ("TB-01 手掌图标使用与现有按钮一致的可读尺寸，不重复缩小：$columns 个着色列")
+            } finally {$bitmap.Dispose()}
+        }
+        Message $window 0x0100 0x1B
+    }
+    Stop-Viewer
+}
+
+function Test-Pan {
+    $s=Set-Option 12 0 323
+    $s=Set-Option 22 0 333
+    $s=Set-Option 14 0 322
+    $initialMode=$s.panMode; $initialFixed=$s.panFixed; $initialWidth=$s.width; $initialHeight=$s.height
+    $x=[int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)
+    $y=[int]((Number $s 'panButtonY')+(Number $s 'panButtonH')/2)
+    $origin=New-Object ViewingRegressionNative+POINT
+    [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
+    [void][ViewingRegressionNative]::SetCursorPos($origin.X+$x,$origin.Y+$y)
+    Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16)); Start-Sleep -Milliseconds 60
+    Click $window $x $y
+    $s=Wait-State {param($v) $v.panPopover -eq '1'} '初始倍率浮层未打开'
+    Assert-True ($s.panMode -eq $initialMode -and $s.panFixed -eq $initialFixed -and
+        $s.width -eq $initialWidth -and $s.height -eq $initialHeight) 'TB-01/02 打开手掌浮层不改变模式、固定档位或窗口大小'
+    Assert-True ((Number $s 'panPanelX') -ge 0 -and (Number $s 'panPanelY') -ge 0 -and
+        (Number $s 'panPanelX')+(Number $s 'panPanelW') -le (Number $s 'width')) 'TB-21 当前显示器倍率浮层完整位于窗口内'
+    Message $window 0x0100 0x1B
+    $factors=@(.1,.25,.5,.75,1,1.25,1.5,2,3,5,7,9)
+    for($level=0;$level -lt 12;$level++) {
+        $s=Set-Pan 4
+        Message $window 0x0100 0x31
+        Start-Sleep -Milliseconds 300
+        # 精度测试先回到图像中部，避免正反向动作被边界截断。
+        $s=Read-State
+        $s=Pan-Drag 0 (-[int](Number $s 'slideY'))
+        $s=Set-Pan $level
+        $s=Read-State; $before=Number $s 'slideY'
+        $s=Pan-Drag 100 -100
+        Assert-True ([Math]::Abs((Number $s 'slideY')-$before+100*$factors[$level]) -le 1 -and $s.slideX -eq '0') `
+            ("TB-03/15 固定 $($factors[$level])× 移动准确，未溢出水平轴锁定")
+        $before=Number $s 'slideY'
+        $s=Pan-Drag 0 100 5
+        Assert-True ([Math]::Abs((Number $s 'slideY')-$before-25) -le 1 -and [int]$s.panFixed -eq $level) `
+            ("TB-10 固定 $($factors[$level])× 的 Shift 临时倍率是 0.25×，原设置不变")
+    }
+    $s=Set-Pan 0
+    $before=Number $s 'slideY'
+    $s=Pan-Drag 0 100 1 100 5
+    Assert-True ([Math]::Abs((Number $s 'slideY')-$before-10) -le 1) 'TB-04 0.1× 每次移动 1px 的残差正确累计'
+    $s=Set-Pan 8
+    $before=Number $s 'slideY'; $s=Pan-Drag 0 100 1 10 50
+    $slow=(Number $s 'slideY')-$before
+    $before=Number $s 'slideY'; $s=Pan-Drag 0 -100 1 10 5
+    Assert-True ([Math]::Abs($slow-300) -le 1 -and [Math]::Abs((Number $s 'slideY')-$before+300) -le 1) `
+        'TB-05 固定倍率不随拖动速度改变，不叠加自动加速'
+    $s=Set-Option 24 0 356
+    $before=Number $s 'slideY'; $s=Pan-Drag 0 -50
+    Assert-True ([Math]::Abs((Number $s 'slideY')-$before+150) -le 1) 'TB-19 调整自动灵敏度不影响固定 3× 的实际位移'
+    $s=Set-Pan -1
+    $s=Set-Option 24 8 356
+    $before=Number $s 'slideY'; $s=Pan-Drag 0 -400 1 400 20
+    Assert-True ([Math]::Abs((Number $s 'slideY')-$before+400) -le 1) 'TB-06/08 自动最高灵敏度慢速长距离仍严格 1:1'
+    Message $window 0x0100 0x31; Start-Sleep -Milliseconds 300
+    $s=Read-State; $before=Number $s 'slideY'; $s=Pan-Drag 0 -200 1 10 15
+    Assert-True ((Number $s 'slideY')-$before -lt -250) 'TB-07 自动快速拖动产生平滑加速'
+    $before=Number $s 'slideY'; $s=Pan-Drag 0 100 5
+    Assert-True ([Math]::Abs((Number $s 'slideY')-$before-25) -le 1 -and $s.panMode -eq '0') 'TB-10 自动模式也被 Shift 临时 0.25× 覆盖，保存模式不变'
+    $s=Read-State; $x=[int]((Number $s 'width')/2); $y=[int]((Number $s 'height')/2)
+    Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16)); Start-Sleep -Milliseconds 330
+    Message $window 0x0201 1 (($x -band 65535) -bor ($y -shl 16))
+    for($i=1;$i -le 8;$i++) {
+        Start-Sleep -Milliseconds 20
+        Message $window 0x0200 1 (($x -band 65535) -bor (($y-20*$i) -shl 16))
+    }
+    Start-Sleep -Milliseconds 20
+    Message $window 0x0200 1 (($x -band 65535) -bor (($y-150) -shl 16))
+    Start-Sleep -Milliseconds 60; $s=Read-State
+    Assert-True ([int]$s.panDeltaY -ge 9 -and [int]$s.panDeltaY -le 11) 'TB-09 自动加速手势中反向立即回落到跟手位移'
+    Start-Sleep -Milliseconds 200
+    Message $window 0x0200 1 (($x -band 65535) -bor (($y-149) -shl 16))
+    Start-Sleep -Milliseconds 60; $s=Read-State
+    Assert-True ([int]$s.panDeltaY -ge 0 -and [int]$s.panDeltaY -le 2) 'TB-09 自动加速手势中减速恢复 1:1'
+    Message $window 0x0202 0 (($x -band 65535) -bor (($y-149) -shl 16))
+    $s=Set-Pan 4
+    $s=Pan-Drag 0 (-[int](Number $s 'slideY'))
+    $s=Read-State; $x=[int]((Number $s 'width')/2); $y=[int]((Number $s 'height')/2)
+    $before=Number $s 'slideY'; Start-Sleep -Milliseconds 330
+    Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
+    Message $window 0x0201 1 (($x -band 65535) -bor ($y -shl 16))
+    foreach($part in @(@(100,1),@(200,5),@(300,1))) {
+        Message $window 0x0200 $part[1] (($x -band 65535) -bor ((($y-$part[0]) -band 65535) -shl 16))
+        Start-Sleep -Milliseconds 60
+    }
+    Message $window 0x0202 0 (($x -band 65535) -bor ((($y-300) -band 65535) -shl 16))
+    Start-Sleep -Milliseconds 100; $s=Read-State
+    Assert-True ([Math]::Abs((Number $s 'slideY')-$before+225) -le 1) 'TB-11/12 手势中按下和松开 Shift 只影响后续增量，无位置跳变'
+    $before=Number $s 'slideY'; Start-Sleep -Milliseconds 350; $s=Read-State
+    Assert-True ((Number $s 'slideY') -eq $before) 'TB-09 松手后没有新增惯性或漂移'
+    # 在同一图片放大到双轴均溢出，不能继续无条件锁死长图 X。
+    $s=Set-Option 13 1 324
+    for($i=0;$i -lt 16;$i++) {Message $window 0x0100 0x26; Message $window 0x0101 0x26; Start-Sleep -Milliseconds 40}
+    Start-Sleep -Milliseconds 350; $s=Read-State
+    $beforeX=Number $s 'slideX'; $beforeY=Number $s 'slideY'
+    $s=Pan-Drag 30 -30
+    Assert-True ((Number $s 'right')-(Number $s 'left') -gt (Number $s 'width') -and
+        [Math]::Abs((Number $s 'slideX')-$beforeX-30) -le 1 -and [Math]::Abs((Number $s 'slideY')-$beforeY+30) -le 1) `
+        'TB-16 长图放大到双轴溢出后两轴均可拖动'
+    $s=Pan-Drag 10000 10000
+    Assert-True ((Number $s 'left') -le 1 -and (Number $s 'top') -le 1) 'TB-17 拖到边界后图片仍覆盖视口，不露出越界空白'
+    # 缩回 100% 后，水平轴不再溢出，应立即居中，而不是等下一次拖动才纠正。
+    Message $window 0x0100 0x31; Start-Sleep -Milliseconds 350; $s=Read-State
+    Assert-True ($s.zoom -eq '100' -and $s.slideX -eq '0') 'TB-18 缩放变化立即重算轴锁与边界'
+    Message $window 0x0100 0x51; Start-Sleep -Milliseconds 350; $s=Read-State
+    $beforeX=Number $s 'slideX'; $dx=if($beforeX -lt 0){30}else{-30}
+    $s=Pan-Drag $dx 100
+    Assert-True ($s.rotation -eq '1' -and $s.slideY -eq '0' -and
+        [Math]::Abs((Number $s 'slideX')-$beforeX-$dx) -le 1 -and $s.panFixed -eq '4') `
+        'TB-18 旋转后变成横向长图，垂直轴立即锁定，倍率不变'
+    Message $window 0x0100 0x45; Start-Sleep -Milliseconds 350
+    Test-RapidPan
+    # 打开浮层和滑块捕获后经过生产失焦消息，关闭浮层、释放手势并刷新。
+    $s=Read-State; $x=[int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)
+    $y=[int]((Number $s 'panButtonY')+(Number $s 'panButtonH')/2)
+    Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
+    Click $window $x $y
+    $s=Wait-State {param($v) $v.panPopover -eq '1'} '失焦测试浮层未打开'
+    $x=[int](Number $s 'panTrackX'); $y=[int]((Number $s 'panTrackY')+(Number $s 'panTrackH')/2)
+    Message $window 0x0201 1 (($x -band 65535) -bor ($y -shl 16))
+    Message $window 0x0008 0
+    $s=Wait-State {param($v) $v.panPopover -eq '0' -and $v.imageDragging -eq '0'} '失焦后浮层或拖拽状态未释放'
+    $before=Number $s 'slideY'
+    Message $window 0x0200 1 (($x -band 65535) -bor (($y-100) -shl 16))
+    Start-Sleep -Milliseconds 100; $s=Read-State
+    Assert-True ((Number $s 'slideY') -eq $before -and $s.panPopover -eq '0') 'TB-23 失焦后刷新浮层并释放捕获，无残留拖拽'
+    $s=Set-Pan 11; $s=Set-Option 24 2 356
+    Stop-Viewer; $s=Start-Viewer $tall
+    Assert-True ($s.panMode -eq '1' -and $s.panFixed -eq '11' -and $s.panSensitivity -eq '2') `
+        'TB-20 模式、十二档倍率与独立灵敏度跨进程保存，Shift 临时状态不保存'
+    $s=Set-Option 19 1 330
+    $s=Set-Pan 7
+    Start-Sleep -Milliseconds 300
+    $s=Read-State
+    $before=Number $s 'readerOffset'; $s=Pan-Drag 0 -50
+    Assert-True ([Math]::Abs((Number $s 'readerOffset')-$before-100) -le 2) ("连续阅读也使用同一套固定拖拽倍率：$before → $($s.readerOffset)")
+    Stop-Viewer
+    Write-Host ("拖拽真实窗口回归通过：$script:passed 项")
+}
+
+function Test-ReaderPan {
+    $s=Set-Option 12 0 323
+    $s=Set-Option 13 1 324
+    $s=Set-Option 19 1 330
+    $s=Set-Pan 7
+    Start-Sleep -Milliseconds 300
+    $s=Read-State; $before=Number $s 'readerOffset'
+    $s=Pan-Drag 0 -50
+    Assert-True ([Math]::Abs((Number $s 'readerOffset')-$before-100) -le 2) `
+        ("阅读拖拽：$before → $($s.readerOffset)，增量 $($s.panDeltaY)，调用 $($s.panMoves)，锚点 $($s.readerAnchor)，脏 $($s.readerDirty)")
+    Stop-Viewer
+}
+
+function Test-ActualSize {
+    Message $window 0x0100 0x70
+    $settings=[IntPtr]::Zero; $deadline=[DateTime]::UtcNow.AddSeconds(5)
+    do {$settings=[ViewingRegressionNative]::Find($process.Id,'YeImageViewerSettingWnd'); Start-Sleep -Milliseconds 50}
+    while($settings -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
+    $scale=[ViewingRegressionNative]::GetDpiForWindow($settings)/96.0
+    Click $settings ([int](169*$scale)) ([int](194*$scale))
+    Message $settings 0x0010; Start-Sleep -Milliseconds 400
+    $s=Read-State
+    Assert-True ($s.settingActualPreferred -eq '1' -and $s.zoom -eq '100') '默认实际大小开关实际改变大图显示为 100%，不是只保存勾选状态'
+    Stop-Viewer
+    $s=Start-Viewer (Join-Path $bigFolder '02.png')
+    Assert-True ($s.settingActualPreferred -eq '1' -and $s.zoom -eq '100') '默认实际大小在另一张大图及重启后真正生效'
+    $s=Set-Option 13 0 324
+    Assert-True ($s.settingActualPreferred -eq '0' -and [int]$s.zoom -lt 100) '选择适应窗口会同步取消旧实际大小开关，两个入口不会互相覆盖'
+    Stop-Viewer
+}
+
+function Open-ShortcutSettings {
+    Command 1010
+    $settings=[IntPtr]::Zero; $deadline=[DateTime]::UtcNow.AddSeconds(5)
+    do {$settings=[ViewingRegressionNative]::Find($process.Id,'YeImageViewerSettingWnd'); Start-Sleep -Milliseconds 50}
+    while($settings -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
+    if($settings -eq [IntPtr]::Zero) {throw '快捷键审计窗口未打开'}
+    $scale=[ViewingRegressionNative]::GetDpiForWindow($settings)/96.0
+    Click $settings ([int](387*$scale)) ([int](26*$scale))
+    return $settings
+}
+
+function Test-ShortcutAudit {
+    $report=[Collections.Generic.List[object]]::new()
+    # 界面顺序不是枚举存储顺序，从两个生产声明建立映射，不能手抄一张顺序表。
+    $configSource=Get-Content (Join-Path $PSScriptRoot '../YeImageViewer/include/ShortcutConfig.h') -Raw
+    $settingSource=Get-Content (Join-Path $PSScriptRoot '../YeImageViewer/include/Setting.h') -Raw
+    $enumBody=[regex]::Match($configSource,'enum class Action : uint32_t\s*\{([\s\S]*?)\};').Groups[1].Value
+    $actionNumbers=@{}; $number=0
+    foreach($name in ($enumBody -split ',')) {
+        $name=$name.Trim()
+        if($name -and $name -ne 'Count') {$actionNumbers[$name]=$number; $number++}
+    }
+    $rows=@([regex]::Matches($settingSource,'ShortcutItem\{\s*ShortcutConfig::Action::(\w+),') | ForEach-Object {$_.Groups[1].Value})
+    Assert-True ($rows.Count -eq 34 -and $actionNumbers.Count -eq 34 -and (@($rows | Select-Object -Unique).Count -eq 34)) '快捷键审计清单覆盖全部生产界面动作且无重复'
+    for($bindingIndex=0;$bindingIndex -lt $rows.Count;$bindingIndex++) {
+        $settings=Open-ShortcutSettings
+        $scale=[ViewingRegressionNative]::GetDpiForWindow($settings)/96.0
+        $natural=52+288+40*$bindingIndex+20
+        $steps=[Math]::Max(0,[int][Math]::Ceiling(($natural-500)/72.0))
+        for($step=0;$step -lt $steps;$step++) {Message $settings 0x020A 4287102976}
+        $cy=[int](($natural-$steps*72)*$scale)
+        Click $settings ([int](417*$scale)) $cy
+        Message $settings 0x0100 0x74
+        Message $settings 0x0101 0x74
+        Message $settings 0x0010; Start-Sleep -Milliseconds 200
+        $field='binding'+$actionNumbers[$rows[$bindingIndex]]
+        $s=Wait-State {param($v) [int]$v[$field] -eq 116} ('快捷键行 '+$bindingIndex+' 未录入 F5')
+        Stop-Viewer; $s=Start-Viewer $paths[1]
+        Assert-True ([int]$s[$field] -eq 116) ('快捷键行 '+$bindingIndex+' 改绑、换图与重启后恢复 F5')
+        $settings=Open-ShortcutSettings
+        for($step=0;$step -lt $steps;$step++) {Message $settings 0x020A 4287102976}
+        Click $settings ([int](563*$scale)) $cy
+        Message $settings 0x0010; Start-Sleep -Milliseconds 200
+        $s=Wait-State {param($v) $v[$field] -eq '0'} ('快捷键行 '+$bindingIndex+' 未清空')
+        Stop-Viewer; $s=Start-Viewer $paths[0]
+        Assert-True ($s[$field] -eq '0') ('快捷键行 '+$bindingIndex+' 清空值跨进程保存')
+        $report.Add([pscustomobject]@{类型='快捷键';项目=$rows[$bindingIndex];选项='F5 / 未绑定';改绑重启='通过';清空重启='通过';行为='专门回归'})
+    }
+    # 恢复默认必须重新提供 F1/F3 等入口；后续使用固定菜单命令不依赖改绑。
+    $settings=Open-ShortcutSettings
+    $scale=[ViewingRegressionNative]::GetDpiForWindow($settings)/96.0
+    Click $settings ([int](494*$scale)) ([int](274*$scale))
+    Message $settings 0x0010; Start-Sleep -Milliseconds 200
+    $s=Read-State
+    Assert-True ($s.binding27 -eq '114' -and $s.wheel0 -eq '1' -and $s.wheel1 -eq '0' -and $s.wheel2 -eq '2') '快捷键页恢复默认同时还原键盘与滚轮'
+    $s=Set-Pan 11
+    for($modifier=0;$modifier -lt 3;$modifier++) {
+        for($wheelChoice=0;$wheelChoice -lt 4;$wheelChoice++) {
+            $settings=Open-ShortcutSettings
+            $scale=[ViewingRegressionNative]::GetDpiForWindow($settings)/96.0
+            $s=Read-State; $field='wheel'+$modifier
+            $current=[int]$s[$field]
+            $clicks=($wheelChoice-$current+4)%4
+            for($clickIndex=0;$clickIndex -lt $clicks;$clickIndex++) {
+                Click $settings ([int](436*$scale)) ([int]((52+93+42*$modifier)*$scale))
+            }
+            Message $settings 0x0010; Start-Sleep -Milliseconds 200
+            $s=Wait-State {param($v) [int]$v[$field] -eq $wheelChoice} '滚轮设置未切换'
+            Stop-Viewer; $s=Start-Viewer $paths[1]
+            Assert-True ([int]$s[$field] -eq $wheelChoice) ("滚轮组合 $modifier 的动作 $wheelChoice 换图并重启后保留")
+            $before=$s
+            $x=[int]((Number $s 'width')/2); $y=[int]((Number $s 'height')/2)
+            Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
+            $flags=@(0,8,4)[$modifier]
+            Message $window 0x020A (7864320 -bor $flags)
+            Start-Sleep -Milliseconds 350; $s=Read-State
+            $panStep=[Math]::Floor(((Number $before 'width')+(Number $before 'height'))/16)
+            $worked=switch($wheelChoice) {
+                0 {(Number $s 'zoom') -gt (Number $before 'zoom')}
+                1 {[Math]::Abs((Number $s 'slideY')-(Number $before 'slideY')-$panStep) -le 2}
+                2 {[Math]::Abs((Number $s 'slideX')-(Number $before 'slideX')-$panStep) -le 2}
+                3 {$s.image -ne $before.image}
+            }
+            Assert-True ([bool]$worked -and $s.panMode -eq '1' -and $s.panFixed -eq '11') `
+                ("TB-13/14/22 滚轮组合 $modifier 的动作 $wheelChoice 实际生效，不受 9× 拖拽或 Shift 精细模式影响")
+            $report.Add([pscustomobject]@{类型='滚轮';项目=$modifier;选项=$wheelChoice;改绑重启='通过';清空重启='不适用';行为='通过'})
+        }
+    }
+    Stop-Viewer
+    $report | Export-Csv -LiteralPath (Join-Path $evidence '快捷键与滚轮持久化审计.csv') -NoTypeInformation -Encoding utf8BOM
+    Write-Host ("快捷键／滚轮设置审计通过：$script:passed 项断言；动作行为由单独用例验证。")
+}
+
+function Test-SettingsAudit {
+    $counts=@(3,3,3,2,2,4,2,2,2,4,2,2,3,3,2,2,2,3,3,2,2,2,2,2,9)
+    $fields=@('settingSwitchAnimation','settingTheme','settingLanguage','settingRightClick',
+        'pref325','pref259','pref258','pref261','pref263','pref262','pref264','pref265',
+        'pref323','pref324','pref322','pref326','pref327','pref328','pref329','pref330',
+        'pref331','pref332','pref333','pref334','pref356')
+    $checks=@('settingRotateAnimation','settingZoomAnimation','settingDeleteConfirm','settingColor',
+        'settingActualPreferred','settingRememberMonitor')
+    $report=[Collections.Generic.List[object]]::new()
+    for($index=0;$index -lt $checks.Count;$index++) {
+        foreach($choice in @(0,1)) {
+            $s=Read-State
+            if ([int]$s[$checks[$index]] -ne $choice) {
+                Message $window 0x0100 0x70
+                $settings=[IntPtr]::Zero; $deadline=[DateTime]::UtcNow.AddSeconds(5)
+                do {$settings=[ViewingRegressionNative]::Find($process.Id,'YeImageViewerSettingWnd'); Start-Sleep -Milliseconds 50}
+                while($settings -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
+                if($settings -eq [IntPtr]::Zero) {throw '设置审计窗口未打开'}
+                $scale=[ViewingRegressionNative]::GetDpiForWindow($settings)/96.0
+                Click $settings ([int]((169+280*($index%2))*$scale)) ([int]((52+70+36*[Math]::Floor($index/2))*$scale))
+                Message $settings 0x0010
+                Start-Sleep -Milliseconds 250
+                $s=Wait-State {param($v) [int]$v[$checks[$index]] -eq $choice} ('复选项未更新：'+$checks[$index])
+            }
+            Assert-True ([int]$s[$checks[$index]] -eq $choice) ($checks[$index]+' 关闭设置后保留 '+$choice)
+            Message $window 0x0100 0x24; Start-Sleep -Milliseconds 200
+            Message $window 0x0100 0x27; Start-Sleep -Milliseconds 250
+            $s=Read-State
+            Assert-True ([int]$s[$checks[$index]] -eq $choice) ($checks[$index]+' 切图后保留 '+$choice)
+            Stop-Viewer; $s=Start-Viewer $paths[0]
+            Assert-True ([int]$s[$checks[$index]] -eq $choice) ($checks[$index]+' 退出重启后保留 '+$choice)
+            $report.Add([pscustomobject]@{类型='复选项';项目=$checks[$index];选项=$choice;关闭设置='通过';切图='通过';重启='通过'})
+        }
+    }
+    for($row=0;$row -lt $counts.Count;$row++) {
+        for($choice=0;$choice -lt $counts[$row];$choice++) {
+            $s=Set-Option $row $choice 0 $fields[$row]
+            Message $window 0x0100 0x24; Start-Sleep -Milliseconds 160
+            Message $window 0x0100 0x27; Start-Sleep -Milliseconds 250
+            $s=Read-State
+            Assert-True ([int]$s[$fields[$row]] -eq $choice) ('单选行 '+$row+' 切图后保留 '+$choice)
+            Stop-Viewer; $s=Start-Viewer $paths[0]
+            Assert-True ([int]$s[$fields[$row]] -eq $choice) ('单选行 '+$row+' 退出重启后保留 '+$choice)
+            $report.Add([pscustomobject]@{类型='单选项';项目=$fields[$row];选项=$choice;关闭设置='通过';切图='通过';重启='通过'})
+        }
+    }
+    Stop-Viewer
+    $report | Export-Csv -LiteralPath (Join-Path $evidence '全部常规设置持久化审计.csv') -NoTypeInformation -Encoding utf8BOM
+    Write-Host ("常规设置审计完成：$($report.Count) 个选项组合，$script:passed 项断言；业务行为另由专门回归验证。")
+}
+
+function Test-AssociationDpi {
+    Message $window 0x0100 0x70
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        $settings = [ViewingRegressionNative]::Find($process.Id,'YeImageViewerSettingWnd')
+        if ($settings -ne [IntPtr]::Zero) {break}
+        Start-Sleep -Milliseconds 60
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if ($settings -eq [IntPtr]::Zero) {throw 'DPI 回归设置窗口未打开'}
+    [ViewingRegressionNative]::Activate($settings)
+    $client = New-Object ViewingRegressionNative+RECT
+    $outer = New-Object ViewingRegressionNative+RECT
+    [void][ViewingRegressionNative]::GetClientRect($settings,[ref]$client)
+    [void][ViewingRegressionNative]::GetWindowRect($settings,[ref]$outer)
+    $frameW = $outer.Right-$outer.Left-$client.Right
+    $frameH = $outer.Bottom-$outer.Top-$client.Bottom
+    $baseColor = $null
+    $wheelBaseColor = $null
+    foreach ($dpi in @(96,120,144,192)) {
+        $rect = New-Object ViewingRegressionNative+RECT
+        $rect.Left=20; $rect.Top=20
+        $rect.Right=20+[int](620*$dpi/96)+$frameW
+        $rect.Bottom=20+[int](620*$dpi/96)+$frameH
+        $memory = [Runtime.InteropServices.Marshal]::AllocHGlobal([Runtime.InteropServices.Marshal]::SizeOf($rect))
+        try {
+            [Runtime.InteropServices.Marshal]::StructureToPtr($rect,$memory,$false)
+            Message $settings 0x02E0 ($dpi -bor ($dpi -shl 16)) $memory.ToInt64()
+        } finally {[Runtime.InteropServices.Marshal]::FreeHGlobal($memory)}
+        Start-Sleep -Milliseconds 350
+        $scale = $dpi/96.0
+        Click $settings ([int](232*$scale)) ([int](26*$scale))
+        Start-Sleep -Milliseconds 250
+        if ($dpi -eq 96) {
+            # 仅选择全格式，不点击关联，不修改用户注册表。
+            Click $settings 233 486
+            Start-Sleep -Milliseconds 250
+        }
+        $origin = New-Object ViewingRegressionNative+POINT
+        [void][ViewingRegressionNative]::ClientToScreen($settings,[ref]$origin)
+        $bmp = [Drawing.Bitmap]::new(1,1)
+        $g = [Drawing.Graphics]::FromImage($bmp)
+        try {
+            # 最后一行第十个标签底部内侧，避开字体、圆角及边框。
+            $x=[int](474*$scale); $y=[int](367*$scale)
+            $g.CopyFromScreen($origin.X+$x,$origin.Y+$y,0,0,$bmp.Size)
+            $color=$bmp.GetPixel(0,0)
+            if ($null -eq $baseColor) {$baseColor=$color}
+            Assert-True ([Math]::Abs($color.R-$baseColor.R) -le 3 -and [Math]::Abs($color.G-$baseColor.G) -le 3 -and
+                [Math]::Abs($color.B-$baseColor.B) -le 3) ("文件关联网格在 $dpi DPI 按物理像素正确绘制，最后一行标签可见")
+        } finally {$g.Dispose(); $bmp.Dispose()}
+        Save-ClientEvidence $settings ("文件关联-$dpi-DPI.png")
+        # 点击实际显示的“立即关联”，真实生产注册只写进该进程的 HKCU 沙箱。
+        $position=([int](531*$scale) -band 65535) -bor ([int](486*$scale) -shl 16)
+        [void][ViewingRegressionNative]::PostMessage($settings,0x0201,[UIntPtr]1,[IntPtr]$position)
+        [void][ViewingRegressionNative]::PostMessage($settings,0x0202,[UIntPtr]0,[IntPtr]$position)
+        $dialog=[IntPtr]::Zero; $deadline=[DateTime]::UtcNow.AddSeconds(5)
+        do {$dialog=[ViewingRegressionNative]::Find($process.Id,'#32770'); Start-Sleep -Milliseconds 50}
+        while($dialog -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
+        Assert-True ($dialog -ne [IntPtr]::Zero) ("$dpi DPI 点击可见关联按钮会显示结果对话框")
+        $root=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($registrySandbox+'\Software\YeImageViewer\Capabilities\FileAssociations')
+        try {Assert-True ($null -ne $root -and $root.GetValue('.png') -eq 'YeImageViewer.ImageFile.png') `
+            ("$dpi DPI 关联按钮实际登记 PNG 能力，非只检测弹框")} finally {if($root){$root.Dispose()}}
+        $no=[ViewingRegressionNative]::GetDlgItem($dialog,7)
+        if ($no -eq [IntPtr]::Zero) {throw '关联结果缺少取消打开系统设置的按钮'}
+        Message $no 0x00F5
+        Start-Sleep -Milliseconds 100
+        Click $settings ([int](387*$scale)) ([int](26*$scale))
+        Start-Sleep -Milliseconds 200
+        $wheelBitmap=[Drawing.Bitmap]::new(1,1)
+        $wheelGraphics=[Drawing.Graphics]::FromImage($wheelBitmap)
+        try {
+            $wheelGraphics.CopyFromScreen($origin.X+[int](540*$scale),$origin.Y+[int](144*$scale),0,0,$wheelBitmap.Size)
+            $wheelColor=$wheelBitmap.GetPixel(0,0)
+            if($null -eq $wheelBaseColor) {$wheelBaseColor=$wheelColor}
+            Assert-True ([Math]::Abs($wheelColor.R-$wheelBaseColor.R) -le 3 -and
+                [Math]::Abs($wheelColor.G-$wheelBaseColor.G) -le 3 -and [Math]::Abs($wheelColor.B-$wheelBaseColor.B) -le 3) `
+                ("$dpi DPI 快捷键页滚轮选项的右侧卡片完整缩放，不挤在左上角")
+        } finally {$wheelGraphics.Dispose(); $wheelBitmap.Dispose()}
+    }
+    Message $settings 0x0010
+    Stop-Viewer
+}
+
 try {
     [void](New-Item -ItemType Directory -Path $testRoot)
     [void](New-Item -ItemType Directory -Path $evidence -Force)
@@ -227,8 +753,29 @@ try {
     Copy-Item -LiteralPath $Animation -Destination $animated
     $env:YEIMAGEVIEWER_INTERACTION_PROBE = $statePath
     $env:YEIMAGEVIEWER_TEST_PRIMARY_MONITOR = '1'
+    if ($SettingsDpiOnly) {$env:YEIMAGEVIEWER_TEST_REGISTRY_SANDBOX=$registrySandbox}
 
     $s = Start-Viewer $paths[0]
+    if ($SettingsDpiOnly) {Test-AssociationDpi; return}
+    if ($PanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-Pan; return}
+    if ($SettingsAuditOnly) {Test-SettingsAudit; return}
+    if ($ReaderPanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-ReaderPan; return}
+    if ($RapidPanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-RapidPan; return}
+    if ($PanVisualOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-PanVisual; return}
+    if ($ShortcutAuditOnly) {Test-ShortcutAudit; return}
+    if ($ActualSizeOnly) {
+        Stop-Viewer
+        $bigFolder=Join-Path $testRoot 'big-pages'
+        [void](New-Item -ItemType Directory -Path $bigFolder)
+        foreach($index in @(1,2)) {
+            $bitmap=[Drawing.Bitmap]::new(4000,3000)
+            $graphics=[Drawing.Graphics]::FromImage($bitmap)
+            try {$graphics.Clear([Drawing.Color]::Silver); $bitmap.Save((Join-Path $bigFolder ('{0:00}.png' -f $index)),[Drawing.Imaging.ImageFormat]::Png)}
+            finally {$graphics.Dispose(); $bitmap.Dispose()}
+        }
+        $s=Start-Viewer (Join-Path $bigFolder '01.png')
+        Test-ActualSize; return
+    }
     $s = Set-Option 12 1 323
     $s = Set-Option 13 0 324
     $s = Set-Option 14 1 322
@@ -273,19 +820,19 @@ try {
     $s = Start-Viewer $tall
     $s = Set-Option 22 0 333
     $s = Set-Option 23 1 334
-    $s = Set-Option 24 2 335
+    $s = Set-Pan 8
     Assert-True ($s.long -eq '1' -and $s.zoom -eq '100' -and [Math]::Abs((Number $s 'top')) -le 1) '长图原始比例 100% 从顶部开始，不按窗口宽度拉伸'
     $s = Read-State
     $beforeTop = Number $s 'top'
     Drag ([int]((Number $s 'width')/2)) ([int]((Number $s 'height')/2)) 30 -40
     $after = Read-State
     Assert-True ($after.slideX -eq '0' -and [Math]::Abs((Number $after 'top')-$beforeTop+120) -le 3) '长图斜向拖动保持水平居中，3 倍加速只增加纵向位移'
-    $s = Set-Option 24 0 335
+    $s = Set-Pan 4
     $beforeTop = Number $s 'top'
     Drag ([int]((Number $s 'width')/2)) ([int]((Number $s 'height')/2)) 20 -40
     $after = Read-State
     Assert-True ($after.slideX -eq '0' -and [Math]::Abs((Number $after 'top')-$beforeTop+40) -le 3) '1 倍拖拽恢复 1:1，修改加速选项不重置当前取景'
-    $s = Set-Option 24 1 335
+    $s = Set-Pan 7
     $beforeTop = Number $s 'top'
     Drag ([int]((Number $s 'width')/2)) ([int]((Number $s 'height')/2)) 20 -40
     $after = Read-State
@@ -497,6 +1044,10 @@ finally {
     if ($null -ne $process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force; [void]$process.WaitForExit(3000) }
     $env:YEIMAGEVIEWER_INTERACTION_PROBE = $oldProbe
     $env:YEIMAGEVIEWER_TEST_PRIMARY_MONITOR = $oldMonitor
+    $env:YEIMAGEVIEWER_TEST_REGISTRY_SANDBOX=$oldRegistrySandbox
+    if ($SettingsDpiOnly -and $registrySandbox -match '^Software\\YeImageViewerTests\\Native-[a-f0-9]{32}$') {
+        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($registrySandbox,$false)
+    }
     [void][ViewingRegressionNative]::SetCursorPos($oldCursor.X,$oldCursor.Y)
     [void][ViewingRegressionNative]::SetThreadDpiAwarenessContext($oldDpi)
     if (Test-Path -LiteralPath $statePath) { Copy-Item -LiteralPath $statePath -Destination (Join-Path $evidence 'last-state.txt') -Force }

@@ -75,7 +75,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.38.0.0"
+$expectedFileVersion = "1.38.1.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -83,7 +83,7 @@ if ($actualFileVersion -ne $expectedFileVersion) {
 Write-Host "PASS viewer file version is $expectedFileVersion."
 
 # 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
-$expectedProductVersion = "1.38.0"
+$expectedProductVersion = "1.38.1-rc1"
 $actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
@@ -302,6 +302,7 @@ Write-Host "PASS viewer embeds current commit ID $expectedCommitId."
 # 抽成了独立脚本：提交前可以单独跑它自检，只读源码，几秒钟出结果。
 # 它自己 throw，这里直接调，不必再转一手退出码。
 & (Join-Path $repoRoot "scripts\check-source-invariants.ps1") -RepoRoot $repoRoot
+& (Join-Path $repoRoot "scripts\verify-source-invariant-checks.ps1") -RepoRoot $repoRoot
 
 Write-Host "Running unit regression tests..."
 $expectedHdrHash = "1A1A661E0A22BECBE019B6C095004315351F28600D9BD7600BD933BEB351E5D5"
@@ -966,11 +967,11 @@ function Get-ToolbarScale {
     param([int]$CanvasWidth, [int]$Dpi)
     if ($Dpi -le 0) { $Dpi = 96 }
     $target = [int][Math]::Floor($Dpi * 1000 / 96)
-    $minimum = [int][Math]::Floor(400 * $target / 1000)
     if ($CanvasWidth -le 16) {
         return [int][Math]::Floor(600 * $target / 1000)
     }
-    $widthScale = [int][Math]::Floor(($CanvasWidth - 16) * 1000 / 615)
+    $widthScale = [int][Math]::Floor(($CanvasWidth - 16) * 1000 / 683)
+    $minimum = [Math]::Min($widthScale,[int][Math]::Floor(400 * $target / 1000))
     $value = [Math]::Min($widthScale, $target)
     return [Math]::Min([Math]::Max($value, $minimum), $target)
 }
@@ -1115,14 +1116,14 @@ try {
     $zoomClientHeight = $zoomClient.Bottom - $zoomClient.Top
     $zoomDpi = [YeImageViewerTestNativeV1365]::GetDpiForWindow($zoomWindow)
     $zoomScale = Get-ToolbarScale -CanvasWidth $zoomClientWidth -Dpi $zoomDpi
-    $zoomToolbarWidth = Get-ScaledValue -Value 615 -Scale $zoomScale
+    $zoomToolbarWidth = Get-ScaledValue -Value 683 -Scale $zoomScale
     $zoomToolbarHeight = Get-ScaledValue -Value 50 -Scale $zoomScale
     $zoomToolbarBottom = Get-ScaledValue -Value 20 -Scale $zoomScale
     $zoomToolbarLeft = [int][Math]::Floor(($zoomClientWidth - $zoomToolbarWidth) / 2.0)
     $zoomPadding = Get-ScaledValue -Value 8 -Scale $zoomScale
     $zoomButton = Get-ScaledValue -Value 34 -Scale $zoomScale
     $fitImageX = $zoomToolbarLeft + $zoomPadding +
-        (Get-ScaledValue -Value 385 -Scale $zoomScale) + [int]($zoomButton / 2)
+        (Get-ScaledValue -Value 453 -Scale $zoomScale) + [int]($zoomButton / 2)
     $fitImageY = $zoomClientHeight - $zoomToolbarBottom - [int]($zoomToolbarHeight / 2)
 
     # 工具栏是悬停才显示的，先把鼠标移上去，再点
@@ -2692,7 +2693,7 @@ try {
     $targetClientWidth = $clientWidth
     $targetClientHeight = $clientHeight
     $toolbarScale = Get-ToolbarScale -CanvasWidth $targetClientWidth -Dpi $windowDpi
-    $toolbarWidth = Get-ScaledValue -Value 615 -Scale $toolbarScale
+    $toolbarWidth = Get-ScaledValue -Value 683 -Scale $toolbarScale
     $toolbarHeight = Get-ScaledValue -Value 50 -Scale $toolbarScale
     $toolbarBottom = Get-ScaledValue -Value 20 -Scale $toolbarScale
     $toolbarX = [int]($targetClientWidth / 2)
@@ -2706,12 +2707,12 @@ try {
     }
     Write-Host "PASS centered reference toolbar hover remains responsive."
 
-    $scaledToolbarWidth = Get-ScaledValue -Value 615 -Scale $toolbarScale
+    $scaledToolbarWidth = Get-ScaledValue -Value 683 -Scale $toolbarScale
     $scaledButtonSize = Get-ScaledValue -Value 34 -Scale $toolbarScale
     $scaledPadding = Get-ScaledValue -Value 8 -Scale $toolbarScale
-    $scaledZoomTextOffset = Get-ScaledValue -Value 526 -Scale $toolbarScale
+    $scaledZoomTextOffset = Get-ScaledValue -Value 594 -Scale $toolbarScale
     $scaledZoomTextWidth = Get-ScaledValue -Value 50 -Scale $toolbarScale
-    $scaledNextOffset = Get-ScaledValue -Value 300 -Scale $toolbarScale
+    $scaledNextOffset = Get-ScaledValue -Value 368 -Scale $toolbarScale
     $toolbarLeft = [int][Math]::Floor(($targetClientWidth - $scaledToolbarWidth) / 2.0)
     $zoomTextX = $toolbarLeft + $scaledPadding + $scaledZoomTextOffset +
         [int][Math]::Floor($scaledZoomTextWidth / 2.0)
@@ -2760,7 +2761,7 @@ try {
     # 插入「适应图片」之后按钮整体后移，原来的 458 落进了沉浸按钮里，
     # 一点就切进沉浸模式、缩放被重算，量出来的自然不是 175%。
     $bareToolbarX = $toolbarLeft + $scaledPadding +
-        [int][Math]::Floor((495 * $toolbarScale + 500) / 1000.0)
+        [int][Math]::Floor((563 * $toolbarScale + 500) / 1000.0)
     $bareToolbarPosition = [IntPtr](($toolbarY -shl 16) -bor ($bareToolbarX -band 0xFFFF))
     [void][YeImageViewerTestNativeV1365]::PostMessage(
         $window, 0x0200, [UIntPtr]::Zero, $bareToolbarPosition)
@@ -2829,7 +2830,7 @@ try {
     }
     Write-Host "PASS centered toolbar Next button changes images through its precise hit target."
 
-    $scaledPlayOffset = [int][Math]::Floor((265 * $toolbarScale + 500) / 1000.0)
+    $scaledPlayOffset = [int][Math]::Floor((333 * $toolbarScale + 500) / 1000.0)
     $playButtonX = $toolbarLeft + $scaledPadding + $scaledPlayOffset +
         [int][Math]::Floor($scaledButtonSize / 2.0)
     $playButtonPosition = [IntPtr](($toolbarY -shl 16) -bor ($playButtonX -band 0xFFFF))
@@ -3468,6 +3469,22 @@ try {
         [UIntPtr]1, $deleteTogglePosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($deleteSettings, 0x0202,
         [UIntPtr]0, $deleteTogglePosition)
+    # Toast 的背景基线不能含切图时会改变文件名的全屏信息条；在此独立关闭该条。
+    for ($step=0; $step -lt 5; $step++) {
+        [void][YeImageViewerTestNativeV1365]::SendMessage($deleteSettings,0x020A,
+            [UIntPtr]4287102976,[IntPtr]::Zero)
+    }
+    $infoOffX=[int][Math]::Round(277*$settingsWidth/620.0)
+    $infoOffY=[int][Math]::Round(455*$settingsWidth/620.0)
+    $infoOffPosition=[IntPtr](($infoOffY -shl 16) -bor ($infoOffX -band 65535))
+    [void][YeImageViewerTestNativeV1365]::SendMessage($deleteSettings,0x0201,[UIntPtr]1,$infoOffPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($deleteSettings,0x0202,[UIntPtr]0,$infoOffPosition)
+    # 普通窗口＋不透明背景隔离桌面合成变化；提示本身仍通过屏幕像素验证。
+    $normalX=[int][Math]::Round(244*$settingsWidth/620.0)
+    $normalY=[int][Math]::Round(503*$settingsWidth/620.0)
+    $normalPosition=[IntPtr](($normalY -shl 16) -bor ($normalX -band 65535))
+    [void][YeImageViewerTestNativeV1365]::SendMessage($deleteSettings,0x0201,[UIntPtr]1,$normalPosition)
+    [void][YeImageViewerTestNativeV1365]::SendMessage($deleteSettings,0x0202,[UIntPtr]0,$normalPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage($deleteSettings, 0x0010,
         [UIntPtr]::Zero, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 500
@@ -3479,10 +3496,15 @@ try {
     }
     $directDeleteName = $Matches[1] + ".png"
     $directDeleteTarget = Join-Path $fileOpsPictures $directDeleteName
+    # 计时/消失测试采用不透明底，排除透明窗口后方桌面与 DWM 合成带变化。
+    # 背景透明/磨砂行为已由独立回归覆盖，不能把它们的变化归因于 Toast 残留。
+    [void][YeImageViewerTestNativeV1365]::PostMessage($fileOpsWindow,0x0111,
+        [UIntPtr]1101,[IntPtr]::Zero)
     # 读屏幕像素前先置顶，否则别的窗口在这 3 秒内闪过也会被当成 Toast。
     [void][YeImageViewerTestNativeV1365]::SetWindowPos($fileOpsWindow, [IntPtr](-1),
         0, 0, 0, 0, 0x0013)
-    Start-Sleep -Milliseconds 200
+    # 上一步确认删除也会显示 Toast，不能把它尚未消失的边缘当作背景基线。
+    Start-Sleep -Milliseconds 2400
     $toastBefore = Get-ViewerToastSample -Window $fileOpsWindow
     [void][YeImageViewerTestNativeV1365]::PostMessage($fileOpsWindow, 0x0111,
         [UIntPtr]1006, [IntPtr]::Zero)
@@ -4337,6 +4359,12 @@ foreach ($donateName in @("donate-alipay.png", "donate-wechat.png")) {
 
 & (Join-Path $repoRoot 'scripts/test-menu-monitor-regressions.ps1') -Viewer $viewer -Fixture $commonPngFixture
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -PanOnly
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -PanVisualOnly
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -SettingsDpiOnly
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -ActualSizeOnly
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -SettingsAuditOnly
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -ShortcutAuditOnly
 & (Join-Path $repoRoot 'scripts/test-release-archive.ps1') -Viewer $viewer
 
 Write-Host "All regression tests passed."
