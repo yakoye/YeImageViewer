@@ -13,7 +13,7 @@
 
 **YeImageViewer** 是一款简约、快速的原生 Windows 图片查看器，支持常见静态图、动图、RAW、iOS Live Photo 和 Android Motion Photo，并提供 EXIF 查看、打印、简单编辑和文件关联功能。
 
-当前版本：**v1.38.1-rc1**（本地候选版，未公开发布；公开正式版仍为 v1.38.0） · [修改记录](CHANGELOG.md)
+当前版本：**v1.38.1-rc2**（本地候选版，未公开发布；公开正式版仍为 v1.38.0） · [修改记录](CHANGELOG.md)
 
 本项目基于 [JarkViewer](https://github.com/jark006/JarkViewer) 开发，并遵循 GNU GPL v3 许可证。感谢上游作者 JARK006 与所有贡献者。
 
@@ -84,7 +84,9 @@
 
 文件关联页的「立即关联」登记打开方式与默认应用能力，Windows 10/11 的受保护默认应用需用户在系统「默认应用」中确认，不覆盖其他程序的用户选择。更换程序路径后请重新登记。使用过关联时，删除程序前先选「全不选」并「立即关联」撤销格式登记；系统默认应用另行改回。使用过 `installLocal.ps1` 时还需移除其快捷方式和缩略图注册，不能只删除文件夹就认为这些系统登记也消失了。
 
-候选版打包可用 `./packageRelease.ps1 -SkipBuild -NoArchive -OutputDirectory artifacts/candidates/v1.38.1-rc1`；不公开推送，验收后单独复制到两个归档根目录的「候选版」子目录。默认不加 `-NoArchive` 的正式打包仍自动双归档、核对哈希且拒绝覆盖历史产物。
+候选版打包可用 `./packageRelease.ps1 -SkipBuild -NoArchive -OutputDirectory artifacts/candidates/v1.38.1-rc2`；不公开推送，验收后单独复制到两个归档根目录的「候选版」子目录。默认不加 `-NoArchive` 的正式打包仍自动双归档、核对哈希且拒绝覆盖历史产物。
+
+设置 → 常规中的「拖拽惯性滑动」默认关闭。开启后，在图片上按住左键快速拖动并松手，图片会沿松手前方向继续滑动并减速停止；「惯性滑动灵敏度」1～9 档只控制松手后的时长和距离，默认 5。工具栏自动／固定倍率仍只控制按住拖动，不与惯性重复相乘。慢拖、停顿后松手、Shift 精细拖动不触发惯性；再次输入或到达边界立即停。
 
 `installLocal.ps1` 是可选的便利脚本：装到 `%LOCALAPPDATA%\Programs\YeImageViewer`、注册当前用户的缩略图组件、建开始菜单和桌面快捷方式；它不会自动改变图片文件的默认打开程序。不跑它完全不影响使用。
 

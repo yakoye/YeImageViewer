@@ -142,6 +142,8 @@ std::string_view UIStringTable[STRING_MAX_NUM][3] = {
     {"7", "7", "7"},
     {"8", "8", "8"},
     {"9", "9", "9"},
+    {"拖拽惯性滑动", "Drag inertia", "拖曳慣性滑動"}, // 130
+    {"惯性滑动灵敏度", "Inertia sensitivity", "慣性滑動靈敏度"},
 };
 
 

@@ -43,6 +43,8 @@
 #include "ViewerOptions.h"
 #include "ViewingOptions.h"
 #include "PanPolicy.h"
+#include "KineticPan.h"
+#include <limits>
 #include "PanPopoverLayout.h"
 #include "LongImagePolicy.h"
 #include "ReadingPolicy.h"
@@ -4378,6 +4380,93 @@ void expectPanPolicies() {
         OverlayLayout::hitTest(1280,720,hand.x+hand.width/2,hand.y+hand.height/2)==OverlayLayout::Hit::PanMultiplier);
 }
 
+void expectKineticPan() {
+    std::array<uint32_t, 777> settings{};
+    settings[PanOptions::FIXED] = 11; settings[700] = 123;
+    KineticOptions::initialize(settings.data(), settings.size());
+    passOrFail("inertia defaults off at sensitivity five without touching drag or foreign settings",
+        settings[KineticOptions::ENABLED] == 0 && settings[KineticOptions::SENSITIVITY] == 4 &&
+        settings[PanOptions::FIXED] == 11 && settings[700] == 123);
+    settings[KineticOptions::ENABLED] = 1; settings[KineticOptions::SENSITIVITY] = 8;
+    KineticOptions::initialize(settings.data(), settings.size());
+    passOrFail("valid independent inertia settings survive validation",
+        settings[KineticOptions::ENABLED] == 1 && settings[KineticOptions::SENSITIVITY] == 8);
+    settings[KineticOptions::SENSITIVITY] = 99;
+    KineticOptions::initialize(settings.data(), settings.size());
+    passOrFail("corrupted inertia sensitivity returns to the safe fifth level", settings[KineticOptions::SENSITIVITY] == 4);
+    settings[KineticOptions::BASE] = 0;
+    KineticOptions::initialize(settings.data(), settings.size());
+    passOrFail("legacy or corrupted inertia storage is initialized disabled", settings[KineticOptions::ENABLED] == 0);
+
+    KineticPan::Samples samples;
+    for (int i=1; i<=8; ++i) samples.add(1+i*.02,.02,{0,-20},{0,-40},false);
+    const auto velocity = samples.release(1.16,96);
+    passOrFail("recent fast release uses actual image velocity without multiplying drag gain again",
+        std::abs(velocity.y+2000) < 1e-6 && velocity.x == 0);
+    passOrFail("paused release never inherits stale movement", samples.release(1.3,96).y == 0);
+    samples.add(1.24,.08,{0,-1},{0,-1},false);
+    passOrFail("a clearly slowed final segment suppresses stale fast-history inertia", samples.release(1.24,96).y == 0);
+    samples.reset();
+    for (int i=1; i<=8; ++i) samples.add(1+i*.02,.02,{0,-1},{0,-9},false);
+    passOrFail("slow pointer remains non-inertial even at fixed nine-times image movement", samples.release(1.16,96).y == 0);
+    samples.reset();
+    for (int i=1; i<=8; ++i) samples.add(1+i*.02,.02,{0,-20},{0,-40},i==4);
+    passOrFail("any precision segment suppresses inertia for that gesture", samples.release(1.16,96).y == 0);
+    samples.reset();
+    for (int i=1; i<=8; ++i) samples.add(1+i*.02,.02,{0,-20},{0,0},false);
+    passOrFail("blocked image movement cannot produce imaginary release velocity", samples.release(1.16,96).y == 0);
+    samples.reset();
+    for (int i=1; i<=8; ++i) samples.add(1+i*.02,.02,{0,-20},{0,-40},false);
+    samples.add(1.18,.02,{0,20},{0,20},false);
+    passOrFail("release direction follows the final reversal instead of the old drag", samples.release(1.18,96).y > 0);
+    samples.reset();
+    for (int i=1; i<=1000; ++i) samples.add(1+i*.002,.002,{0,-2},{0,-2},false);
+    passOrFail("fixed-capacity sampling stays correct through thousands of messages",
+        std::abs(samples.release(3,96).y+1000) < 1e-5);
+
+    double previousDuration=0, previousDistance=0;
+    for (uint32_t level=0; level<9; ++level) {
+        KineticPan::Motion motion;
+        const bool started = motion.start({0,-1200},level,800,600);
+        const double duration = motion.duration();
+        const auto first = motion.at(duration/4);
+        const auto middle = motion.at(duration/2);
+        const auto third = motion.at(duration*3/4);
+        const auto end = motion.at(duration);
+        passOrFail("all nine inertia sensitivities have increasing finite duration and distance",
+            started && duration > previousDuration && -end.y > previousDistance && !motion.active());
+        passOrFail("inertia smoothly decelerates with zero terminal velocity rather than easing in again",
+            -first.y > -(middle.y-first.y) && -(middle.y-first.y) > -(third.y-middle.y) &&
+            -(third.y-middle.y) > -(end.y-third.y) && std::abs(end.y+1200*duration/3) < 1e-6);
+        previousDuration=duration; previousDistance=-end.y;
+    }
+    KineticPan::Motion sixty, thirty;
+    sixty.start({0,-1200},4,800,600); thirty.start({0,-1200},4,800,600);
+    KineticPan::Vector end60{}, end30{};
+    for (int i=0;i<=60;++i) end60=sixty.at(sixty.duration()*i/60);
+    for (int i=0;i<=30;++i) end30=thirty.at(thirty.duration()*i/30);
+    passOrFail("inertial endpoint is independent of render frame rate", std::abs(end60.y-end30.y)<1e-6);
+    KineticPan::Motion bounded;
+    bounded.start({0,-1e9},8,800,600);
+    passOrFail("inertia has a viewport-relative safety cap for high drag multipliers",
+        bounded.velocity().x == 0 && bounded.velocity().y == -3600 && -bounded.at(bounded.duration()).y <= 1600);
+    bounded.start({100,200},4,800,600); bounded.stop();
+    passOrFail("explicit interruption stops the animation immediately", !bounded.active() && bounded.at(.1).y == 0);
+    passOrFail("invalid or empty release cannot start an animation", !bounded.start({},4,800,600) && !bounded.start({1,2},4,0,600));
+    samples.reset();
+    for (int i=1; i<=8; ++i) samples.add(1+i*.02,.02,{0,-6},{0,-6},false);
+    passOrFail("release speed threshold uses logical DPI-normalized mouse distance",
+        samples.release(1.16,96).y < 0 && samples.release(1.16,192).y == 0);
+    samples.add(1.18,.02,{0,std::numeric_limits<double>::quiet_NaN()},{0,20},false);
+    passOrFail("invalid samples cannot leak non-finite movement into rendering", samples.release(1.18,96).y == 0);
+    bounded.start({0,200},4,800,600);
+    bounded.at(std::numeric_limits<double>::quiet_NaN());
+    passOrFail("invalid animation time stops instead of producing unsafe coordinates", !bounded.active());
+    samples.reset(); samples.add(1.2,.2,{0,-200},{0,-200},false);
+    passOrFail("coalesced fast input keeps its real velocity despite a low render cadence",
+        std::abs(samples.release(1.2,96).y+1000) < 1e-6);
+}
+
 int main(int argc, char* argv[]) {
     std::cout << std::unitbuf;
     // 缩略图组件内部会用到 COM 对象，和资源管理器一样先把 COM 起起来
@@ -4413,6 +4502,7 @@ int main(int argc, char* argv[]) {
     expectViewerOptions();
     expectViewingPolicies();
     expectPanPolicies();
+    expectKineticPan();
     expectAssociationRegistration();
     expectInitialWindowLayout();
     expectPresentationLayout();

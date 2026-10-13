@@ -9,7 +9,11 @@
     [switch]$ReaderPanOnly,
     [switch]$ShortcutAuditOnly,
     [switch]$RapidPanOnly,
-    [switch]$PanVisualOnly
+    [switch]$PanVisualOnly,
+    [switch]$InertiaOnly,
+    [switch]$InertiaAxesOnly,
+    [switch]$InertiaDecelerationOnly,
+    [switch]$InertiaPrecisionOnly
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -160,7 +164,7 @@ function Set-Option([int]$Row,[int]$Option,[int]$Slot,[string]$Field='') {
         Start-Sleep -Milliseconds 50
     } while ([DateTime]::UtcNow -lt $deadline)
     if ($settings -eq [IntPtr]::Zero) { throw '设置窗口未打开' }
-    $counts = @(3,3,3,2,2,4,2,2,2,4,2,2,3,3,2,2,2,3,3,2,2,2,2,2,9)
+    $counts = @(3,3,3,2,2,4,2,2,2,4,2,2,3,3,2,2,2,3,3,2,2,2,2,2,9,2,9)
     $naturalY = 52 + 216 + $Row*48 + 19
     $steps = [Math]::Max(0,[int][Math]::Ceiling(($naturalY-500)/72.0))
     for ($step=0; $step -lt $steps; $step++) { Message $settings 0x020A 4287102976 }
@@ -169,6 +173,10 @@ function Set-Option([int]$Row,[int]$Option,[int]$Slot,[string]$Field='') {
     $x = [int][Math]::Round((176 + $cell*($Option+0.5))*$scale)
     $y = [int][Math]::Round(($naturalY-$steps*72)*$scale)
     Click $settings $x $y
+    if ($InertiaOnly -and $Row -eq 26 -and $Option -eq 4) {
+        Start-Sleep -Milliseconds 100
+        Save-ClientEvidence $settings '惯性设置第五档.png'
+    }
     Message $settings 0x0010
     # 窗口销毁先于设置线程释放 isWorking；等待线程收尾后才能再次打开。
     Start-Sleep -Milliseconds 200
@@ -458,6 +466,155 @@ function Test-Pan {
     Write-Host ("拖拽真实窗口回归通过：$script:passed 项")
 }
 
+function Inertia-Flick([int]$Flags=1,[int]$Step=20,[int]$Delay=20,[int]$Pause=0,[int]$ReleaseExtra=0,[int]$DxStep=0,[bool]$MidShift=$false,[bool]$FinalSlow=$false,[bool]$CaptureBeforeRelease=$false) {
+    $s=Read-State; $releaseCount=[int]$s.panReleases
+    $x=[int]((Number $s 'width')/2); $y=[int]((Number $s 'height')/2)
+    $origin=New-Object ViewingRegressionNative+POINT
+    [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
+    [void][ViewingRegressionNative]::SetCursorPos($origin.X+$x,$origin.Y+$y)
+    Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
+    Start-Sleep -Milliseconds 330
+    Message $window 0x0201 $Flags (($x -band 65535) -bor ($y -shl 16))
+    for($i=1;$i -le 8;$i++) {
+        Start-Sleep -Milliseconds $Delay
+        $moveFlags=if($MidShift -and ($i -eq 4 -or $i -eq 5)){5}else{$Flags}
+        Message $window 0x0200 $moveFlags ((($x+$DxStep*$i) -band 65535) -bor (($y-$Step*$i) -shl 16))
+        if($MidShift -and $i -eq 5) {
+            # 中途按键会清理速度采样，但不能清掉本次手势已使用精细模式的事实。
+            Message $window 0x0100 0x10; Message $window 0x0101 0x10
+        }
+    }
+    $lastY=$y-$Step*8
+    if($FinalSlow) {
+        Start-Sleep -Milliseconds 60; $lastY--
+        Message $window 0x0200 $Flags ((($x+$DxStep*8) -band 65535) -bor ($lastY -shl 16))
+    }
+    if($Pause){Start-Sleep -Milliseconds $Pause}
+    if($CaptureBeforeRelease) {$script:beforeReleasePixel=Screen-Pixel $x 180}
+    Message $window 0x0202 ($Flags -band 4) ((($x+$DxStep*8) -band 65535) -bor (($lastY-$ReleaseExtra) -shl 16))
+    return Wait-State {param($v) [int]$v.panReleases -gt $releaseCount} '甩动释放事件未完成'
+}
+
+function Test-Inertia {
+    $s=Read-State
+    Assert-True ($s.ContainsKey('inertiaEnabled') -and $s.inertiaEnabled -eq '0' -and $s.inertiaSensitivity -eq '4') `
+        '惯性默认关闭且灵敏度为第五档，旧拖拽功能不变'
+    $s=Set-Option 12 0 323
+    $s=Set-Option 22 0 333
+    $s=Set-Pan 4
+    $beforeY=Number $s 'slideY'; $s=Inertia-Flick 1 20 20 0 20
+    Assert-True ([Math]::Abs((Number $s 'inertiaReleaseY')-$beforeY+180) -le 1) '松手坐标补齐最后合并增量，不丢失最后位置'
+    $release=Number $s 'inertiaReleaseY'; Start-Sleep -Milliseconds 400; $s=Read-State
+    Assert-True ($s.inertiaActive -eq '0' -and (Number $s 'slideY') -eq $release) '默认关闭时快拖松手即停，不改变旧行为'
+    $s=Set-Option 25 1 362
+    $results=[Collections.Generic.List[object]]::new()
+    for($level=0;$level -lt 9;$level++) {
+        $s=Set-Option 26 $level 363
+        $s=Set-Option 22 0 333
+        $starts=[int]$s.inertiaStarts
+        $s=Inertia-Flick
+        Assert-True ([int]$s.inertiaStarts -gt $starts -and $s.slideX -eq '0') ("惯性第 $($level+1) 档快拖后实际启动，未溢出的 X 轴仍锁定")
+        $s=Wait-State {param($v) $v.inertiaActive -eq '0'} '惯性没有在有限时间内停止'
+        $distance=(Number $s 'inertiaReleaseY')-(Number $s 'slideY')
+        $seconds=(Number $s 'inertiaDuration')
+        $velocity=-(Number $s 'inertiaVY')
+        Assert-True ($distance -gt 20 -and [Math]::Abs($distance-$velocity*$seconds/3) -le 2) `
+            ("惯性第 $($level+1) 档终点符合减速曲线，松手后额外移动 $distance px，不重复乘拖拽倍率")
+        $results.Add([pscustomobject]@{档位=$level+1;时长=$seconds;松手速度=$velocity;滑行距离=$distance})
+    }
+    $results | Export-Csv -LiteralPath (Join-Path $evidence '惯性九档实际位移.csv') -NoTypeInformation -Encoding utf8BOM
+    foreach($mode in @(-1,8)) {
+        $s=Set-Pan $mode
+        $s=Set-Option 22 0 333
+        $starts=[int]$s.inertiaStarts; $s=Inertia-Flick
+        Assert-True ([int]$s.inertiaStarts -gt $starts) ("拖拽模式 $mode 与松手惯性可独立配合")
+        $s=Wait-State {param($v) $v.inertiaActive -eq '0'} '独立拖拽模式惯性未停止'
+        $distance=(Number $s 'inertiaReleaseY')-(Number $s 'slideY')
+        Assert-True ([Math]::Abs($distance+(Number $s 'inertiaVY')*(Number $s 'inertiaDuration')/3) -le 2) `
+            ("拖拽模式 $mode 的松手距离不重复叠乘倍率")
+    }
+    $s=Set-Pan 11
+    $starts=[int]$s.inertiaStarts; $s=Inertia-Flick 1 1 40
+    Assert-True ([int]$s.inertiaStarts -eq $starts) '固定 9× 的慢拖不会被图片速度误判成甩动'
+    $s=Set-Pan 4
+    $s=Set-Option 22 0 333
+    $starts=[int]$s.inertiaStarts; $s=Inertia-Flick 1 1 40 0 0 20
+    Assert-True ([int]$s.inertiaStarts -eq $starts) '长图锁定 X 轴的快速横移不会让慢速 Y 轴误触惯性'
+    $s=Set-Option 22 0 333
+    $s=Inertia-Flick 1 20 20 0 0 0 $false $false $true
+    $s=Wait-State {param($v) $v.inertiaActive -eq '0'} '像素核验前惯性未结束'
+    $afterPixel=Screen-Pixel ([int]((Number $s 'width')/2)) 180
+    Assert-True ($script:beforeReleasePixel.R -gt 220 -and $script:beforeReleasePixel.G -lt 30 -and
+        [Math]::Abs($afterPixel.R-$afterPixel.G) -lt 5 -and $afterPixel.G -gt 150) `
+        '真实屏幕像素从红色标记变为灰色，验证松手惯性确实绘制而非只更新状态'
+    Save-ClientEvidence $window '惯性停止后实际画面.png'
+    foreach($kind in @('slow','pause','precision','midShift','finalSlow')) {
+        $s=Set-Option 22 0 333
+        $starts=[int]$s.inertiaStarts
+        $s=switch($kind) {
+            slow {Inertia-Flick 1 1 40}
+            pause {Inertia-Flick 1 20 20 150}
+            precision {Inertia-Flick 5}
+            midShift {Inertia-Flick 1 20 20 0 0 0 $true}
+            finalSlow {Inertia-Flick 1 60 20 0 0 0 $false $true}
+        }
+        $release=Number $s 'inertiaReleaseY'; Start-Sleep -Milliseconds 300; $s=Read-State
+        Assert-True ([int]$s.inertiaStarts -eq $starts -and $s.inertiaActive -eq '0' -and
+            (Number $s 'slideY') -eq $release) ("$kind 手势松手即停，不误触惯性")
+    }
+    foreach($cancel in @('mouse','wheel','key','focus','capture','resize','menu','image','rotation')) {
+        $s=Set-Option 22 0 333
+        $s=Inertia-Flick
+        Assert-True ($s.inertiaActive -eq '1') ("$cancel 打断前惯性确实在运行")
+        switch($cancel) {
+            mouse {
+                $x=[int]((Number $s 'width')/2); $y=[int]((Number $s 'height')/2)
+                Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
+                Message $window 0x0201 1 (($x -band 65535) -bor ($y -shl 16))
+                Message $window 0x0202 0 (($x -band 65535) -bor ($y -shl 16))
+            }
+            wheel {Message $window 0x020A 7864320}
+            key {Message $window 0x0100 0x26; Message $window 0x0101 0x26}
+            focus {Message $window 0x0008}
+            capture {Message $window 0x0215}
+            resize {[void][ViewingRegressionNative]::SetWindowPos($window,[IntPtr]::Zero,0,0,[int]$s.width,[int]$s.height+50,0x0016)}
+            menu {Command 1004; Command 1004}
+            image {Message $window 0x0100 0x27; Start-Sleep -Milliseconds 150; Message $window 0x0100 0x25}
+            rotation {Message $window 0x0100 0x51; Start-Sleep -Milliseconds 350; Message $window 0x0100 0x45}
+        }
+        $s=Wait-State {param($v) $v.inertiaActive -eq '0'} '输入后惯性未及时停止'
+        Start-Sleep -Milliseconds 350; $s=Read-State
+        Assert-True ($s.inertiaActive -eq '0') ("$cancel 立即停止惯性且不再复活")
+    }
+    # 在底边前 200px 开始快拖，释放后仍有约40px可走，应触边即停且不回弹。
+    $s=Set-Option 22 0 333
+    $s=Set-Option 25 0 362
+    $limit=[Math]::Floor(((Number $s 'bottom')-(Number $s 'top')-(Number $s 'height'))/2)
+    $s=Pan-Drag 0 ([int](-$limit+200-(Number $s 'slideY')))
+    $s=Set-Option 25 1 362
+    $s=Inertia-Flick
+    $s=Wait-State {param($v) $v.inertiaActive -eq '0'} '触边后惯性没有停止'
+    Assert-True ([Math]::Abs((Number $s 'bottom')-(Number $s 'height')) -le 1 -and $s.slideX -eq '0') '惯性到图像底边立即停止，不露空、不越界'
+    $edge=Number $s 'slideY'; Start-Sleep -Milliseconds 300; $s=Read-State
+    Assert-True ((Number $s 'slideY') -eq $edge) '惯性触边后不回弹、不抖动'
+    $starts=[int]$s.inertiaStarts; $s=Inertia-Flick
+    Assert-True ([int]$s.inertiaStarts -eq $starts) '已经触边的持续拖动不会产生虚假释放速度'
+    $s=Set-Option 26 6 363
+    Stop-Viewer; $s=Start-Viewer $tall
+    Assert-True ($s.inertiaEnabled -eq '1' -and $s.inertiaSensitivity -eq '6' -and $s.inertiaActive -eq '0') `
+        '惯性开关与独立灵敏度跨进程保留，运行中动画不持久化'
+    $s=Set-Option 12 0 323
+    $s=Set-Option 22 0 333
+    $s=Set-Option 19 1 330
+    $s=Set-Pan 4
+    $starts=[int]$s.inertiaStarts; $s=Inertia-Flick
+    Assert-True ([int]$s.inertiaStarts -gt $starts) '连续阅读也能启动相同惯性策略'
+    $s=Wait-State {param($v) $v.inertiaActive -eq '0'} '连续阅读惯性未结束'
+    Assert-True ((Number $s 'readerOffset') -gt (Number $s 'inertiaReleaseReaderOffset')+20) '连续阅读松手后实际继续向下浏览，不是仅记录启动状态'
+    Stop-Viewer
+    Write-Host ("惯性真实窗口回归通过：$script:passed 项")
+}
+
 function Test-ReaderPan {
     $s=Set-Option 12 0 323
     $s=Set-Option 13 1 324
@@ -583,11 +740,11 @@ function Test-ShortcutAudit {
 }
 
 function Test-SettingsAudit {
-    $counts=@(3,3,3,2,2,4,2,2,2,4,2,2,3,3,2,2,2,3,3,2,2,2,2,2,9)
+    $counts=@(3,3,3,2,2,4,2,2,2,4,2,2,3,3,2,2,2,3,3,2,2,2,2,2,9,2,9)
     $fields=@('settingSwitchAnimation','settingTheme','settingLanguage','settingRightClick',
         'pref325','pref259','pref258','pref261','pref263','pref262','pref264','pref265',
         'pref323','pref324','pref322','pref326','pref327','pref328','pref329','pref330',
-        'pref331','pref332','pref333','pref334','pref356')
+        'pref331','pref332','pref333','pref334','pref356','pref362','pref363')
     $checks=@('settingRotateAnimation','settingZoomAnimation','settingDeleteConfirm','settingColor',
         'settingActualPreferred','settingRememberMonitor')
     $report=[Collections.Generic.List[object]]::new()
@@ -740,7 +897,7 @@ try {
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
     try {
         $graphics.Clear([Drawing.Color]::Silver)
-        $graphics.FillRectangle([Drawing.Brushes]::Red,0,0,300,200)
+        $graphics.FillRectangle([Drawing.Brushes]::Red,0,0,300,$(if($InertiaOnly){400}else{200}))
         $graphics.FillRectangle([Drawing.Brushes]::Blue,0,5800,300,200)
         $bitmap.Save($tall,[Drawing.Imaging.ImageFormat]::Png)
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
@@ -762,6 +919,28 @@ try {
     if ($ReaderPanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-ReaderPan; return}
     if ($RapidPanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-RapidPan; return}
     if ($PanVisualOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-PanVisual; return}
+    if ($InertiaOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-Inertia; return}
+    if ($InertiaAxesOnly) {
+        Stop-Viewer; $s=Start-Viewer $tall
+        $s=Set-Option 12 0 323; $s=Set-Option 22 0 333; $s=Set-Pan 4; $s=Set-Option 25 1 362
+        $starts=[int]$s.inertiaStarts; $s=Inertia-Flick 1 1 40 0 0 20
+        Assert-True ([int]$s.inertiaStarts -eq $starts) '锁定轴横移不贡献慢速纵向的甩动速度'
+        return
+    }
+    if ($InertiaDecelerationOnly) {
+        Stop-Viewer; $s=Start-Viewer $tall
+        $s=Set-Option 12 0 323; $s=Set-Option 22 0 333; $s=Set-Pan 4; $s=Set-Option 25 1 362
+        $starts=[int]$s.inertiaStarts; $s=Inertia-Flick 1 60 20 0 0 0 $false $true
+        Assert-True ([int]$s.inertiaStarts -eq $starts) '最后明确减速的手势不被之前的快速历史误判为甩动'
+        return
+    }
+    if ($InertiaPrecisionOnly) {
+        Stop-Viewer; $s=Start-Viewer $tall
+        $s=Set-Option 12 0 323; $s=Set-Option 22 0 333; $s=Set-Pan 4; $s=Set-Option 25 1 362
+        $starts=[int]$s.inertiaStarts; $s=Inertia-Flick 1 20 20 0 0 0 $true
+        Assert-True ([int]$s.inertiaStarts -eq $starts) '中途按键不能使已使用 Shift 的精细手势误触惯性'
+        return
+    }
     if ($ShortcutAuditOnly) {Test-ShortcutAudit; return}
     if ($ActualSizeOnly) {
         Stop-Viewer

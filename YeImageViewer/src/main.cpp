@@ -61,7 +61,7 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.38.1-rc1";
+std::wstring_view appVersion = L"v1.38.1-rc2";
 constinit int appVersionCode = 13801; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
@@ -372,6 +372,16 @@ public:
     int panMoveCount = 0;
     std::array<int64_t, 7> panTransformKey{};
     std::chrono::steady_clock::time_point panTimestamp{};
+    KineticPan::Samples kineticSamples;
+    KineticPan::Motion kineticMotion;
+    KineticPan::Vector kineticLastOffset{}, panSampleMouse{}, kineticLastVelocity{};
+    Cood kineticImageAnchor{};
+    double panSampleTime = 0, panSampleSeconds = 0;
+    bool panSamplePrecision = false, panPrecisionUsed = false;
+    uint64_t kineticStarts = 0;
+    uint64_t panReleases = 0;
+    double kineticReleaseY = 0, kineticReleaseReaderOffset = 0;
+    std::chrono::steady_clock::time_point kineticStartedAt{};
     bool ctrlIsPressing = false;
     bool rightClickMenuRequested = false;
     std::wstring fittedGeometryPath;
@@ -1303,6 +1313,7 @@ public:
             curPar.rotation, curPar.zoomCur, curPar.zoomTarget};
         if (key == panTransformKey) return;
         panTransformKey = key;
+        stopKinetic();
         const int width = (curPar.rotation & 1) ? curPar.height : curPar.width;
         const int height = (curPar.rotation & 1) ? curPar.width : curPar.height;
         const auto constrain = [&](Cood& slide, int64_t zoom) {
@@ -1731,6 +1742,7 @@ public:
     // （见 onWindowCreated），这里再 clear 一次会把在途的任务作废，白等一场。
     // 其他调用方（重新打开、重命名）必须清，旧路径的缓存和预览都已经失效。
     void initOpenFile(wstring filePath, bool keepWarmCache = false) {
+        stopKinetic();
         resetReader();
         namespace fs = std::filesystem;
 
@@ -1826,6 +1838,7 @@ public:
     // 返回值表示画面是否已经换成新文件的内容（真图或模糊预览）——
     // 还停在上一张时做切图动画没有意义，跳过。
     bool switchToImage(int newIdx, int neighborIdx) {
+        if (!readerScrolling) stopKinetic();
         if (readingEnabled() && !readerScrolling) {
             readerAnchor = newIdx; readerDirty = true;
             readerEnlargement = 1; readerEnlargedGroup = -1; readerCross = 0;
@@ -2119,6 +2132,56 @@ public:
         return rect;
     }
 
+    void stopKinetic() {
+        kineticMotion.stop(); kineticSamples.reset();
+    }
+
+    KineticPan::Vector applyReaderPan(KineticPan::Vector delta) {
+        const double beforeOffset = readerOffset, beforeCross = readerCross;
+        scrollReader(-(readerHorizontal() ? delta.x : delta.y));
+        readerCross += readerHorizontal() ? delta.y : delta.x;
+        const int group = ReadingPolicy::groupForPage(curFileIdx, readerDouble(), readerShift);
+        if (group < static_cast<int>(readerLayout.groups.size())) {
+            const auto& pages = readerLayout.groups[group].pages;
+            if (readerHorizontal()) {
+                const double height = std::max(pages[0].height, pages[1].height);
+                readerCross = std::clamp(readerCross, -std::max(0.0, height - (winHeight - 52.0)), 0.0);
+            }
+            else {
+                const double width = pages[0].width + (readerDouble() ? pages[1].width + 16 : 0);
+                const double limit = std::max(0.0, (width - winWidth) / 2);
+                readerCross = std::clamp(readerCross, -limit, limit);
+            }
+        }
+        return readerHorizontal() ? KineticPan::Vector{beforeOffset - readerOffset, readerCross - beforeCross} :
+            KineticPan::Vector{readerCross - beforeCross, beforeOffset - readerOffset};
+    }
+
+    void updateKinetic() {
+        if (!kineticMotion.active()) return;
+        if (!GlobalVar::settingParameter.reserve[KineticOptions::ENABLED]) { stopKinetic(); return; }
+        const double elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - kineticStartedAt).count();
+        const auto offset = kineticMotion.at(elapsed);
+        if (readingEnabled()) {
+            const KineticPan::Vector delta{offset.x - kineticLastOffset.x, offset.y - kineticLastOffset.y};
+            const auto actual = applyReaderPan(delta);
+            if (std::abs(actual.x - delta.x) > .01 || std::abs(actual.y - delta.y) > .01) stopKinetic();
+            kineticLastOffset = offset;
+        }
+        else {
+            const auto rect = currentImageRect();
+            const int limitX = static_cast<int>(PanPolicy::limit(rect.right - rect.left, winWidth));
+            const int limitY = static_cast<int>(PanPolicy::limit(rect.bottom - rect.top, winHeight));
+            const int x = kineticImageAnchor.x + static_cast<int>(std::lround(offset.x));
+            const int y = kineticImageAnchor.y + static_cast<int>(std::lround(offset.y));
+            curPar.slideCur = curPar.slideTarget = {
+                std::clamp(x, -limitX, limitX), std::clamp(y, -limitY, limitY)};
+            smoothShift = false;
+            if (x < -limitX || x > limitX || y < -limitY || y > limitY) stopKinetic();
+        }
+    }
+
     bool isImageDoubleClick(int x, int y) {
         const auto now = std::chrono::steady_clock::now();
         const auto elapsed = duration_cast<std::chrono::milliseconds>(now - lastClickTimestamp).count();
@@ -2133,6 +2196,8 @@ public:
     }
 
     void beginImagePan() {
+        stopKinetic();
+        panPrecisionUsed = false;
         panGesture.reset(); panTimestamp = std::chrono::steady_clock::now();
         lastPanDelta = {}; panMoveCount = 0;
         smoothShift = false;
@@ -2148,6 +2213,12 @@ public:
         const auto result = panGesture.move(x - mousePressPos.x, y - mousePressPos.y,
             elapsed, overlayDpi(), GlobalVar::settingParameter.reserve,
             (flags & MK_SHIFT) != 0, canX, canY);
+        // 不可拖动的轴不能贡献甩动速度（例如竖长图上的快速横移）。
+        panSampleMouse = {canX ? double(x - mousePressPos.x) : 0, canY ? double(y - mousePressPos.y) : 0};
+        panSampleSeconds = elapsed;
+        panSampleTime = std::chrono::duration<double>(now.time_since_epoch()).count();
+        panSamplePrecision = (flags & MK_SHIFT) != 0;
+        panPrecisionUsed |= panSamplePrecision;
         lastPanDelta = result; ++panMoveCount;
         mousePressPos = {x, y};
         return result;
@@ -2161,6 +2232,7 @@ public:
     }
 
     void OnMouseDown(WPARAM btnState, int x, int y, WPARAM wParam) override {
+        stopKinetic();
         switch ((uint64_t)btnState)
         {
         case WM_LBUTTONDOWN: {//左键
@@ -2414,9 +2486,33 @@ public:
                     return;
                 }
             }
+            // 有些输入会合并最后一次移动；按松手坐标补齐最后增量，不重套起始位移。
+            if (mouseIsPressing && GetCapture() == m_hWnd &&
+                (x != mousePressPos.x || y != mousePressPos.y))
+                OnMouseMove((wParam & MK_SHIFT) | MK_LBUTTON, x, y);
+            const auto now = std::chrono::steady_clock::now();
+            if (mouseIsPressing) {
+                ++panReleases;
+                kineticReleaseY = curPar.slideCur.y;
+                kineticReleaseReaderOffset = readerOffset;
+            }
+            const bool canCoast = mouseIsPressing && !panPrecisionUsed && GetCapture() == m_hWnd && (wParam & MK_SHIFT) == 0 &&
+                GlobalVar::settingParameter.reserve[KineticOptions::ENABLED] &&
+                hasCurrentImagePath() && !curPar.imageAssetPtr->isLoading;
+            const auto velocity = canCoast ? kineticSamples.release(
+                std::chrono::duration<double>(now.time_since_epoch()).count(), overlayDpi()) : KineticPan::Vector{};
             mouseIsPressing = false;
-            panGesture.reset();
+            panGesture.reset(); kineticSamples.reset();
             if (GetCapture() == m_hWnd) ReleaseCapture();
+            // ReleaseCapture 会同步调用 OnCaptureLost；必须在其返回后才启动松手惯性。
+            if (canCoast && kineticMotion.start(velocity,
+                GlobalVar::settingParameter.reserve[KineticOptions::SENSITIVITY], winWidth, winHeight)) {
+                kineticStartedAt = std::chrono::steady_clock::now();
+                kineticImageAnchor = curPar.slideCur;
+                kineticLastOffset = {};
+                kineticLastVelocity = kineticMotion.velocity();
+                ++kineticStarts;
+            }
             operateQueue.push({ ActionENUM::refresh });
             return;
         }
@@ -2476,21 +2572,18 @@ public:
         }
         if (readingEnabled() && mouseIsPressing && (btnState & MK_LBUTTON) != 0) {
             const auto delta = imagePanDelta(x, y, btnState, true, true);
-            scrollReader(-(readerHorizontal() ? delta.x : delta.y));
-            readerCross += (readerHorizontal() ? delta.y : delta.x);
+            const auto actual = applyReaderPan({double(delta.x), double(delta.y)});
+            const bool canPrimary = readerLayout.total > readerViewportExtent();
+            bool canCross = false;
             const int group = ReadingPolicy::groupForPage(curFileIdx, readerDouble(), readerShift);
             if (group < static_cast<int>(readerLayout.groups.size())) {
                 const auto& pages = readerLayout.groups[group].pages;
-                if (readerHorizontal()) {
-                    const double height = std::max(pages[0].height, pages[1].height);
-                    readerCross = std::clamp(readerCross, -std::max(0.0, height - (winHeight - 52.0)), 0.0);
-                }
-                else {
-                    const double width = pages[0].width + (readerDouble() ? pages[1].width + 16 : 0);
-                    const double limit = std::max(0.0, (width - winWidth) / 2);
-                    readerCross = std::clamp(readerCross, -limit, limit);
-                }
+                canCross = readerHorizontal() ? std::max(pages[0].height, pages[1].height) > winHeight - 52.0 :
+                    pages[0].width + (readerDouble() ? pages[1].width + 16 : 0) > winWidth;
             }
+            if (!(readerHorizontal() ? canPrimary : canCross)) panSampleMouse.x = 0;
+            if (!(readerHorizontal() ? canCross : canPrimary)) panSampleMouse.y = 0;
+            kineticSamples.add(panSampleTime, panSampleSeconds, panSampleMouse, actual, panSamplePrecision);
             return;
         }
         mousePos = { x, y };
@@ -2646,9 +2739,12 @@ public:
             const int limitX = static_cast<int>(PanPolicy::limit(rect.right - rect.left, winWidth));
             const int limitY = static_cast<int>(PanPolicy::limit(rect.bottom - rect.top, winHeight));
             const auto delta = imagePanDelta(x, y, btnState, limitX > 0, limitY > 0);
+            const Cood before = curPar.slideCur;
             curPar.slideCur.x = std::clamp(curPar.slideCur.x + delta.x, -limitX, limitX);
             curPar.slideCur.y = std::clamp(curPar.slideCur.y + delta.y, -limitY, limitY);
             curPar.slideTarget = curPar.slideCur;
+            kineticSamples.add(panSampleTime, panSampleSeconds, panSampleMouse,
+                {double(curPar.slideCur.x - before.x), double(curPar.slideCur.y - before.y)}, panSamplePrecision);
             smoothShift = false;
             operateQueue.push({ ActionENUM::refresh });
         }
@@ -2666,6 +2762,7 @@ public:
     }
 
     void OnMouseWheel(UINT nFlags, short zDelta, int x, int y) override {
+        stopKinetic();
         POINT clientPoint{ static_cast<short>(x), static_cast<short>(y) };
         ScreenToClient(m_hWnd, &clientPoint);
         if (showExif && (nFlags & (MK_CONTROL | MK_SHIFT)) == 0 &&
@@ -2975,6 +3072,7 @@ public:
     }
 
     void OnKeyDown(WPARAM keyValue) override {
+        stopKinetic();
         if (keyValue == VK_ESCAPE && panPopoverOpen) {
             panPopoverOpen = false; panSliderDragging = false;
             if (GetCapture() == m_hWnd) ReleaseCapture();
@@ -3319,6 +3417,7 @@ public:
     }
 
     void OnContextMenuClosed() override {
+        stopKinetic();
         // 原生菜单的消息循环会消耗 Ctrl 松开消息；同步真实状态，避免后续快捷键卡住。
         ctrlIsPressing = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
         rightClickMenuRequested = false;
@@ -3326,12 +3425,14 @@ public:
     }
 
     void OnCaptureLost() override {
+        stopKinetic();
         mouseIsPressing = false; panSliderDragging = false;
         frameDragging = false; panGesture.reset();
         endWindowDrag();
     }
 
     void OnFocusLost() override {
+        stopKinetic();
         if (panPopoverOpen) operateQueue.push({ActionENUM::refresh});
         heldZoomKey = 0;
         ctrlIsPressing = false;
@@ -3344,6 +3445,7 @@ public:
     }
 
     void OnDestroy() override {
+        stopKinetic();
         if (hasCurrentImagePath() && !displayedImagePath.empty() && !curPar.imageAssetPtr->isLoading &&
             GlobalVar::settingParameter.reserve[ViewingOptions::SCALE] == 2) {
             rememberedImageZoom[displayedImagePath] = static_cast<int64_t>(std::llround(
@@ -3357,6 +3459,7 @@ public:
     }
 
     void OnContextMenuCommand(WPARAM wParam) override {
+        stopKinetic();
         const int commandId = static_cast<int>(LOWORD(wParam));
         if (commandId >= static_cast<int>(ContextMenu::readerToggle) && commandId <= static_cast<int>(ContextMenu::readerNext)) {
             auto* options = GlobalVar::settingParameter.reserve;
@@ -3657,6 +3760,8 @@ public:
 
         if (winWidth == width && winHeight == height)
             return;
+
+        stopKinetic();
 
         const int oldHeight = winHeight;
         const bool originalLong = currentIsLongImage() &&
@@ -5372,6 +5477,14 @@ public:
         put("panMode", GlobalVar::settingParameter.reserve[PanOptions::MODE]);
         put("panFixed", GlobalVar::settingParameter.reserve[PanOptions::FIXED]);
         put("panSensitivity", GlobalVar::settingParameter.reserve[PanOptions::SENSITIVITY]);
+        put("inertiaEnabled", GlobalVar::settingParameter.reserve[KineticOptions::ENABLED]);
+        put("inertiaSensitivity", GlobalVar::settingParameter.reserve[KineticOptions::SENSITIVITY]);
+        put("inertiaActive", kineticMotion.active() ? 1 : 0); put("inertiaStarts", kineticStarts);
+        put("inertiaStartX", kineticImageAnchor.x); put("inertiaStartY", kineticImageAnchor.y);
+        put("inertiaVX", kineticLastVelocity.x); put("inertiaVY", kineticLastVelocity.y);
+        put("inertiaDuration", kineticMotion.duration());
+        put("panReleases", panReleases); put("inertiaReleaseY", kineticReleaseY);
+        put("inertiaReleaseReaderOffset", kineticReleaseReaderOffset);
         const auto& setting = GlobalVar::settingParameter;
         put("settingRotateAnimation", setting.isAllowRotateAnimation ? 1 : 0);
         put("settingZoomAnimation", setting.isAllowZoomAnimation ? 1 : 0);
@@ -5389,6 +5502,8 @@ public:
         for (size_t slot = ViewerOptions::STORAGE_BASE; slot < ViewerOptions::STORAGE_BASE + ViewerOptions::SLOT_COUNT; ++slot)
             state << "pref" << slot << '=' << setting.reserve[slot] << '\n';
         for (size_t slot = PanOptions::BASE; slot < PanOptions::BASE + PanOptions::SLOTS; ++slot)
+            state << "pref" << slot << '=' << GlobalVar::settingParameter.reserve[slot] << '\n';
+        for (size_t slot = KineticOptions::BASE; slot < KineticOptions::BASE + KineticOptions::SLOTS; ++slot)
             state << "pref" << slot << '=' << GlobalVar::settingParameter.reserve[slot] << '\n';
         const auto rect = currentImageRect();
         put("left", rect.left); put("top", rect.top); put("right", rect.right); put("bottom", rect.bottom);
@@ -5583,6 +5698,7 @@ public:
             operateQueue.push({ ActionENUM::refresh });
         }
         if (ViewingOptions::changed && !Setting::isWorking) {
+            stopKinetic();
             const uint32_t changes = ViewingOptions::changed;
             ViewingOptions::changed = 0;
             auto* options = GlobalVar::settingParameter.reserve;
@@ -5635,12 +5751,14 @@ public:
         }
 
         auto operateAction = operateQueue.get();
+        if (operateAction.action != ActionENUM::none && operateAction.action != ActionENUM::refresh) stopKinetic();
         const int64_t oldReaderZoom = curPar.zoomTarget;
         if (operateAction.action == ActionENUM::none &&
             curPar.zoomCur == curPar.zoomTarget &&
             curPar.slideCur == curPar.slideTarget &&
             zoomIndicatorStartedAt == std::chrono::steady_clock::time_point{} &&
             heldZoomKey == 0 &&
+            !kineticMotion.active() &&
             (!readingEnabled() || !readerWaiting) &&
             (curPar.imageAssetPtr->format != ImageFormat::Animated || 
                 (curPar.imageAssetPtr->format == ImageFormat::Animated && curPar.isAnimationPause))) {
@@ -6134,6 +6252,7 @@ public:
 
         constrainLongImage();
         constrainPanAfterTransform();
+        updateKinetic();
         cv::Mat srcImg;
         if (curPar.imageAssetPtr->format == ImageFormat::None ||
             curPar.imageAssetPtr->format == ImageFormat::Still) {

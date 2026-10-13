@@ -38,6 +38,7 @@ using std::unordered_map;
 #include "ViewerOptions.h"
 #include "ViewingOptions.h"
 #include "PanPolicy.h"
+#include "KineticPan.h"
 #include "AudioClip.h"
 
 #include "psapi.h"
@@ -215,6 +216,7 @@ struct SettingParameter {
         ViewerOptions::initialize(reserve, std::size(reserve));
         ViewingOptions::initialize(reserve, std::size(reserve), false);
         PanOptions::initialize(reserve, std::size(reserve), false);
+        KineticOptions::initialize(reserve, std::size(reserve));
     }
 
     SettingParameter(const SettingParameter& other) {
@@ -300,6 +302,7 @@ struct SettingParameter {
         ViewingOptions::initialize(reserve, std::size(reserve), true, isOneToOnePreferred);
         isOneToOnePreferred = reserve[ViewingOptions::SCALE] == 1;
         PanOptions::initialize(reserve, std::size(reserve));
+        KineticOptions::initialize(reserve, std::size(reserve));
 
         // 确保扩展名列表字符串以空字符结尾
         extCheckedListStr[sizeof(extCheckedListStr) - 1] = 0;
