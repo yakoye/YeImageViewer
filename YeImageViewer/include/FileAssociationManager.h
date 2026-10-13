@@ -1,7 +1,7 @@
 #pragma once
 #include "FileAssociationNaming.h"
 #include "ThumbnailRegistrar.h"
-#include "jarkUtils.h"
+#include "OpenWithRegistrar.h"
 #include <shlwapi.h>
 #include <shlobj.h>
 
@@ -11,6 +11,7 @@
 struct FileAssociationResult {
     bool associationSucceeded = true;
     bool thumbnailOperationFailed = false;
+    bool defaultSelectionRequired = false;
 };
 
 class FileAssociationManager {
@@ -125,10 +126,14 @@ private:
             return false;
         }
 
-        // 设置文件类型关联
-        if (!SetRegistryValue(HKEY_CURRENT_USER, extKey, L"", progId)) {
+        // 已有用户默认值不强制覆盖；Windows 10/11 的 UserChoice 必须由用户确认。
+        if ((GetAssociatedProgId(extension).empty() || IsAssociatedWithCurrentApp(extension)) &&
+            !SetRegistryValue(HKEY_CURRENT_USER, extKey, L"", progId)) {
             return false;
         }
+        if (!OpenWithRegistrar::registerExtension(m_appPath, extension) ||
+            !SetRegistryValue(HKEY_CURRENT_USER, L"Software\\YeImageViewer\\Capabilities\\FileAssociations",
+                L"." + FileAssociationNaming::NormalizeExtension(extension), progId)) return false;
 
         MergeThumbnailResult(result, m_thumbnailRegistrar.AssociateExtension(extension));
         return true;
@@ -138,29 +143,38 @@ private:
     bool UnassociateExtension(const std::wstring& extension, FileAssociationResult& result) {
         MergeThumbnailResult(result, m_thumbnailRegistrar.UnassociateExtension(extension));
         const std::wstring associatedProgId = GetAssociatedProgId(extension);
+        bool ok = OpenWithRegistrar::unregisterExtension(extension);
+        ok = DeleteRegistryValue(HKEY_CURRENT_USER, L"Software\\YeImageViewer\\Capabilities\\FileAssociations",
+            L"." + FileAssociationNaming::NormalizeExtension(extension)) && ok;
+        ok = DeleteRegistryValue(HKEY_CURRENT_USER,
+            FileAssociationNaming::BuildApplicationKey(m_appPath) + L"\\SupportedTypes",
+            L"." + FileAssociationNaming::NormalizeExtension(extension)) && ok;
 
         // 检查是否关联到当前程序
         if (!IsManagedProgId(associatedProgId, extension)) {
-            return true; // 如果没有关联到当前程序，只清理缩略图挂接
+            return ok; // 不删除其他程序的默认值和类定义。
         }
 
         // 删除类关联
         const std::wstring extKey = FileAssociationNaming::BuildExtensionKey(extension);
         const std::wstring progIdKey = FileAssociationNaming::BuildProgIdKey(extension);
-        DeleteRegistryValue(HKEY_CURRENT_USER, extKey, L"");
-        DeleteRegistryKey(HKEY_CURRENT_USER, progIdKey);
-
-        return true;
+        ok = DeleteRegistryValue(HKEY_CURRENT_USER, extKey, L"") && ok;
+        return DeleteRegistryKey(HKEY_CURRENT_USER, progIdKey) && ok;
     }
 
     // 通知系统文件关联已更改
     void NotifySystemChange() {
-        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+        OpenWithRegistrar::notifyShell();
     }
 
 public:
-    FileAssociationManager()
-        : m_appPath(jarkUtils::getCurrentAppPath()),
+    static std::wstring currentAppPath() {
+        wchar_t path[32768]{};
+        const DWORD size = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)));
+        return std::wstring(path, size);
+    }
+    explicit FileAssociationManager(std::wstring appPath = currentAppPath())
+        : m_appPath(std::move(appPath)),
         m_thumbnailRegistrar(m_appPath) {
     }
 
@@ -169,6 +183,14 @@ public:
         const std::vector<std::wstring>& extUnchecked) {
 
         FileAssociationResult result;
+        result.defaultSelectionRequired = !extChecked.empty();
+        result.associationSucceeded = OpenWithRegistrar::registerApplication(m_appPath, extChecked);
+        for (const auto& value : {std::pair{L"ApplicationName", L"YeImageViewer"},
+            std::pair{L"ApplicationDescription", L"YeImageViewer image viewer"}})
+            result.associationSucceeded = SetRegistryValue(HKEY_CURRENT_USER,
+                L"Software\\YeImageViewer\\Capabilities", value.first, value.second) && result.associationSucceeded;
+        result.associationSucceeded = SetRegistryValue(HKEY_CURRENT_USER, L"Software\\RegisteredApplications",
+            L"YeImageViewer", L"Software\\YeImageViewer\\Capabilities") && result.associationSucceeded;
 
         // 关联需要的扩展名
         for (const auto& ext : extChecked) {

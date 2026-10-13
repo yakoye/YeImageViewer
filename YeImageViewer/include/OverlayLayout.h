@@ -5,13 +5,10 @@
 
 namespace OverlayLayout {
 
-// 插入「适应图片」按钮后加宽一个按钮位：580 -> 615。
-// 左侧与中间那组的偏移、以及三条分隔线的位置全部保持不变，只有新按钮右边的
-// 按钮整体让出一格——这样分组间距和左右边距都和改动前一模一样。
-//
-// 代价：播放键相对窗口中心偏左 17 像素。右侧比左侧多出一个按钮，想让播放键严格
-// 居中就得在左边空出 35 像素，那块空白一眼就看得出来，偏 17 像素看不出来。
-inline constexpr int BASE_TOOLBAR_WIDTH = 615;
+// 在垂直翻转与上一张之间局部插入手掌＋倍率，其后的分隔线与功能组统一右移。
+// 左側设置、旋转、翻转的相对位置不变，不重排功能组、不增加第二排。
+inline constexpr int PAN_INSERT_WIDTH = 68;
+inline constexpr int BASE_TOOLBAR_WIDTH = 615 + PAN_INSERT_WIDTH;
 inline constexpr int BASE_TOOLBAR_HEIGHT = 50;
 inline constexpr int BASE_TOOLBAR_BOTTOM_MARGIN = 20;
 inline constexpr int BASE_TOOLBAR_REVEAL_SIDE_PADDING = 48;
@@ -78,6 +75,7 @@ enum class Hit {
     ZoomOut,
     ZoomText,
     ZoomIn,
+    PanMultiplier,
     Toolbar,
     PresentationClose,
 };
@@ -91,10 +89,10 @@ constexpr int dpiScale(int dpi) {
 // 目标是保持固定的逻辑尺寸，窗口宽度不够时再等比收缩，两者取小。
 constexpr int toolbarScale(int canvasWidth, int dpi = BASE_DPI) {
     const int target = dpiScale(dpi);
-    const int minimum = MINIMUM_TOOLBAR_SCALE * target / 1000;
     if (canvasWidth <= 16)
         return 600 * target / 1000;
     const int widthScale = (canvasWidth - 16) * 1000 / BASE_TOOLBAR_WIDTH;
+    const int minimum = std::min(widthScale, MINIMUM_TOOLBAR_SCALE * target / 1000);
     return std::clamp(std::min(widthScale, target), minimum, target);
 }
 
@@ -164,27 +162,32 @@ constexpr Rect rotateLeftRect(int width, int height, int dpi = BASE_DPI) { retur
 constexpr Rect rotateRightRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 85, BASE_BUTTON_SIZE, dpi); }
 constexpr Rect flipHorizontalRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 120, BASE_BUTTON_SIZE, dpi); }
 constexpr Rect flipVerticalRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 155, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect toolbarPreviousRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 230, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect toolbarPlayPauseRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 265, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect toolbarNextRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 300, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect zoomFitRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 350, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect panMultiplierRect(int width, int height, int dpi = BASE_DPI) {
+    auto rect = baseToolbarButtonRect(width, height, 193, BASE_BUTTON_SIZE, dpi);
+    rect.width = scaled(66, toolbarScale(width, dpi));
+    return rect;
+}
+constexpr Rect toolbarPreviousRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 230 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect toolbarPlayPauseRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 265 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect toolbarNextRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 300 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect zoomFitRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 350 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
 // 「适应图片」紧挨在「适应窗口」右边：一个是图片去迁就窗口，一个是窗口去迁就图片。
-constexpr Rect fitImageRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 385, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect zoomActualRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 420, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect fullscreenRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 455, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect zoomOutRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 502, BASE_SMALL_BUTTON_SIZE, dpi); }
+constexpr Rect fitImageRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 385 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect zoomActualRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 420 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect fullscreenRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 455 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect zoomOutRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 502 + PAN_INSERT_WIDTH, BASE_SMALL_BUTTON_SIZE, dpi); }
 constexpr Rect zoomTextRect(int width, int height, int dpi = BASE_DPI) {
     const int scale = toolbarScale(width, dpi);
     const auto toolbar = toolbarRect(width, height, dpi);
     const int rectHeight = scaled(BASE_SMALL_BUTTON_SIZE, scale);
     return {
-        toolbar.x + scaled(BASE_TOOLBAR_PADDING + 526, scale),
+        toolbar.x + scaled(BASE_TOOLBAR_PADDING + 526 + PAN_INSERT_WIDTH, scale),
         toolbar.y + (toolbar.height - rectHeight) / 2,
         scaled(50, scale),
         rectHeight,
     };
 }
-constexpr Rect zoomInRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 580, BASE_SMALL_BUTTON_SIZE, dpi); }
+constexpr Rect zoomInRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 580 + PAN_INSERT_WIDTH, BASE_SMALL_BUTTON_SIZE, dpi); }
 
 // 左右两侧的翻页按钮。默认关闭，由设置里的开关决定是否参与命中与绘制。
 constexpr Rect edgePreviousRect(int, int canvasHeight, int dpi = BASE_DPI) {
@@ -253,6 +256,7 @@ constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y, int dpi =
     if (rotateRightRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::RotateRight;
     if (flipHorizontalRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::FlipHorizontal;
     if (flipVerticalRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::FlipVertical;
+    if (panMultiplierRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::PanMultiplier;
     if (zoomFitRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomFit;
     if (zoomActualRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomActual;
     if (fullscreenRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::Fullscreen;

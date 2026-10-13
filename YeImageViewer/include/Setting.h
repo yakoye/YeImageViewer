@@ -212,8 +212,8 @@ private:
                     &GlobalVar::settingParameter.reserve[ViewingOptions::LONG_IMAGE] },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[23]), {114, 94, 95},
                     &GlobalVar::settingParameter.reserve[ViewingOptions::CENTER_LONG] },
-                { toCvRect(SettingLayout::GENERAL_RADIOS[24]), {115, 116, 117, 118},
-                    &GlobalVar::settingParameter.reserve[ViewingOptions::DRAG_SPEED] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[24]), {120, 121, 122, 123, 124, 125, 126, 127, 128, 129},
+                    &GlobalVar::settingParameter.reserve[PanOptions::SENSITIVITY] },
             };
         }
 
@@ -333,6 +333,9 @@ private:
             tr("显示与交互", "DISPLAY & INPUT", "顯示與互動"));
         for (const auto& radio : generalTabRadioList)
             drawSegment(page, radio);
+        textDrawer.putAlignLeft(page,
+            scaleRect({36, SettingLayout::GENERAL_RADIOS.back().y + 38, 548, 18}),
+            tr("仅自动拖拽模式生效；按住 Shift 精细拖动", "Auto mode only; hold Shift for precision", "僅自動拖曳模式生效；按住 Shift 精細拖曳"), secondaryText());
 
         const int editorCount = static_cast<int>(GlobalVar::externalEditors.size());
         const auto editorCard = SettingLayout::generalEditorCard(editorCount);
@@ -381,55 +384,47 @@ private:
     }
 
     void refreshAssociateTab(cv::Mat& page) {
-        const bool chinese = isChineseUI();
         const cv::Rect search = toCanvasRect(SettingLayout::ASSOCIATION_SEARCH);
         drawCard(page, search);
-        cv::circle(page, { search.x + 20, search.y + search.height / 2 - 2 }, 6,
-            jarkUtils::to_cv_scalar(secondaryText()), 2);
-        cv::line(page, { search.x + 25, search.y + search.height / 2 + 3 },
-            { search.x + 31, search.y + search.height / 2 + 9 },
-            jarkUtils::to_cv_scalar(secondaryText()), 2);
+        cv::circle(page, { search.x + S(20), search.y + search.height / 2 - S(2) }, S(6),
+            jarkUtils::to_cv_scalar(secondaryText()), S(2));
+        cv::line(page, { search.x + S(25), search.y + search.height / 2 + S(3) },
+            { search.x + S(31), search.y + search.height / 2 + S(9) },
+            jarkUtils::to_cv_scalar(secondaryText()), S(2));
         const std::string searchText = associationFilter.empty() ?
             (associationSearchActive ? "|" : (tr("搜索格式...", "Search formats...", "搜尋格式..."))) :
             associationFilter + (associationSearchActive ? "|" : "");
         textDrawer.putAlignLeft(page,
-            { search.x + 42, search.y, search.width - 170, search.height },
+            { search.x + S(42), search.y, search.width - S(170), search.height },
             searchText.c_str(), associationFilter.empty() ?
             secondaryText() : primaryText());
         const std::string countText = std::format("{} / {}", checkedExt.size(), allSupportExt.size());
         textDrawer.putAlignCenter(page,
-            { search.x + search.width - 120, search.y, 100, search.height },
+            { search.x + search.width - S(120), search.y, S(100), search.height },
             countText.c_str(), secondaryText());
 
         const auto visible = filteredExtensions();
         for (int index = 0; index < static_cast<int>(visible.size()); ++index) {
-            const int column = index % SettingLayout::ASSOCIATION_GRID_COLUMNS;
-            const int row = index / SettingLayout::ASSOCIATION_GRID_COLUMNS;
-            const cv::Rect rect{
-                SettingLayout::ASSOCIATION_GRID_X + column *
-                    (SettingLayout::ASSOCIATION_TAG_WIDTH + SettingLayout::ASSOCIATION_TAG_GAP_X),
-                SettingLayout::ASSOCIATION_GRID_Y + row *
-                    (SettingLayout::ASSOCIATION_TAG_HEIGHT + SettingLayout::ASSOCIATION_TAG_GAP_Y),
-                SettingLayout::ASSOCIATION_TAG_WIDTH,
-                SettingLayout::ASSOCIATION_TAG_HEIGHT };
+            const cv::Rect rect = toCanvasRect(SettingLayout::associationExtensionRect(index));
             const bool active = checkedExt.contains(std::string(visible[index]));
             fillRoundedRect(page, rect,
-                active ? GlobalVar::currentTheme.BG_TAG : GlobalVar::currentTheme.BG, 5);
+                active ? GlobalVar::currentTheme.BG_TAG : GlobalVar::currentTheme.BG, S(5));
             cv::rectangle(page, rect,
-                jarkUtils::to_cv_scalar(active ? GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG), 1);
+                jarkUtils::to_cv_scalar(active ? GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG), S(1));
             textDrawer.putAlignCenter(page, rect, visible[index].data(),
                 active ? primaryText() : secondaryText());
         }
 
         textDrawer.putAlignLeft(page,
-            { 24, associationDescriptionY(), winWidth - 48, 62 }, getUIString(11),
+            scaleRect({ 24, associationDescriptionY(), winWidth - 48, 62 }), getUIString(11),
             secondaryText());
         const auto buttons = associationButtonRects();
         constexpr std::array<int, 4> textIDs{ 7, 8, 9, 10 };
         for (int index = 0; index < 4; ++index) {
-            fillRoundedRect(page, buttons[index],
-                index == 3 ? GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG, 7);
-            textDrawer.putAlignCenter(page, buttons[index], getUIString(textIDs[index]),
+            const auto button = scaleRect(buttons[index]);
+            fillRoundedRect(page, button,
+                index == 3 ? GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG, S(7));
+            textDrawer.putAlignCenter(page, button, getUIString(textIDs[index]),
                 index == 3 ? 0xFFFFFFFFu : primaryText());
         }
     }
@@ -635,9 +630,9 @@ private:
             const cv::Rect row = toCanvasRect(SettingLayout::shortcutWheelRow(index));
             cv::line(page, { row.x, row.y }, { row.x + row.width, row.y },
                 jarkUtils::to_cv_scalar(GlobalVar::currentTheme.BG_TAG), 1);
-            textDrawer.putAlignLeft(page, { row.x + 8, row.y, 220, row.height },
+            textDrawer.putAlignLeft(page, { row.x + S(8), row.y, S(220), row.height },
                 tr(wheelZH[index], wheelEN[index], wheelTW[index]), primaryText());
-            const cv::Rect keyRect{ row.x + 260, row.y + 5, 280, row.height - 10 };
+            const cv::Rect keyRect = toCanvasRect(SettingLayout::shortcutWheelCell(index));
             fillRoundedRect(page, keyRect, GlobalVar::currentTheme.BG_DEEP, 5);
             textDrawer.putAlignCenter(page, keyRect, wheelActionName(
                 ShortcutConfig::getWheelAction(GlobalVar::settingParameter.reserve, index)),
@@ -910,6 +905,10 @@ private:
             *toggle.valuePtr = !*toggle.valuePtr;
             if (toggle.valuePtr == &GlobalVar::settingParameter.enableColorManagement)
                 GlobalVar::isNeedReloadImageCache = true;
+            if (toggle.valuePtr == &GlobalVar::settingParameter.isOneToOnePreferred) {
+                GlobalVar::settingParameter.reserve[ViewingOptions::SCALE] = *toggle.valuePtr ? 1u : 0u;
+                ViewingOptions::changed |= 1 | 32;
+            }
             isNeedRefreshUI = true;
             return;
         }
@@ -932,6 +931,7 @@ private:
                 if (id == 93) changes |= 8;
                 if (id == 88) changes |= 16;
                 if (id == 90) changes |= 32;
+                if (id == 90) GlobalVar::settingParameter.isOneToOnePreferred = selected == 1;
                 ViewingOptions::changed |= changes;
             }
             if (radio.stringIDs.front() == 24) {
@@ -1036,15 +1036,7 @@ private:
 
         const auto visible = filteredExtensions();
         for (int index = 0; index < static_cast<int>(visible.size()); ++index) {
-            const int column = index % SettingLayout::ASSOCIATION_GRID_COLUMNS;
-            const int row = index / SettingLayout::ASSOCIATION_GRID_COLUMNS;
-            const cv::Rect rect{
-                SettingLayout::ASSOCIATION_GRID_X + column *
-                    (SettingLayout::ASSOCIATION_TAG_WIDTH + SettingLayout::ASSOCIATION_TAG_GAP_X),
-                SettingLayout::ASSOCIATION_GRID_Y + row *
-                    (SettingLayout::ASSOCIATION_TAG_HEIGHT + SettingLayout::ASSOCIATION_TAG_GAP_Y),
-                SettingLayout::ASSOCIATION_TAG_WIDTH,
-                SettingLayout::ASSOCIATION_TAG_HEIGHT };
+            const cv::Rect rect = toCvRect(SettingLayout::associationExtensionRect(index));
             if (isInside(x, y, rect)) {
                 toggle(checkedExt, std::string(visible[index]));
                 isNeedRefreshUI = true;
@@ -1078,11 +1070,26 @@ private:
             }
             const auto result = SetupFileAssociations(checkedExtW, uncheckedExtW);
             if (!result.associationSucceeded)
-                MessageBoxW(nullptr, getUIStringW(3), getUIStringW(1), MB_OK | MB_ICONERROR);
-            else if (result.thumbnailOperationFailed)
-                MessageBoxW(nullptr, getUIStringW(41), getUIStringW(1), MB_OK | MB_ICONWARNING);
-            else
-                MessageBoxW(nullptr, getUIStringW(2), getUIStringW(1), MB_OK | MB_ICONINFORMATION);
+                MessageBoxW(m_hwnd, getUIStringW(3), getUIStringW(1), MB_OK | MB_ICONERROR);
+            else if (result.defaultSelectionRequired) {
+                std::wstring message = trW(
+                    L"所选格式已登记到打开方式。\nWindows 10/11 需要您在系统设置中确认默认应用。\n\n现在打开默认应用设置吗？",
+                    L"Selected formats are registered in Open with.\nWindows 10/11 requires you to confirm the default app in Settings.\n\nOpen Default apps now?",
+                    L"所選格式已登記到開啟方式。\nWindows 10/11 需要您在系統設定中確認預設應用程式。\n\n現在開啟預設應用程式設定嗎？");
+                if (result.thumbnailOperationFailed) message += L"\n\n" + std::wstring(getUIStringW(41));
+                if (MessageBoxW(m_hwnd, message.c_str(), getUIStringW(1), MB_YESNO | MB_ICONINFORMATION) == IDYES) {
+                    const auto opened = reinterpret_cast<INT_PTR>(ShellExecuteW(m_hwnd, L"open",
+                        L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
+                    if (opened <= 32) MessageBoxW(m_hwnd,
+                        trW(L"无法打开系统设置，请手动进入 Windows 设置 → 应用 → 默认应用。",
+                            L"Could not open Settings. Open Windows Settings > Apps > Default apps manually.",
+                            L"無法開啟系統設定，請手動進入 Windows 設定 → 應用程式 → 預設應用程式。"),
+                        getUIStringW(1), MB_OK | MB_ICONWARNING);
+                }
+            }
+            else MessageBoxW(m_hwnd, result.thumbnailOperationFailed ? getUIStringW(41) :
+                trW(L"已取消所选文件类型的登记。", L"Selected file types have been unregistered.", L"已取消所選檔案類型的登記。"),
+                getUIStringW(1), MB_OK | (result.thumbnailOperationFailed ? MB_ICONWARNING : MB_ICONINFORMATION));
         }
     }
 

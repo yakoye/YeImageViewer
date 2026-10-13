@@ -14,7 +14,8 @@ $files = foreach ($name in $names) {Get-Item -LiteralPath (Join-Path $source $na
 $failures = @()
 foreach ($root in $ArchiveRoots) {
     try {
-        $destination = Join-Path $root "YeImageViewer\v$version"
+        $relative = if ($version.Contains('-')) {"YeImageViewer\候选版\v$version"} else {"YeImageViewer\v$version"}
+        $destination = Join-Path $root $relative
         [void](New-Item -ItemType Directory -Path $destination -Force)
         foreach ($file in $files) {
             $target = Join-Path $destination $file.Name

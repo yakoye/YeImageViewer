@@ -40,6 +40,8 @@
 #include "AnimationControls.h"
 #include "ImageResampling.h"
 #include "ReadingLayout.h"
+#include "PanPopoverLayout.h"
+#include "RegistryTestSandbox.h"
 
 #include "D3D11App.h"
 #include <ppl.h>
@@ -59,8 +61,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.38.0";
-constinit int appVersionCode = 13800; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.38.1-rc1";
+constinit int appVersionCode = 13801; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -290,7 +292,7 @@ struct CurImageParameter {
 class ExtraUIRes {
 public:
     cv::Mat mainRes, leftArrow, rightArrow, leftRotate, rightRotate,
-        flipHorizontal, flipVertical, fitWindow, fitImage, actualSize, fullscreen,
+        flipHorizontal, flipVertical, hand, fitWindow, fitImage, actualSize, fullscreen,
         favorite, copy, deleteImage, setting, zoomOut, zoomIn,
         play, pause,
         presentationClose, animationBarPlaying, animationBarPausing;
@@ -324,6 +326,7 @@ public:
         rightRotate = loadSvgIcon(IDR_SVG_ROTATE_RIGHT_ICON, OverlayLayout::BASE_ICON_SIZE);
         flipHorizontal = loadSvgIcon(IDR_SVG_FLIP_HORIZONTAL_ICON, OverlayLayout::BASE_ICON_SIZE);
         flipVertical = loadSvgIcon(IDR_SVG_FLIP_VERTICAL_ICON, OverlayLayout::BASE_ICON_SIZE);
+        hand = loadSvgIcon(IDR_SVG_HAND_ICON, OverlayLayout::BASE_ICON_SIZE);
         fitWindow = loadSvgIcon(IDR_SVG_FIT_WINDOW_ICON, OverlayLayout::BASE_ICON_SIZE);
         actualSize = loadSvgIcon(IDR_SVG_ACTUAL_SIZE_ICON, OverlayLayout::BASE_ICON_SIZE);
         fitImage = loadSvgIcon(IDR_SVG_FIT_IMAGE_ICON, OverlayLayout::BASE_ICON_SIZE);
@@ -363,6 +366,12 @@ public:
     CursorPos cursorPosLast = CursorPos::centerArea;
     ShowExtraUI extraUIFlag = ShowExtraUI::none;
     bool mouseIsPressing = false;
+    bool panPopoverOpen = false, panSliderDragging = false;
+    PanPolicy::Gesture panGesture;
+    PanPolicy::Delta lastPanDelta{};
+    int panMoveCount = 0;
+    std::array<int64_t, 7> panTransformKey{};
+    std::chrono::steady_clock::time_point panTimestamp{};
     bool ctrlIsPressing = false;
     bool rightClickMenuRequested = false;
     std::wstring fittedGeometryPath;
@@ -471,6 +480,8 @@ public:
     ExtraUIRes extraUIRes;
     std::chrono::steady_clock::time_point lastClickTimestamp{}, lastWinResizeTimestamp{},
         slideshowNextAt{}, zoomIndicatorStartedAt{};
+    Cood lastClickPosition{};
+    bool lastClickDragged = true;
 
     explicit YeImageViewerApp(bool openImageOnCursorMonitor = false)
         : D3D11App(openImageOnCursorMonitor) {
@@ -866,7 +877,10 @@ public:
 
     void rememberViewingRule(std::size_t slot, uint32_t value) {
         if (slot == ViewingOptions::SCALE) lastExplicitScale = value;
-        if (viewingLocked() && !applyingViewingSettings) GlobalVar::settingParameter.reserve[slot] = value;
+        if (viewingLocked() && !applyingViewingSettings) {
+            GlobalVar::settingParameter.reserve[slot] = value;
+            if (slot == ViewingOptions::SCALE) GlobalVar::settingParameter.isOneToOnePreferred = value == 1;
+        }
     }
 
     bool readingEnabled() const {
@@ -1032,7 +1046,8 @@ public:
         }
         // 阅读画布上的点击不会关闭沉浸；仍允许随后拖动阅读画布。
         presentationClickCandidate = false; mouseIsPressing = true;
-        mousePressPos = {x, y}; SetCapture(m_hWnd);
+        beginImagePan();
+        mousePressPos = {x, y};
         return true;
     }
 
@@ -1271,11 +1286,37 @@ public:
         if (!currentIsLongImage() || !ViewingOptions::enabled(
             GlobalVar::settingParameter.reserve, ViewingOptions::CENTER_LONG)) return;
         const int height = (curPar.rotation & 1) ? curPar.width : curPar.height;
-        curPar.slideTarget.x = curPar.slideCur.x = 0;
+        const int width = (curPar.rotation & 1) ? curPar.height : curPar.width;
+        if (width * double(curPar.zoomTarget) / curPar.ZOOM_BASE <= winWidth)
+            curPar.slideTarget.x = 0;
+        if (width * double(curPar.zoomCur) / curPar.ZOOM_BASE <= winWidth)
+            curPar.slideCur.x = 0;
         curPar.slideTarget.y = LongImagePolicy::clampVertical(curPar.slideTarget.y,
             height, winHeight, curPar.zoomTarget, curPar.ZOOM_BASE);
         curPar.slideCur.y = LongImagePolicy::clampVertical(curPar.slideCur.y,
             height, winHeight, curPar.zoomCur, curPar.ZOOM_BASE);
+    }
+
+    void constrainPanAfterTransform() {
+        if (readingEnabled() || !hasCurrentImagePath()) return;
+        const std::array<int64_t, 7> key{winWidth, winHeight, curPar.width, curPar.height,
+            curPar.rotation, curPar.zoomCur, curPar.zoomTarget};
+        if (key == panTransformKey) return;
+        panTransformKey = key;
+        const int width = (curPar.rotation & 1) ? curPar.height : curPar.width;
+        const int height = (curPar.rotation & 1) ? curPar.width : curPar.height;
+        const auto constrain = [&](Cood& slide, int64_t zoom) {
+            const int xLimit = static_cast<int>(PanPolicy::limit(
+                width * double(zoom) / curPar.ZOOM_BASE, winWidth));
+            const int yLimit = static_cast<int>(PanPolicy::limit(
+                height * double(zoom) / curPar.ZOOM_BASE, winHeight));
+            slide.x = std::clamp(slide.x, -xLimit, xLimit);
+            slide.y = std::clamp(slide.y, -yLimit, yLimit);
+        };
+        // 只在几何变化时重新限位；不改动已配置的滚轮／快捷键平移策略。
+        constrain(curPar.slideTarget, curPar.zoomTarget);
+        constrain(curPar.slideCur, curPar.zoomCur);
+        panGesture.reset();
     }
 
     void applyViewingScale(bool force = false) {
@@ -1321,7 +1362,7 @@ public:
             applyPresentationImageLayout();
         else if (framedWindowAnchored)
             applyAnchoredWindowImageLayout();
-        applyViewingScale();
+        applyViewingScale(true);
     }
 
     void persistCurrentRotation() {
@@ -1365,7 +1406,7 @@ public:
         if (!hasCurrentImagePath()) return;
         if (shape == ViewingOptions::Shape::Immersive) {
             enterPresentationMode();
-            applyViewingScale();
+            applyViewingScale(true);
             return;
         }
         if (shape == ViewingOptions::Shape::Fullscreen) {
@@ -2066,10 +2107,87 @@ public:
         }
     }
 
+    OverlayLayout::Rect panButtonRect() const {
+        auto rect = OverlayLayout::panMultiplierRect(winWidth, winHeight, overlayDpi());
+        if (readingEnabled()) rect.y = std::max(0, rect.y - 52);
+        return rect;
+    }
+
+    OverlayLayout::Rect panPanelRect() const {
+        auto rect = PanPopoverLayout::panel(winWidth, winHeight, overlayDpi());
+        if (readingEnabled()) rect.y = std::max(0, rect.y - 52);
+        return rect;
+    }
+
+    bool isImageDoubleClick(int x, int y) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto elapsed = duration_cast<std::chrono::milliseconds>(now - lastClickTimestamp).count();
+        const int tolerance = std::max(1, 5 * overlayDpi() / 96);
+        const bool result = !lastClickDragged && 10 < elapsed && elapsed < 300 &&
+            std::abs(x - lastClickPosition.x) <= tolerance &&
+            std::abs(y - lastClickPosition.y) <= tolerance;
+        lastClickTimestamp = result ? std::chrono::steady_clock::time_point{} : now;
+        lastClickPosition = {x, y};
+        lastClickDragged = false;
+        return result;
+    }
+
+    void beginImagePan() {
+        panGesture.reset(); panTimestamp = std::chrono::steady_clock::now();
+        lastPanDelta = {}; panMoveCount = 0;
+        smoothShift = false;
+        curPar.zoomTarget = curPar.zoomCur;
+        curPar.slideTarget = curPar.slideCur;
+        SetCapture(m_hWnd);
+    }
+
+    PanPolicy::Delta imagePanDelta(int x, int y, WPARAM flags, bool canX, bool canY) {
+        const auto now = std::chrono::steady_clock::now();
+        const double elapsed = std::chrono::duration<double>(now - panTimestamp).count();
+        panTimestamp = now;
+        const auto result = panGesture.move(x - mousePressPos.x, y - mousePressPos.y,
+            elapsed, overlayDpi(), GlobalVar::settingParameter.reserve,
+            (flags & MK_SHIFT) != 0, canX, canY);
+        lastPanDelta = result; ++panMoveCount;
+        mousePressPos = {x, y};
+        return result;
+    }
+
+    void updatePanSlider(int x) {
+        auto* options = GlobalVar::settingParameter.reserve;
+        options[PanOptions::MODE] = 1;
+        options[PanOptions::FIXED] = PanPopoverLayout::levelAt(panPanelRect(), x);
+        operateQueue.push({ActionENUM::refresh});
+    }
+
     void OnMouseDown(WPARAM btnState, int x, int y, WPARAM wParam) override {
         switch ((uint64_t)btnState)
         {
         case WM_LBUTTONDOWN: {//左键
+            if (panButtonRect().contains(x, y) &&
+                (readingEnabled() || extraUIFlag == ShowExtraUI::bottomToolbar || panPopoverOpen)) {
+                panPopoverOpen = !panPopoverOpen;
+                mouseIsPressing = false; presentationClickCandidate = false;
+                operateQueue.push({ActionENUM::refresh});
+                return;
+            }
+            if (panPopoverOpen) {
+                const auto panel = panPanelRect();
+                if (panel.contains(x, y)) {
+                    mouseIsPressing = false; presentationClickCandidate = false;
+                    if (PanPopoverLayout::automatic(panel).contains(x, y)) {
+                        GlobalVar::settingParameter.reserve[PanOptions::MODE] = 0;
+                    }
+                    else if (PanPopoverLayout::sliderHit(panel).contains(x, y)) {
+                        panSliderDragging = true; SetCapture(m_hWnd); updatePanSlider(x);
+                    }
+                    operateQueue.push({ActionENUM::refresh});
+                    return;
+                }
+                panPopoverOpen = false;
+                operateQueue.push({ActionENUM::refresh});
+                return; // 外部点击只收起，不穿透成为图片拖动。
+            }
             if (frameControlsVisible()) {
                 const auto rect = AnimationControls::bar(winWidth, overlayDpi());
                 if (x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height) {
@@ -2150,11 +2268,7 @@ public:
                 // 沉浸预览里图片区域此前直接吞掉按下事件，双击根本走不到判定。
                 // 图片上的双击要和普通窗口里一样触发配置的动作。
                 if (insideImage) {
-                    const auto now = std::chrono::steady_clock::now();
-                    const auto elapsed = duration_cast<std::chrono::milliseconds>(
-                        now - lastClickTimestamp).count();
-                    lastClickTimestamp = now;
-                    if (10 < elapsed && elapsed < 300) {
+                    if (isImageDoubleClick(x, y)) {
                         presentationClickCandidate = false;
                         mouseIsPressing = false;
                         applyDoubleClickAction();
@@ -2165,15 +2279,12 @@ public:
                 presentationPressPos = { x, y };
                 mousePressPos = { x, y };
                 mouseIsPressing = insideImage;
+                if (mouseIsPressing) beginImagePan();
                 return;
             }
 
             if (cursorPos == CursorPos::centerArea) {
-                auto now = std::chrono::steady_clock::now();
-                auto elapsed = duration_cast<std::chrono::milliseconds>(now - lastClickTimestamp).count();
-                lastClickTimestamp = now;
-
-                if (10 < elapsed && elapsed < 300) { // 10 ~ 300 ms
+                if (isImageDoubleClick(x, y)) {
                     applyDoubleClickAction();
                 }
                 else if (ViewerOptions::dragShouldMoveWindow(
@@ -2183,12 +2294,14 @@ public:
                     // 细节，把窗口拖走完全不是他要的。
                     imageHasPanRoom() || curPar.zoomUserAdjusted) &&
                     // 最大化和全屏的窗口没法拖着走，这两种状态下保持原来的平移。
-                    !IsZoomed(m_hWnd) && !jarkUtils::IsFullScreen(m_hWnd)) {
+                    !IsZoomed(m_hWnd) && !jarkUtils::IsFullScreen(m_hWnd) &&
+                    ((wParam & MK_SHIFT) == 0 || !isPointInsideCurrentImage(x, y))) {
                     beginWindowDrag();
                     return;
                 }
                 else {
-                    mouseIsPressing = true;
+                    mouseIsPressing = isPointInsideCurrentImage(x, y);
+                    if (mouseIsPressing) beginImagePan();
                 }
             }
 
@@ -2264,6 +2377,10 @@ public:
         switch ((uint64_t)btnState)
         {
         case WM_LBUTTONUP: {//左键
+            if (panSliderDragging) {
+                updatePanSlider(x); panSliderDragging = false; ReleaseCapture();
+                return;
+            }
             if (frameDragging) {
                 seekFrameAt(x);
                 frameDragging = false;
@@ -2298,6 +2415,8 @@ public:
                 }
             }
             mouseIsPressing = false;
+            panGesture.reset();
+            if (GetCapture() == m_hWnd) ReleaseCapture();
             operateQueue.push({ ActionENUM::refresh });
             return;
         }
@@ -2336,6 +2455,17 @@ public:
     }
 
     void OnMouseMove(WPARAM btnState, int x, int y) override {
+        if ((mouseIsPressing || windowDragActive) && (btnState & MK_LBUTTON) != 0) {
+            const int tolerance = std::max(1, 5 * overlayDpi() / 96);
+            if (std::abs(x - lastClickPosition.x) > tolerance ||
+                std::abs(y - lastClickPosition.y) > tolerance) lastClickDragged = true;
+        }
+        if (panSliderDragging) { updatePanSlider(x); return; }
+        if (panPopoverOpen) {
+            extraUIFlag = ShowExtraUI::bottomToolbar;
+            operateQueue.push({ActionENUM::refresh});
+            return;
+        }
         if (frameDragging) { seekFrameAt(x); return; }
         if (curPar.imageAssetPtr && !curPar.imageAssetPtr->frames.empty()) {
             const auto rect = AnimationControls::bar(winWidth, overlayDpi());
@@ -2344,12 +2474,10 @@ public:
                 operateQueue.push({ActionENUM::refresh});
             }
         }
-        if (readingEnabled() && mouseIsPressing) {
-            const Cood delta = Cood{x, y} - mousePressPos;
-            mousePressPos = Cood{x, y};
-            const int speed = ViewingOptions::dragFactor(GlobalVar::settingParameter.reserve);
-            scrollReader(-(readerHorizontal() ? delta.x : delta.y) * speed);
-            readerCross += (readerHorizontal() ? delta.y : delta.x) * speed;
+        if (readingEnabled() && mouseIsPressing && (btnState & MK_LBUTTON) != 0) {
+            const auto delta = imagePanDelta(x, y, btnState, true, true);
+            scrollReader(-(readerHorizontal() ? delta.x : delta.y));
+            readerCross += (readerHorizontal() ? delta.y : delta.x);
             const int group = ReadingPolicy::groupForPage(curFileIdx, readerDouble(), readerShift);
             if (group < static_cast<int>(readerLayout.groups.size())) {
                 const auto& pages = readerLayout.groups[group].pages;
@@ -2361,8 +2489,6 @@ public:
                     const double width = pages[0].width + (readerDouble() ? pages[1].width + 16 : 0);
                     const double limit = std::max(0.0, (width - winWidth) / 2);
                     readerCross = std::clamp(readerCross, -limit, limit);
-                    if (currentIsLongImage() && ViewingOptions::enabled(GlobalVar::settingParameter.reserve,
-                        ViewingOptions::CENTER_LONG)) readerCross = 0;
                 }
             }
             return;
@@ -2384,6 +2510,9 @@ public:
         }
         else {
             switch (OverlayLayout::hitTest(winWidth, winHeight, x, y, overlayDpi(), edgeArrowsEnabled())) {
+            case OverlayLayout::Hit::PanMultiplier:
+                cursorPos = CursorPos::toolbarPan;
+                break;
             case OverlayLayout::Hit::EdgePreviousImage:
                 cursorPos = CursorPos::leftEdge;
                 break;
@@ -2480,6 +2609,7 @@ public:
             case CursorPos::toolbarRotateRight:
             case CursorPos::toolbarFlipHorizontal:
             case CursorPos::toolbarFlipVertical:
+            case CursorPos::toolbarPan:
             case CursorPos::toolbarZoomFit:
             case CursorPos::toolbarFitImage:
             case CursorPos::toolbarZoomActual:
@@ -2511,15 +2641,21 @@ public:
             return;
         }
 
-        if (mouseIsPressing) {
-            auto slideDelta = mousePos - mousePressPos;
-            mousePressPos = mousePos;
-            const int factor = ViewingOptions::dragFactor(GlobalVar::settingParameter.reserve);
-            operateQueue.push({ ActionENUM::slide, slideDelta.x * factor, slideDelta.y * factor });
+        if (mouseIsPressing && (btnState & MK_LBUTTON) != 0) {
+            const auto rect = currentImageRect();
+            const int limitX = static_cast<int>(PanPolicy::limit(rect.right - rect.left, winWidth));
+            const int limitY = static_cast<int>(PanPolicy::limit(rect.bottom - rect.top, winHeight));
+            const auto delta = imagePanDelta(x, y, btnState, limitX > 0, limitY > 0);
+            curPar.slideCur.x = std::clamp(curPar.slideCur.x + delta.x, -limitX, limitX);
+            curPar.slideCur.y = std::clamp(curPar.slideCur.y + delta.y, -limitY, limitY);
+            curPar.slideTarget = curPar.slideCur;
+            smoothShift = false;
+            operateQueue.push({ ActionENUM::refresh });
         }
     }
 
     void OnMouseLeave() override {
+        if ((mouseIsPressing || panSliderDragging) && GetCapture() == m_hWnd) return;
         endWindowDrag();
         liveBadgeHovered = false;
         SetCursor(LoadCursorW(nullptr, IDC_ARROW));
@@ -2839,6 +2975,12 @@ public:
     }
 
     void OnKeyDown(WPARAM keyValue) override {
+        if (keyValue == VK_ESCAPE && panPopoverOpen) {
+            panPopoverOpen = false; panSliderDragging = false;
+            if (GetCapture() == m_hWnd) ReleaseCapture();
+            operateQueue.push({ActionENUM::refresh});
+            return;
+        }
         const auto menuModifiers = currentShortcutModifiers();
         if (ContextMenuPolicy::isFixedMenuKey(static_cast<uint32_t>(keyValue),
             (menuModifiers & ShortcutConfig::MODIFIER_CONTROL) != 0,
@@ -3183,11 +3325,20 @@ public:
         heldZoomKey = 0;
     }
 
+    void OnCaptureLost() override {
+        mouseIsPressing = false; panSliderDragging = false;
+        frameDragging = false; panGesture.reset();
+        endWindowDrag();
+    }
+
     void OnFocusLost() override {
+        if (panPopoverOpen) operateQueue.push({ActionENUM::refresh});
         heldZoomKey = 0;
         ctrlIsPressing = false;
         frameDragging = false;
         mouseIsPressing = false;
+        panSliderDragging = false; panPopoverOpen = false; panGesture.reset();
+        lastClickDragged = true;
         endWindowDrag();
         if (GetCapture() == m_hWnd) ReleaseCapture();
     }
@@ -4828,6 +4979,53 @@ public:
         }
     }
 
+    void drawPanButton(cv::Mat& canvas) {
+        const auto rect = panButtonRect();
+        const int scale = OverlayLayout::toolbarScale(canvas.cols, overlayDpi());
+        auto surface = roundedSurface(rect.width, rect.height, std::max(3, rect.height/4),
+            panPopoverOpen ? 0xC03B82F6u : 0xD10D0F14u);
+        jarkUtils::overlayImg(canvas, surface, rect.x, rect.y);
+        // drawOverlayIcon 接收的是按钮盒（内部还会留图标边距），不能传已经缩小的图标尺寸。
+        const int icon = std::min(rect.height, OverlayLayout::scaled(32, scale));
+        drawOverlayIcon(canvas, extraUIRes.hand,
+            {rect.x + OverlayLayout::scaled(2, scale), rect.y + (rect.height-icon)/2, icon, icon});
+        textDrawer.setSize(OverlayLayout::scaled(12, scale));
+        const auto* options = GlobalVar::settingParameter.reserve;
+        const char* label = options[PanOptions::MODE] ? PanOptions::LABELS[options[PanOptions::FIXED]] :
+            tr("自动", "Auto", "自動");
+        textDrawer.putAlignCenter(canvas,
+            {rect.x + icon + 2, rect.y, std::max(1,rect.width-icon-2), rect.height}, label, 0xFFDDE1E9u);
+    }
+
+    void drawPanPopover(cv::Mat& canvas) {
+        if (!panPopoverOpen) return;
+        const auto panel = panPanelRect();
+        auto surface = roundedSurface(panel.width, panel.height, std::max(2, panel.height/12),
+            0xF20D0F14u, 0x557E8AA3u);
+        jarkUtils::overlayImg(canvas, surface, panel.x, panel.y);
+        const auto automatic = PanPopoverLayout::automatic(panel);
+        const auto track = PanPopoverLayout::slider(panel);
+        const auto* options = GlobalVar::settingParameter.reserve;
+        textDrawer.setSize(std::max(10, std::min(
+            OverlayLayout::scaled(16, OverlayLayout::dpiScale(overlayDpi())), automatic.height/2)));
+        const std::string label = std::format("{}   {}", options[PanOptions::MODE] == 0 ? "●" : "○",
+            tr("自动拖拽", "Automatic drag", "自動拖曳"));
+        textDrawer.putAlignLeft(canvas, toCvRect(automatic), label.c_str(), 0xFFE6EAF2u);
+        const std::string fixed = std::format("{}  {}", tr("固定倍率", "Fixed multiplier", "固定倍率"),
+            PanOptions::LABELS[options[PanOptions::FIXED]]);
+        textDrawer.putAlignLeft(canvas,
+            {automatic.x, automatic.y + automatic.height, automatic.width, panel.height/6},
+            fixed.c_str(), options[PanOptions::MODE] ? 0xFF60A5FAu : 0xFF9AA5B8u);
+        const int cy = track.y + track.height/2;
+        cv::line(canvas, {track.x,cy}, {track.x+track.width,cy}, cv::Scalar(130,120,110,255), 2);
+        for (int level=0; level<12; ++level) {
+            const int x = track.x + track.width * level / 11;
+            cv::line(canvas, {x,cy-3}, {x,cy+3}, cv::Scalar(210,210,210,255), 1);
+        }
+        cv::circle(canvas, {track.x + track.width * static_cast<int>(options[PanOptions::FIXED])/11,cy},
+            std::max(3,track.height/5), cv::Scalar(250,165,96,255), -1, cv::LINE_AA);
+    }
+
     void drawViewerToolbar(cv::Mat& canvas) {
         const auto toolbar = OverlayLayout::toolbarRect(canvas.cols, canvas.rows, overlayDpi());
         auto pill = roundedSurface(toolbar.width, toolbar.height,
@@ -4835,7 +5033,7 @@ public:
         jarkUtils::overlayImg(canvas, pill, toolbar.x, toolbar.y);
 
         const int scale = OverlayLayout::toolbarScale(canvas.cols, overlayDpi());
-        for (const int baseX : { 42, 199, 342 }) {
+        for (const int baseX : { 42, 199 + OverlayLayout::PAN_INSERT_WIDTH, 342 + OverlayLayout::PAN_INSERT_WIDTH }) {
             const int x = toolbar.x + OverlayLayout::scaled(
                 OverlayLayout::BASE_TOOLBAR_PADDING + baseX, scale);
             const int half = OverlayLayout::scaled(10, scale);
@@ -4854,6 +5052,7 @@ public:
             extraUIRes.flipHorizontal, CursorPos::toolbarFlipHorizontal, curPar.flipHorizontal);
         drawToolbarButton(canvas, OverlayLayout::flipVerticalRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.flipVertical, CursorPos::toolbarFlipVertical, curPar.flipVertical);
+        drawPanButton(canvas);
 
         drawToolbarButton(canvas, OverlayLayout::toolbarPreviousRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.leftArrow, CursorPos::toolbarPrevious);
@@ -4906,7 +5105,7 @@ public:
                 zoomText.c_str(), 0xBFDDE1E9u);
         }
 
-        if (const char* tooltip = toolbarTooltip()) {
+        if (const char* tooltip = panPopoverOpen ? nullptr : toolbarTooltip()) {
             OverlayLayout::Rect hovered{};
             switch (cursorPos) {
             case CursorPos::toolbarPrevious: hovered = OverlayLayout::toolbarPreviousRect(canvas.cols, canvas.rows, overlayDpi()); break;
@@ -5155,6 +5354,42 @@ public:
         put("zoomExact", double(curPar.zoomTarget) / curPar.ZOOM_BASE /
             (curPar.previewToSource > 0 ? curPar.previewToSource : 1));
         put("slideX", curPar.slideCur.x); put("slideY", curPar.slideCur.y);
+        put("panPopover", panPopoverOpen ? 1 : 0);
+        put("imageDragging", mouseIsPressing ? 1 : 0);
+        put("windowDragging", windowDragActive ? 1 : 0);
+        put("panMoves",panMoveCount); put("panDeltaX",lastPanDelta.x); put("panDeltaY",lastPanDelta.y);
+        put("readerAnchor",readerAnchor); put("readerDirty",readerDirty ? 1 : 0);
+        put("toolbarVisible", extraUIFlag == ShowExtraUI::bottomToolbar ? 1 : 0);
+        const auto panButton = panButtonRect();
+        const auto panPanel = panPanelRect();
+        const auto panTrack = PanPopoverLayout::slider(panPanel);
+        put("panButtonX",panButton.x); put("panButtonY",panButton.y);
+        put("panButtonW",panButton.width); put("panButtonH",panButton.height);
+        put("panPanelX",panPanel.x); put("panPanelY",panPanel.y);
+        put("panPanelW",panPanel.width); put("panPanelH",panPanel.height);
+        put("panTrackX",panTrack.x); put("panTrackY",panTrack.y);
+        put("panTrackW",panTrack.width); put("panTrackH",panTrack.height);
+        put("panMode", GlobalVar::settingParameter.reserve[PanOptions::MODE]);
+        put("panFixed", GlobalVar::settingParameter.reserve[PanOptions::FIXED]);
+        put("panSensitivity", GlobalVar::settingParameter.reserve[PanOptions::SENSITIVITY]);
+        const auto& setting = GlobalVar::settingParameter;
+        put("settingRotateAnimation", setting.isAllowRotateAnimation ? 1 : 0);
+        put("settingZoomAnimation", setting.isAllowZoomAnimation ? 1 : 0);
+        put("settingDeleteConfirm", setting.isNoteBeforeDelete ? 1 : 0);
+        put("settingColor", setting.enableColorManagement ? 1 : 0);
+        put("settingActualPreferred", setting.isOneToOnePreferred ? 1 : 0);
+        put("settingRememberMonitor", setting.rememberLastMonitor ? 1 : 0);
+        put("settingSwitchAnimation", setting.switchImageAnimationMode);
+        put("settingTheme", setting.UI_Mode); put("settingLanguage", setting.UI_LANG);
+        put("settingRightClick", setting.rightClickAction);
+        for (size_t index=0; index<ShortcutConfig::DEFAULT_BINDINGS.size(); ++index)
+            state << "binding" << index << '=' << setting.reserve[ShortcutConfig::BINDING_BASE_INDEX+index] << '\n';
+        for (int index=0; index<3; ++index)
+            state << "wheel" << index << '=' << setting.reserve[ShortcutConfig::WHEEL_BASE_INDEX+index] << '\n';
+        for (size_t slot = ViewerOptions::STORAGE_BASE; slot < ViewerOptions::STORAGE_BASE + ViewerOptions::SLOT_COUNT; ++slot)
+            state << "pref" << slot << '=' << setting.reserve[slot] << '\n';
+        for (size_t slot = PanOptions::BASE; slot < PanOptions::BASE + PanOptions::SLOTS; ++slot)
+            state << "pref" << slot << '=' << GlobalVar::settingParameter.reserve[slot] << '\n';
         const auto rect = currentImageRect();
         put("left", rect.left); put("top", rect.top); put("right", rect.right); put("bottom", rect.bottom);
         put("loading", curPar.imageAssetPtr->isLoading || !pendingImagePath.empty() ? 1 : 0); put("rotation", curPar.rotation);
@@ -5235,6 +5470,7 @@ public:
         drawLoadingBadge(canvas);
         drawFrameControls(canvas);
         drawReaderControls(canvas);
+        if (readingEnabled()) drawPanButton(canvas);
         drawToast(canvas);
         drawLivePhotoBadge(canvas);
 
@@ -5247,8 +5483,9 @@ public:
 
         switch (extraUIFlag) {
         case ShowExtraUI::bottomToolbar: {
-            if (readingEnabled()) break;
+            if (readingEnabled()) { drawPanPopover(canvas); break; }
             drawViewerToolbar(canvas);
+            drawPanPopover(canvas);
         } break;
         case ShowExtraUI::leftArrow:
         case ShowExtraUI::rightArrow: {
@@ -5896,6 +6133,7 @@ public:
         }
 
         constrainLongImage();
+        constrainPanAfterTransform();
         cv::Mat srcImg;
         if (curPar.imageAssetPtr->format == ImageFormat::None ||
             curPar.imageAssetPtr->format == ImageFormat::Still) {
@@ -6503,6 +6741,8 @@ int WINAPI wWinMain(
 
     StartupTrace::initialize();
     StartupTrace::mark("wWinMain");
+    RegistryTestSandbox registryTestSandbox;
+    if (!registryTestSandbox.valid) return ERROR_INVALID_PARAMETER;
 
     // 限制 PPL 默认调度器最多 4 线程, 必须在任何 concurrency::parallel_* 调用之前设置。
     {

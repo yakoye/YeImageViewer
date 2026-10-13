@@ -32,7 +32,7 @@ enum class Window : uint32_t { Remember, MatchImage };
 enum class Quality : uint32_t { High, Fast, Pixel };
 enum class LongImage : uint32_t { OriginalTop, Fit };
 
-inline void initialize(uint32_t* storage, std::size_t count, bool preserveLegacy = true) {
+inline void initialize(uint32_t* storage, std::size_t count, bool preserveLegacy = true, bool preferActual = false) {
     if (!storage || count < BASE + SLOTS) return;
     if (storage[BASE] != MAGIC || storage[BASE + 1] != 1) {
         const auto oldMode = ViewerOptions::openMode(storage);
@@ -43,7 +43,7 @@ inline void initialize(uint32_t* storage, std::size_t count, bool preserveLegacy
             Shape::Immersive : Shape::Normal);
         storage[WINDOW] = static_cast<uint32_t>(oldMode == ViewerOptions::OpenMode::FitImage ?
             Window::MatchImage : Window::Remember);
-        storage[SCALE] = static_cast<uint32_t>(Scale::Fit);
+        storage[SCALE] = static_cast<uint32_t>(preserveLegacy && preferActual ? Scale::Actual : Scale::Fit);
         storage[LOOP] = 1;
         storage[QUALITY] = static_cast<uint32_t>(preserveLegacy ? Quality::Fast : Quality::High);
         storage[CENTER_LONG] = 1;

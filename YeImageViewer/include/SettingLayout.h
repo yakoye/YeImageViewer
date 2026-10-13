@@ -64,7 +64,7 @@ inline constexpr int GENERAL_RADIO_BOTTOM =
 
 // 显示卡片包住全部单选组，末行下面留 18 的边距
 inline constexpr Rect GENERAL_DISPLAY_CARD{ 20, GENERAL_DISPLAY_CARD_Y, 580,
-    GENERAL_RADIO_BOTTOM + 18 - GENERAL_DISPLAY_CARD_Y };
+    GENERAL_RADIO_BOTTOM + 38 - GENERAL_DISPLAY_CARD_Y };
 inline constexpr int GENERAL_EDITOR_CARD_Y =
     GENERAL_DISPLAY_CARD_Y + GENERAL_DISPLAY_CARD.height + 16;
 // 行起点与卡片顶边保持 40 的间距，留出卡片标题。
@@ -145,6 +145,15 @@ inline constexpr int ASSOCIATION_TAG_GAP_X = 3;
 inline constexpr int ASSOCIATION_TAG_GAP_Y = 5;
 inline constexpr int ASSOCIATION_BUTTON_HEIGHT = 42;
 
+// 绘制和点击共用逻辑坐标；只有绘制入口才转换成物理像素。
+constexpr Rect associationExtensionRect(int index) {
+    return { ASSOCIATION_GRID_X + (index % ASSOCIATION_GRID_COLUMNS) *
+        (ASSOCIATION_TAG_WIDTH + ASSOCIATION_TAG_GAP_X),
+        ASSOCIATION_GRID_Y + (index / ASSOCIATION_GRID_COLUMNS) *
+        (ASSOCIATION_TAG_HEIGHT + ASSOCIATION_TAG_GAP_Y),
+        ASSOCIATION_TAG_WIDTH, ASSOCIATION_TAG_HEIGHT };
+}
+
 constexpr Rect associationButtonRect(int index, int buttonsY) {
     constexpr int gap = 8;
     constexpr int width = (CARD_WIDTH - gap * 3) / 4;
@@ -199,6 +208,11 @@ inline constexpr int SHORTCUT_CONTENT_HEIGHT =
 constexpr Rect shortcutWheelRow(int index) {
     return { 36, SHORTCUT_WHEEL_ROW_Y + index * SHORTCUT_WHEEL_ROW_HEIGHT,
         548, SHORTCUT_WHEEL_ROW_HEIGHT };
+}
+
+constexpr Rect shortcutWheelCell(int index) {
+    const auto row = shortcutWheelRow(index);
+    return {row.x+260, row.y+5, 280, row.height-10};
 }
 
 constexpr Rect shortcutKeyboardRow(int index) {

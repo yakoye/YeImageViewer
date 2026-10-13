@@ -28,6 +28,7 @@ public:
     virtual void OnContextMenuCommand(WPARAM wParam) = 0;
     virtual void OnContextMenuClosed() {}
     virtual void OnFocusLost() {}
+    virtual void OnCaptureLost() {}
     virtual void OnMaximizeRequested() = 0;
 
     virtual void OnResize(UINT width, UINT height) = 0;

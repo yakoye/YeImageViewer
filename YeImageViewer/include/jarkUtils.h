@@ -37,6 +37,7 @@ using std::unordered_map;
 #include "ShortcutConfig.h"
 #include "ViewerOptions.h"
 #include "ViewingOptions.h"
+#include "PanPolicy.h"
 #include "AudioClip.h"
 
 #include "psapi.h"
@@ -203,7 +204,7 @@ struct SettingParameter {
     uint8_t monitorSettingsPadding[3]{};
     wchar_t lastMonitorDevice[CCHDEVICENAME]{};
     RECT monitorRelativeRect{};
-    uint32_t reserve[777];
+    uint32_t reserve[777]{};
 
     char extCheckedListStr[800];
 
@@ -213,6 +214,7 @@ struct SettingParameter {
         ShortcutConfig::initialize(reserve, std::size(reserve));
         ViewerOptions::initialize(reserve, std::size(reserve));
         ViewingOptions::initialize(reserve, std::size(reserve), false);
+        PanOptions::initialize(reserve, std::size(reserve), false);
     }
 
     SettingParameter(const SettingParameter& other) {
@@ -295,7 +297,9 @@ struct SettingParameter {
                 escapeClosesImage ? ShortcutConfig::binding(VK_ESCAPE) : 0);
         }
         ViewerOptions::initialize(reserve, std::size(reserve));
-        ViewingOptions::initialize(reserve, std::size(reserve));
+        ViewingOptions::initialize(reserve, std::size(reserve), true, isOneToOnePreferred);
+        isOneToOnePreferred = reserve[ViewingOptions::SCALE] == 1;
+        PanOptions::initialize(reserve, std::size(reserve));
 
         // 确保扩展名列表字符串以空字符结尾
         extCheckedListStr[sizeof(extCheckedListStr) - 1] = 0;
@@ -436,7 +440,7 @@ enum class CursorPos :int {
     toolbarRotateLeft, toolbarRotateRight, toolbarFlipHorizontal, toolbarFlipVertical,
     toolbarZoomFit, toolbarFitImage, toolbarZoomActual, toolbarFullscreen, toolbarFavorite,
     toolbarCopy, toolbarDelete, toolbarSetting, toolbarZoomOut, toolbarZoomText, toolbarZoomIn,
-    toolbar, centerTop, presentationClose,
+    toolbar, centerTop, presentationClose, toolbarPan,
 };
 
 enum class ShowExtraUI :int {

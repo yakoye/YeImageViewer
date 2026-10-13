@@ -398,14 +398,14 @@ $versionSourcePath = Join-Path $repoRoot "YeImageViewer/src/main.cpp"
 $versionResourcePath = Join-Path $repoRoot "YeImageViewer/YeImageViewer.rc"
 $appVersionMatch = [regex]::Match(
     (Get-Content -LiteralPath $versionSourcePath -Raw),
-    'appVersion\s*=\s*L"v([0-9]+(?:\.[0-9]+)*)"')
+    'appVersion\s*=\s*L"v([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)"')
 if (-not $appVersionMatch.Success) {
     throw ("Version invariant failed: main.cpp no longer declares appVersion as " +
         "L`"vX.Y.Z`", so the About page version can no longer be checked.")
 }
 $resourceText = Get-Content -LiteralPath $versionResourcePath -Raw
 $productVersionMatch = [regex]::Match($resourceText,
-    'VALUE\s+"ProductVersion",\s*"([0-9]+(?:\.[0-9]+)*)"')
+    'VALUE\s+"ProductVersion",\s*"([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)"')
 $fileVersionMatch = [regex]::Match($resourceText,
     'VALUE\s+"FileVersion",\s*"([0-9]+(?:\.[0-9]+)*)"')
 if (-not $productVersionMatch.Success -or -not $fileVersionMatch.Success) {
@@ -419,7 +419,8 @@ if ($appVersion -ne $productVersion) {
         "resource says $productVersion. Bump appVersion in main.cpp together with the .rc.")
 }
 # FileVersion 多一段修订号，前面几段要和 ProductVersion 一样
-if (-not $fileVersion.StartsWith("$productVersion.")) {
+$numericProductVersion = ($productVersion -split '-', 2)[0]
+if ($fileVersion -ne "$numericProductVersion.0") {
     throw ("Version invariant failed: FileVersion $fileVersion and ProductVersion " +
         "$productVersion disagree in YeImageViewer.rc.")
 }
@@ -444,7 +445,7 @@ foreach ($readmeName in @("README.md", "README_EN.md")) {
 # 一模一样。
 $testReadmePath = Join-Path $repoRoot "test/README.md"
 $testReadmeMatch = [regex]::Match((Get-Content -LiteralPath $testReadmePath -Raw),
-    'EXE 版本为 `([0-9]+(?:\.[0-9]+)*)`（ProductVersion `([0-9]+(?:\.[0-9]+)*)`）')
+    'EXE 版本为 `([0-9]+(?:\.[0-9]+)*)`（ProductVersion `([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)`）')
 if (-not $testReadmeMatch.Success) {
     throw ("Version invariant failed: test/README.md no longer states the expected EXE " +
         "version in the form `X.Y.Z.0`（ProductVersion `X.Y.Z`）.")
