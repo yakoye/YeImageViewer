@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SettingLayout.h"
+#include "SensitivitySliderLayout.h"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +14,7 @@ enum class Kind {
     Scrollbar,
     GeneralToggle,
     GeneralRadioOption,
+    GeneralSlider,
     GeneralEditorAdd,
     GeneralEditorRename,
     GeneralEditorPath,
@@ -44,7 +46,7 @@ struct Command {
 };
 
 // 「常规」页每个单选组有几个选项，顺序与 Setting::generalTabRadioList 一一对应。
-// 这张表定分段宽度和命中判定，必须和那边 stringIDs 的个数（减掉开头的标签）相等。
+// 分段单选必须与 stringIDs 个数减一相等；灵敏度滑杆取显式 sliderLevels。
 // 曾经不等过：加繁體中文时 stringIDs 从三项变四项，这里还写着 2，于是
 // resolve() 报出来的选项下标按两段算，和界面上实际选中的那一项对不上。
 // 单元测试会拿 Setting.h 那边的条数反过来核对这张表。
@@ -61,8 +63,8 @@ inline constexpr std::array<int, 27> GENERAL_RADIO_OPTION_COUNTS{
     4,  // 信息面板不透明度
     2,  // 实况声音
     2,  // 全屏信息条
-    3, 3, 2, 2, 2, 3, 3, 2, 2, 2, 2, 2, 9,
-    2, 9, // 惯性开关／松手后滑行灵敏度，与按住拖动的倍率独立
+    3, 3, 2, 2, 2, 3, 3, 2, 2, 2, 2, 2, 20,
+    2, 20, // 两条灵敏度使用二十档滑杆，其余仍为分段单选
 };
 static_assert(GENERAL_RADIO_OPTION_COUNTS.size() == SettingLayout::GENERAL_RADIOS.size());
 
@@ -71,7 +73,7 @@ constexpr bool contains(const SettingLayout::Rect& rect, int x, int y) {
         rect.y <= y && y < rect.y + rect.height;
 }
 
-constexpr Command resolve(int tab, int x, int windowY, int scrollOffset,
+inline Command resolve(int tab, int x, int windowY, int scrollOffset,
     int associationExtensionCount = 0, int associationButtonsY = 0,
     int externalEditorCount = 0, bool donateExpanded = false) {
     if (windowY < SettingLayout::TAB_HEIGHT) {
@@ -90,6 +92,11 @@ constexpr Command resolve(int tab, int x, int windowY, int scrollOffset,
         constexpr int labelWidth = 138;
         for (int index = 0; index < static_cast<int>(SettingLayout::GENERAL_RADIOS.size()); ++index) {
             const auto& row = SettingLayout::GENERAL_RADIOS[index];
+            if (SensitivitySliderLayout::isSlider(index)) {
+                if (contains(SensitivitySliderLayout::hit(row), x, y))
+                    return {Kind::GeneralSlider, index, SensitivitySliderLayout::levelAt(row, x)};
+                continue;
+            }
             const SettingLayout::Rect segments{
                 row.x + labelWidth, row.y + 5, row.width - labelWidth, row.height - 10 };
             if (!contains(segments, x, y))

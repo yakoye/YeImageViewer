@@ -28,6 +28,7 @@ struct generalTabRadio {
     cv::Rect rect{};
     std::vector<int> stringIDs;
     uint32_t* valuePtr = nullptr;
+    int sliderLevels = 0;
 };
 
 class Setting : public MatWindow {
@@ -53,6 +54,7 @@ private:
     std::optional<ShortcutConfig::Action> shortcutCapture;
     std::optional<std::size_t> editorNameCapture;
     std::wstring editorNameBuffer;
+    int activeSlider = -1, focusedSlider = -1;
 
     uint32_t primaryText() const {
         return GlobalVar::isCurrentUIDarkMode ?
@@ -212,12 +214,12 @@ private:
                     &GlobalVar::settingParameter.reserve[ViewingOptions::LONG_IMAGE] },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[23]), {114, 94, 95},
                     &GlobalVar::settingParameter.reserve[ViewingOptions::CENTER_LONG] },
-                { toCvRect(SettingLayout::GENERAL_RADIOS[24]), {120, 121, 122, 123, 124, 125, 126, 127, 128, 129},
-                    &GlobalVar::settingParameter.reserve[PanOptions::SENSITIVITY] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[24]), {120},
+                    &GlobalVar::settingParameter.reserve[PanOptions::SENSITIVITY], 20 },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[25]), {130, 94, 95},
                     &GlobalVar::settingParameter.reserve[KineticOptions::ENABLED] },
-                { toCvRect(SettingLayout::GENERAL_RADIOS[26]), {131, 121, 122, 123, 124, 125, 126, 127, 128, 129},
-                    &GlobalVar::settingParameter.reserve[KineticOptions::SENSITIVITY] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[26]), {131},
+                    &GlobalVar::settingParameter.reserve[KineticOptions::SENSITIVITY], 20 },
             };
         }
 
@@ -299,6 +301,23 @@ private:
     }
 
     void drawSegment(cv::Mat& canvas, const generalTabRadio& radio) {
+        if (radio.sliderLevels) {
+            const auto logicalRow = SettingLayout::Rect{radio.rect.x, radio.rect.y, radio.rect.width, radio.rect.height};
+            const auto track = scaleRect(toCvRect(SensitivitySliderLayout::track(logicalRow)));
+            const auto row = scaleRect(radio.rect);
+            const int level = std::min<int>(*radio.valuePtr, radio.sliderLevels - 1);
+            const int knobX = S(SensitivitySliderLayout::position(logicalRow, level));
+            textDrawer.putAlignLeft(canvas, {row.x, row.y, S(128), row.height},
+                getUIString(radio.stringIDs.front()), secondaryText());
+            fillRoundedRect(canvas, track, GlobalVar::currentTheme.BG_TAG, S(2));
+            fillRoundedRect(canvas, {track.x, track.y, std::max(1, knobX - track.x), track.height},
+                GlobalVar::currentTheme.CHECK, S(2));
+            cv::circle(canvas, {knobX, track.y + track.height / 2}, S(7),
+                jarkUtils::to_cv_scalar(GlobalVar::currentTheme.CHECK), -1);
+            textDrawer.putAlignCenter(canvas, {row.x + row.width - S(68), row.y, S(68), row.height},
+                std::format("{} / {}", level + 1, radio.sliderLevels).c_str(), primaryText());
+            return;
+        }
         const int selected = std::min<int>(*radio.valuePtr,
             static_cast<int>(radio.stringIDs.size()) - 2);
         const cv::Rect row = scaleRect(radio.rect);
@@ -922,6 +941,7 @@ private:
 
         constexpr int labelWidth = 138;
         for (auto& radio : generalTabRadioList) {
+            if (radio.sliderLevels) continue;
             const cv::Rect segments{ radio.rect.x + labelWidth, radio.rect.y + 5,
                 radio.rect.width - labelWidth, radio.rect.height - 10 };
             if (!isInside(x, y, segments))
@@ -1185,7 +1205,36 @@ private:
             blitMat(hdc, winCanvas);
     }
 
+    void cancelSlider() {
+        activeSlider = -1;
+        if (GetCapture() == m_hwnd) ReleaseCapture();
+    }
+
+    void updateSlider(int index) {
+        auto& control = generalTabRadioList[index];
+        *control.valuePtr = SensitivitySliderLayout::levelAt(SettingLayout::GENERAL_RADIOS[index], m_x);
+        isNeedRefreshUI = true;
+    }
+
+    void onLButtonDown() override {
+        const auto command = SettingCommand::resolve(curTabIdx, m_x, m_y, scrollOffsets[curTabIdx]);
+        if (curTabIdx == 0 && command.kind == SettingCommand::Kind::GeneralSlider) {
+            focusedSlider = command.index;
+            SetCapture(m_hwnd);
+            activeSlider = command.index;
+            updateSlider(activeSlider);
+        } else focusedSlider = -1;
+    }
+
+    void onMouseMove(WPARAM flags) override {
+        if (activeSlider >= 0 && (flags & MK_LBUTTON)) updateSlider(activeSlider);
+    }
+
+    void onCaptureLost() override { activeSlider = -1; }
+    void onFocusLost() override { cancelSlider(); focusedSlider = -1; }
+
     void onLButtonUp() override {
+        if (activeSlider >= 0) { updateSlider(activeSlider); cancelSlider(); return; }
         const auto visibleExtensionCount = curTabIdx == 1 ?
             static_cast<int>(filteredExtensions().size()) : 0;
         const auto command = SettingCommand::resolve(curTabIdx, m_x, m_y,
@@ -1221,6 +1270,9 @@ private:
         const int contentX = m_x;
         const int contentY = m_y - tabHeight + scrollOffsets[curTabIdx];
         switch (command.kind) {
+        case SettingCommand::Kind::GeneralSlider:
+            // 只接受从按下开始并持有捕获的滑杆手势；失焦／捕获丢失后的释放不能再改值。
+            break;
         case SettingCommand::Kind::GeneralToggle:
         case SettingCommand::Kind::GeneralRadioOption:
             handleGeneralTab(contentX, contentY);
@@ -1263,6 +1315,7 @@ private:
     }
 
     void onMouseWheel(int delta) override {
+        cancelSlider(); focusedSlider = -1;
         const int contentHeight = contentHeightForTab(curTabIdx);
         if (SettingLayout::maxScrollOffset(contentHeight) == 0)
             return;
@@ -1272,6 +1325,18 @@ private:
     }
 
     void onKeyDown(WPARAM key) override {
+        if (curTabIdx == 0 && focusedSlider >= 0) {
+            auto& control = generalTabRadioList[focusedSlider];
+            int level = static_cast<int>(*control.valuePtr);
+            if (key == VK_LEFT || key == VK_DOWN) --level;
+            else if (key == VK_RIGHT || key == VK_UP) ++level;
+            else if (key == VK_HOME) level = 0;
+            else if (key == VK_END) level = control.sliderLevels - 1;
+            else { cancelSlider(); focusedSlider = -1; return; }
+            *control.valuePtr = std::clamp(level, 0, control.sliderLevels - 1);
+            isNeedRefreshUI = true;
+            return;
+        }
         if (curTabIdx == 0 && editorNameCapture) {
             if (key == VK_ESCAPE) {
                 editorNameCapture.reset();

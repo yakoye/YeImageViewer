@@ -1,4 +1,5 @@
 #pragma once
+#include "SensitivityScale.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -11,12 +12,16 @@ inline constexpr std::size_t ENABLED = BASE + 2, SENSITIVITY = BASE + 3;
 inline constexpr uint32_t MAGIC = 0x4B504E31;
 inline void initialize(uint32_t* s, std::size_t count) {
     if (!s || count < BASE + SLOTS) return;
-    if (s[BASE] != MAGIC || s[BASE + 1] != 1) {
+    if (s[BASE] == MAGIC && s[BASE + 1] == 1) {
+        s[SENSITIVITY] = s[SENSITIVITY] <= 8 ? SensitivityScale::fromLegacy(s[SENSITIVITY]) : SensitivityScale::DEFAULT;
+        s[BASE + 1] = 2;
+    }
+    if (s[BASE] != MAGIC || s[BASE + 1] != 2) {
         std::fill_n(s + BASE, SLOTS, 0u);
-        s[BASE] = MAGIC; s[BASE + 1] = 1; s[SENSITIVITY] = 4;
+        s[BASE] = MAGIC; s[BASE + 1] = 2; s[SENSITIVITY] = SensitivityScale::DEFAULT;
     }
     s[ENABLED] = s[ENABLED] ? 1u : 0u;
-    if (s[SENSITIVITY] > 8) s[SENSITIVITY] = 4;
+    if (s[SENSITIVITY] >= SensitivityScale::LEVELS) s[SENSITIVITY] = SensitivityScale::DEFAULT;
 }
 }
 
@@ -89,7 +94,7 @@ public:
             return false;
         initialVelocity = {std::clamp(velocity.x, -6 * width, 6 * width),
             std::clamp(velocity.y, -6 * height, 6 * height)};
-        durationSeconds = .18 + .075 * (std::min)(sensitivity, 8u);
+        durationSeconds = .18 + .075 * (std::min)(sensitivity, 19u);
         running = std::hypot(initialVelocity.x, initialVelocity.y) >= 1;
         return running;
     }

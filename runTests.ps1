@@ -75,7 +75,7 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.38.1.0"
+$expectedFileVersion = "1.38.2.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -83,7 +83,7 @@ if ($actualFileVersion -ne $expectedFileVersion) {
 Write-Host "PASS viewer file version is $expectedFileVersion."
 
 # 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
-$expectedProductVersion = "1.38.1"
+$expectedProductVersion = "1.38.2-rc1"
 $actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
@@ -4361,6 +4361,8 @@ foreach ($donateName in @("donate-alipay.png", "donate-wechat.png")) {
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -PanOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -KeyboardPanOnly
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -KeyboardSmoothOnly
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -SensitivitySlidersOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -InertiaOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -PanVisualOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -SettingsDpiOnly
