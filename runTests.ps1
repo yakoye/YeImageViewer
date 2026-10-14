@@ -1571,8 +1571,8 @@ try {
     Write-Host "PASS framed title reads position, name, pixels with size, then zoom."
 
     # WM_MOUSEWHEEL packs modifier flags in the low word and the signed wheel
-    # delta in the high word. The requested defaults are Ctrl=zoom,
-    # Shift=horizontal pan, and plain wheel=vertical pan.
+    # delta in the high word. The requested defaults are plain wheel=zoom,
+    # Shift=horizontal pan, and Ctrl=vertical pan.
     $freshFramedCenterX = [int]($freshFramedWidth / 2)
     $freshFramedCenterY = [int]($freshFramedHeight / 2)
     $freshFramedCenterPosition = [IntPtr](($freshFramedCenterY -shl 16) -bor ($freshFramedCenterX -band 0xFFFF))
@@ -1583,7 +1583,7 @@ try {
     [void][YeImageViewerTestNativeV1365]::GetWindowText(
         $freshWindow, $wheelStartTitle, $wheelStartTitle.Capacity)
     [void][YeImageViewerTestNativeV1365]::SendMessage(
-        $freshWindow, 0x020A, [UIntPtr][uint64]0x00780008, $freshFramedCenterPosition)
+        $freshWindow, 0x020A, [UIntPtr][uint64]0x00780000, $freshFramedCenterPosition)
     Start-Sleep -Milliseconds 500
     $wheelZoomTitle = New-Object Text.StringBuilder 2048
     [void][YeImageViewerTestNativeV1365]::GetWindowText(
@@ -1592,12 +1592,12 @@ try {
     $wheelChangedZoom = [regex]::Match($wheelZoomTitle.ToString(), '(\d+)%')
     if (-not $wheelInitialZoom.Success -or -not $wheelChangedZoom.Success -or
         $wheelChangedZoom.Groups[1].Value -eq $wheelInitialZoom.Groups[1].Value) {
-        throw "Wheel regression failed: Ctrl + wheel did not zoom the current image."
+        throw "Wheel regression failed: plain wheel did not zoom the current image."
     }
     [void][YeImageViewerTestNativeV1365]::SendMessage(
-        $freshWindow, 0x020A, [UIntPtr][uint64]4287102984, $freshFramedCenterPosition)
+        $freshWindow, 0x020A, [UIntPtr][uint64]4287102976, $freshFramedCenterPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage(
-        $freshWindow, 0x020A, [UIntPtr][uint64]0x00780000, $freshFramedCenterPosition)
+        $freshWindow, 0x020A, [UIntPtr][uint64]0x00780008, $freshFramedCenterPosition)
     [void][YeImageViewerTestNativeV1365]::SendMessage(
         $freshWindow, 0x020A, [UIntPtr][uint64]0x00780004, $freshFramedCenterPosition)
     Start-Sleep -Milliseconds 500
@@ -1605,7 +1605,7 @@ try {
     if ($freshProcess.HasExited -or -not $freshProcess.Responding) {
         throw "Wheel regression failed: vertical or horizontal pan stopped the viewer."
     }
-    Write-Host "PASS Ctrl+wheel zooms, plain wheel pans vertically, and Shift+wheel pans horizontally."
+    Write-Host "PASS plain wheel zooms, Ctrl+wheel pans vertically, and Shift+wheel pans horizontally."
 
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0100, [UIntPtr]0x27, [IntPtr]::Zero)
     [void][YeImageViewerTestNativeV1365]::SendMessage($freshWindow, 0x0101, [UIntPtr]0x27, [IntPtr]::Zero)
@@ -4104,9 +4104,9 @@ $extremeOpsSteps = @(
     @{ Name = "zoom in again"; Message = 0x0100; WParam = 0x26 },
     @{ Name = "zoom out (Down)"; Message = 0x0100; WParam = 0x28 },
     @{ Name = "fit (5)"; Message = 0x0100; WParam = 0x35 },
-    @{ Name = "Ctrl+wheel zoom in"; Message = 0x020A; WParam = 0x780008u },
-    @{ Name = "Ctrl+wheel zoom out"; Message = 0x020A; WParam = 0xFF880008u },
-    @{ Name = "pan with the wheel"; Message = 0x020A; WParam = 0x780000u },
+    @{ Name = "wheel zoom in"; Message = 0x020A; WParam = 0x780000u },
+    @{ Name = "wheel zoom out"; Message = 0x020A; WParam = 0xFF880000u },
+    @{ Name = "pan with Ctrl+wheel"; Message = 0x020A; WParam = 0x780008u },
     @{ Name = "next image (Right)"; Message = 0x0100; WParam = 0x27 },
     @{ Name = "previous image (Left)"; Message = 0x0100; WParam = 0x25 },
     @{ Name = "last image (End)"; Message = 0x0100; WParam = 0x23 },
@@ -4362,6 +4362,8 @@ foreach ($donateName in @("donate-alipay.png", "donate-wechat.png")) {
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -PanOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -KeyboardPanOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -KeyboardSmoothOnly
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -DefaultWheelOnly
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -ReaderWheelOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -SensitivitySlidersOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -InertiaOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -PanVisualOnly

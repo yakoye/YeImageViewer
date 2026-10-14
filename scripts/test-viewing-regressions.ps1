@@ -7,6 +7,8 @@
     [switch]$KeyboardPanOnly,
     [switch]$KeyboardSmoothOnly,
     [switch]$SensitivitySlidersOnly,
+    [switch]$DefaultWheelOnly,
+    [switch]$ReaderWheelOnly,
     [switch]$SettingsAuditOnly,
     [switch]$ActualSizeOnly,
     [switch]$ReaderPanOnly,
@@ -229,6 +231,84 @@ function Test-KeyboardSmooth {
     Start-Sleep -Milliseconds 200; $s=Read-State
     Assert-True ($s.keyboardPanActive -eq '0' -and $s.slideX -eq $after.slideX) '失焦取消连续平移，不依赖收到按键释放'
     Write-Host ("WASD 连续平移回归通过：$script:passed 项")
+}
+
+function Test-DefaultWheel {
+    $s=Set-Option 12 0 323
+    [void][ViewingRegressionNative]::SetWindowPos($window,[IntPtr]::Zero,20,20,800,650,0x0014)
+    Message $window 0x0100 0x31; Message $window 0x0101 0x31
+    $s=Wait-State {param($v) $v.zoom -eq '100' -and $v.viewSettled -eq '1'} '滚轮测试实际大小未稳定'
+    Assert-True ($s.wheel0 -eq '0' -and $s.wheel1 -eq '1' -and $s.wheel2 -eq '2') '单图新建配置为滚轮缩放、Ctrl 上下、Shift 左右'
+    Message $window 0x020A 7864320
+    $s=Wait-State {param($v) (Number $v 'zoom') -gt 100 -and $v.viewSettled -eq '1'} '普通滚轮未放大'
+    Assert-True ((Number $s 'zoom') -gt 100) '普通滚轮向上放大'
+    Message $window 0x020A 4287102976
+    $s=Wait-State {param($v) $v.zoom -eq '100' -and $v.viewSettled -eq '1'} '普通滚轮未缩小'
+    Assert-True ($s.zoom -eq '100') '普通滚轮向下缩小'
+    foreach($flags in @(8,4,12)) {
+        $before=Read-State
+        $axis=if($flags -eq 4){'slideX'}else{'slideY'}
+        $step=[Math]::Floor(((Number $before 'width')+(Number $before 'height'))/16)
+        Message $window 0x020A (7864320 -bor $flags)
+        $s=Wait-State {param($v) [Math]::Abs((Number $v $axis)-(Number $before $axis)-$step) -le 2 -and $v.viewSettled -eq '1'} '修饰滚轮未按轴拖动'
+        Assert-True ($s.zoom -eq $before.zoom) ("滚轮修饰 $flags 只拖动，不缩放，Ctrl 优先")
+        Message $window 0x020A (4287102976 -bor $flags)
+        $s=Wait-State {param($v) [Math]::Abs((Number $v $axis)-(Number $before $axis)) -le 2 -and $v.viewSettled -eq '1'} '反向修饰滚轮未返回'
+        Assert-True ($s.zoom -eq $before.zoom) ("滚轮修饰 $flags 正反方向位移一致")
+    }
+    Stop-Viewer; $s=Start-Viewer $keyboardFixture
+    Assert-True ($s.wheel0 -eq '0' -and $s.wheel1 -eq '1' -and $s.wheel2 -eq '2' -and
+        $s.readerWheel0 -eq '1' -and $s.readerWheel1 -eq '0' -and $s.readerWheel2 -eq '2') '两套默认值跨重启保留且独立'
+    Write-Host ("默认滚轮真实窗口回归通过：$script:passed 项")
+}
+
+function Test-ReaderWheel {
+    $s=Set-Option 12 0 323
+    $s=Set-Option 19 1 330
+    $s=Set-Option 21 0 332
+    for($axis=0;$axis -lt 2;$axis++) {
+        $s=Set-Option 20 $axis 331
+        for($modifier=0;$modifier -lt 3;$modifier++) {
+            for($choice=0;$choice -lt 4;$choice++) {
+                $settings=Open-ShortcutSettings
+                $scale=[ViewingRegressionNative]::GetDpiForWindow($settings)/96.0
+                Click $settings ([int](513*$scale)) ([int](104*$scale))
+                $s=Read-State; $field='readerWheel'+$modifier
+                $clicks=($choice-[int]$s[$field]+4)%4
+                for($i=0;$i -lt $clicks;$i++) {Click $settings ([int](436*$scale)) ([int]((52+93+42*$modifier)*$scale))}
+                if($axis -eq 0 -and $modifier -eq 0 -and $choice -eq 1) {Save-ClientEvidence $settings '连续阅读独立滚轮设置.png'}
+                Message $settings 0x0010; Start-Sleep -Milliseconds 200
+                $s=Wait-State {param($v) [int]$v[$field] -eq $choice} '阅读滚轮设置未生效'
+                Stop-Viewer; $s=Start-Viewer $paths[1]
+                Assert-True ([int]$s[$field] -eq $choice -and $s.reader -eq '1' -and [int]$s.axis -eq $axis) ("阅读轴 $axis，组合 $modifier 动作 $choice 跨切图重启保存")
+                Assert-True ($s.wheel0 -eq '0' -and $s.wheel1 -eq '1' -and $s.wheel2 -eq '2') '编辑阅读滚轮不覆盖单图方案'
+                Message $window 0x0100 0x35; Message $window 0x0101 0x35
+                Start-Sleep -Milliseconds 350
+                for($i=0;$i -lt 4;$i++) {Message $window 0x0100 0x26; Message $window 0x0101 0x26; Start-Sleep -Milliseconds 100}
+                $before=Wait-State {param($v) $v.readerWaiting -eq '0' -and $v.viewSettled -eq '1'} '阅读测试缩放未稳定'
+                $flags=@(0,8,4)[$modifier]
+                Message $window 0x020A (4287102976 -bor $flags)
+                Start-Sleep -Milliseconds 400
+                $s=Wait-State {param($v) $v.readerWaiting -eq '0' -and $v.viewSettled -eq '1'} '阅读滚轮操作未稳定'
+                $step=if($axis -eq 0){((Number $before 'height')-52)/5.0}else{(Number $before 'width')/5.0}
+                $crossStep=if($axis -eq 0){(Number $before 'width')/5.0}else{((Number $before 'height')-52)/5.0}
+                $worked=switch($choice) {
+                    0 {(Number $s 'zoom') -lt (Number $before 'zoom')}
+                    1 {[Math]::Abs((Number $s 'readerOffset')-(Number $before 'readerOffset')-$step) -le 2}
+                    2 {[Math]::Abs((Number $s 'readerCross')-(Number $before 'readerCross')+$crossStep) -le 2}
+                    3 {$s.image -ne $before.image}
+                }
+                Assert-True ([bool]$worked) ("阅读轴 $axis，组合 $modifier 动作 $choice 实际生效：偏移=$($before.readerOffset)→$($s.readerOffset)，横轴=$($before.readerCross)→$($s.readerCross)")
+            }
+        }
+    }
+    $settings=Open-ShortcutSettings; $scale=[ViewingRegressionNative]::GetDpiForWindow($settings)/96.0
+    Click $settings ([int](494*$scale)) ([int](274*$scale))
+    Message $settings 0x0010; Start-Sleep -Milliseconds 200
+    Stop-Viewer; $s=Start-Viewer $paths[0]
+    Assert-True ($s.readerWheel0 -eq '1' -and $s.readerWheel1 -eq '0' -and $s.readerWheel2 -eq '2' -and
+        $s.wheel0 -eq '0' -and $s.wheel1 -eq '1' -and $s.wheel2 -eq '2') '恢复默认同时还原两套方案，重启保持'
+    Write-Host ("连续阅读独立滚轮回归通过：$script:passed 项")
 }
 
 function Test-KeyboardPan {
@@ -597,13 +677,15 @@ function Test-Pan {
     # 缩回 100% 后，水平轴不再溢出，应立即居中，而不是等下一次拖动才纠正。
     Message $window 0x0100 0x31; Start-Sleep -Milliseconds 350; $s=Read-State
     Assert-True ($s.zoom -eq '100' -and $s.slideX -eq '0') 'TB-18 缩放变化立即重算轴锁与边界'
-    Message $window 0x0100 0x51; Start-Sleep -Milliseconds 350; $s=Read-State
+    Message $window 0x0100 0x51
+    $s=Wait-State {param($v) $v.rotation -eq '1' -and $v.viewSettled -eq '1'} '左旋动画没有稳定完成'
     $beforeX=Number $s 'slideX'; $dx=if($beforeX -lt 0){30}else{-30}
     $s=Pan-Drag $dx 100
     Assert-True ($s.rotation -eq '1' -and $s.slideY -eq '0' -and
         [Math]::Abs((Number $s 'slideX')-$beforeX-$dx) -le 1 -and $s.panFixed -eq '4') `
         'TB-18 旋转后变成横向长图，垂直轴立即锁定，倍率不变'
-    Message $window 0x0100 0x45; Start-Sleep -Milliseconds 350
+    Message $window 0x0100 0x45
+    $s=Wait-State {param($v) $v.rotation -eq '0' -and $v.viewSettled -eq '1'} '右旋动画没有稳定完成'
     Test-RapidPan
     # 打开浮层和滑块捕获后经过生产失焦消息，关闭浮层、释放手势并刷新。
     $s=Read-State; $x=[int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)
@@ -867,7 +949,7 @@ function Test-ShortcutAudit {
     Click $settings ([int](494*$scale)) ([int](274*$scale))
     Message $settings 0x0010; Start-Sleep -Milliseconds 200
     $s=Read-State
-    Assert-True ($s.binding27 -eq '114' -and $s.wheel0 -eq '1' -and $s.wheel1 -eq '0' -and $s.wheel2 -eq '2') '快捷键页恢复默认同时还原键盘与滚轮'
+    Assert-True ($s.binding27 -eq '114' -and $s.wheel0 -eq '0' -and $s.wheel1 -eq '1' -and $s.wheel2 -eq '2') '快捷键页恢复默认同时还原键盘与滚轮'
     $s=Set-Pan 11
     for($modifier=0;$modifier -lt 3;$modifier++) {
         for($wheelChoice=0;$wheelChoice -lt 4;$wheelChoice++) {
@@ -1082,16 +1164,17 @@ try {
     $s = Start-Viewer $paths[0]
     if ($SettingsDpiOnly) {Test-AssociationDpi; return}
     if ($PanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-Pan; return}
-    if ($KeyboardPanOnly -or $KeyboardSmoothOnly) {
+    if ($KeyboardPanOnly -or $KeyboardSmoothOnly -or $DefaultWheelOnly) {
         Stop-Viewer
         $keyboardFixture=Join-Path $pictures '10-keyboard-directions.svg'
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../test/pan/keyboard-directions.svg') -Destination $keyboardFixture
         $s=Start-Viewer $keyboardFixture
-        if($KeyboardSmoothOnly) {Test-KeyboardSmooth} else {Test-KeyboardPan}
+        if($DefaultWheelOnly) {Test-DefaultWheel} elseif($KeyboardSmoothOnly) {Test-KeyboardSmooth} else {Test-KeyboardPan}
         return
     }
     if ($SettingsAuditOnly) {Test-SettingsAudit; return}
     if ($SensitivitySlidersOnly) {Test-SensitivitySliders; return}
+    if ($ReaderWheelOnly) {Test-ReaderWheel; return}
     if ($ReaderPanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-ReaderPan; return}
     if ($RapidPanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-RapidPan; return}
     if ($PanVisualOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-PanVisual; return}
@@ -1417,6 +1500,14 @@ finally {
     if (-not $KeepEvidence) {
         $resolved = [IO.Path]::GetFullPath($testRoot)
         if ($resolved.StartsWith($tempBase,[StringComparison]::OrdinalIgnoreCase) -and
-            (Split-Path -Leaf $resolved).StartsWith('YeViewer-Viewing-')) { Remove-Item -LiteralPath $resolved -Recurse -Force }
+            (Split-Path -Leaf $resolved) -match '^YeViewer-Viewing-[a-f0-9]{32}$') {
+            for ($cleanupAttempt=0; $cleanupAttempt -lt 5; $cleanupAttempt++) {
+                try { Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction Stop; break }
+                catch {
+                    if ($cleanupAttempt -eq 4) { Write-Warning ('临时目录仍被占用，保留证据，不覆盖测试结果：'+$resolved) }
+                    else { Start-Sleep -Milliseconds 400 }
+                }
+            }
+        }
     } else { Write-Host ('保留隔离测试目录：'+$testRoot) }
 }

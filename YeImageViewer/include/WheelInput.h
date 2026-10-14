@@ -63,4 +63,15 @@ constexpr Result resolveDefault(uint32_t flags, int wheelDelta, int panStep) {
         ShortcutConfig::DEFAULT_WHEEL_ACTIONS[2]);
 }
 
+constexpr Result resolveReader(uint32_t flags, int wheelDelta, int panStep, bool horizontal,
+    ShortcutConfig::WheelAction plainAction, ShortcutConfig::WheelAction controlAction,
+    ShortcutConfig::WheelAction shiftAction) {
+    auto result = resolve(flags, wheelDelta, panStep, plainAction, controlAction, shiftAction);
+    if (horizontal) {
+        if (result.intent == Intent::PanVertical) result = {Intent::PanHorizontal, 0, result.verticalDelta};
+        else if (result.intent == Intent::PanHorizontal) result = {Intent::PanVertical, result.horizontalDelta, 0};
+    }
+    return result;
+}
+
 }

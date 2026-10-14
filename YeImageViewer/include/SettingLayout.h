@@ -187,6 +187,8 @@ constexpr Rect shortcutTargetClear(int index) {
 }
 
 inline constexpr Rect SHORTCUT_WHEEL_HEADER{ 36, 36, 548, 32 };
+inline constexpr Rect SHORTCUT_WHEEL_TITLE{36,36,250,32};
+constexpr Rect shortcutWheelMode(int index) { return {300 + index * 142, 36, 142, 32}; }
 inline constexpr int SHORTCUT_WHEEL_ROW_Y = 72;
 inline constexpr int SHORTCUT_WHEEL_ROW_HEIGHT = 42;
 inline constexpr Rect SHORTCUT_RESET_BUTTON{ 404, 204, 180, 36 };
@@ -373,6 +375,10 @@ constexpr bool generalControlsAreSeparated() {
 }
 
 constexpr bool shortcutItemsAreSeparated() {
+    if (overlaps(SHORTCUT_WHEEL_TITLE, shortcutWheelMode(0)) ||
+        overlaps(shortcutWheelMode(0), shortcutWheelMode(1)) ||
+        !contains(SHORTCUT_WHEEL_HEADER, shortcutWheelMode(0)) ||
+        !contains(SHORTCUT_WHEEL_HEADER, shortcutWheelMode(1))) return false;
     for (int i = 0; i < 2; ++i) {
         const auto row = shortcutTargetRow(i);
         const auto path = shortcutTargetPath(i);

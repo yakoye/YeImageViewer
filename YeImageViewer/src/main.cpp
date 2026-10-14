@@ -2793,13 +2793,14 @@ public:
             return;
         }
 
-        if (readingEnabled() && !(nFlags & MK_CONTROL)) {
-            scrollReader(-double(zDelta) / WHEEL_DELTA * readerViewportExtent() / 5.0);
-            return;
-        }
         const int panStep = std::max(1, (winWidth + winHeight) / 16);
         const auto* shortcutStorage = GlobalVar::settingParameter.reserve;
-        const auto modifiedWheel = WheelInput::resolve(nFlags, zDelta, panStep,
+        const auto modifiedWheel = readingEnabled() ?
+            WheelInput::resolveReader(nFlags, zDelta, panStep, readerHorizontal(),
+                ShortcutConfig::getReaderWheelAction(shortcutStorage, 0),
+                ShortcutConfig::getReaderWheelAction(shortcutStorage, 1),
+                ShortcutConfig::getReaderWheelAction(shortcutStorage, 2)) :
+            WheelInput::resolve(nFlags, zDelta, panStep,
             ShortcutConfig::getWheelAction(shortcutStorage, 0),
             ShortcutConfig::getWheelAction(shortcutStorage, 1),
             ShortcutConfig::getWheelAction(shortcutStorage, 2));
@@ -2811,9 +2812,19 @@ public:
             operateQueue.push({ ActionENUM::zoomOut });
             return;
         case WheelInput::Intent::PanVertical:
+            if (readingEnabled()) {
+                applyReaderPan({0, double(zDelta) / WHEEL_DELTA * std::max(1, winHeight - 52) / 5.0});
+                operateQueue.push({ActionENUM::refresh});
+                return;
+            }
             operateQueue.push({ ActionENUM::slide, 0, modifiedWheel.verticalDelta });
             return;
         case WheelInput::Intent::PanHorizontal:
+            if (readingEnabled()) {
+                applyReaderPan({double(zDelta) / WHEEL_DELTA * winWidth / 5.0, 0});
+                operateQueue.push({ActionENUM::refresh});
+                return;
+            }
             operateQueue.push({ ActionENUM::slide, modifiedWheel.horizontalDelta, 0 });
             return;
         case WheelInput::Intent::PreviousImage:
@@ -5570,6 +5581,9 @@ public:
         put("imageDragging", mouseIsPressing ? 1 : 0);
         put("windowDragging", windowDragActive ? 1 : 0);
         put("panMoves",panMoveCount); put("panDeltaX",lastPanDelta.x); put("panDeltaY",lastPanDelta.y);
+        for (int index = 0; index < 3; ++index)
+            put(("readerWheel" + std::to_string(index)).c_str(),
+                static_cast<uint32_t>(ShortcutConfig::getReaderWheelAction(GlobalVar::settingParameter.reserve, index)));
         put("readerAnchor",readerAnchor); put("readerDirty",readerDirty ? 1 : 0);
         put("toolbarVisible", extraUIFlag == ShowExtraUI::bottomToolbar ? 1 : 0);
         const auto panButton = panButtonRect();

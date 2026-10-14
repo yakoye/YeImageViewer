@@ -2059,6 +2059,10 @@ void expectSettingLayout() {
     }
     for (int index = 0; index < 2; ++index) {
         const auto path = SettingLayout::shortcutTargetPath(index);
+        const auto mode = SettingLayout::shortcutWheelMode(index);
+        everySettingControlRoutes &= SettingCommand::resolve(2, mode.x + mode.width / 2,
+            SettingLayout::TAB_HEIGHT + mode.y + mode.height / 2, 0) ==
+            SettingCommand::Command{SettingCommand::Kind::ShortcutWheelMode, index, -1};
         const auto choose = SettingLayout::shortcutTargetChoose(index);
         const auto clear = SettingLayout::shortcutTargetClear(index);
         everySettingControlRoutes &= SettingCommand::resolve(2,
@@ -2699,20 +2703,20 @@ void expectFullscreenInfoBar() {
 
 void expectWheelInput() {
     constexpr int panStep = 96;
-    passOrFail("ordinary wheel pans the image vertically by default",
-        WheelInput::resolveDefault(0, 120, panStep).intent == WheelInput::Intent::PanVertical &&
-        WheelInput::resolveDefault(0, 120, panStep).verticalDelta == panStep &&
-        WheelInput::resolveDefault(0, -120, panStep).verticalDelta == -panStep);
-    passOrFail("Ctrl wheel zooms in or out by default",
-        WheelInput::resolveDefault(WheelInput::CONTROL_FLAG, 120, panStep).intent == WheelInput::Intent::ZoomIn &&
-        WheelInput::resolveDefault(WheelInput::CONTROL_FLAG, -120, panStep).intent == WheelInput::Intent::ZoomOut);
+    passOrFail("ordinary wheel zooms in or out by default",
+        WheelInput::resolveDefault(0, 120, panStep).intent == WheelInput::Intent::ZoomIn &&
+        WheelInput::resolveDefault(0, -120, panStep).intent == WheelInput::Intent::ZoomOut);
+    passOrFail("Ctrl wheel pans the image vertically by default",
+        WheelInput::resolveDefault(WheelInput::CONTROL_FLAG, 120, panStep).intent == WheelInput::Intent::PanVertical &&
+        WheelInput::resolveDefault(WheelInput::CONTROL_FLAG, 120, panStep).verticalDelta == panStep &&
+        WheelInput::resolveDefault(WheelInput::CONTROL_FLAG, -120, panStep).verticalDelta == -panStep);
     passOrFail("Shift wheel pans the image horizontally by default",
         WheelInput::resolveDefault(WheelInput::SHIFT_FLAG, 120, panStep).intent == WheelInput::Intent::PanHorizontal &&
         WheelInput::resolveDefault(WheelInput::SHIFT_FLAG, 120, panStep).horizontalDelta == panStep &&
         WheelInput::resolveDefault(WheelInput::SHIFT_FLAG, -120, panStep).horizontalDelta == -panStep);
     passOrFail("Ctrl takes priority when Ctrl and Shift are both held",
         WheelInput::resolveDefault(WheelInput::CONTROL_FLAG | WheelInput::SHIFT_FLAG, 120, panStep).intent ==
-            WheelInput::Intent::ZoomIn);
+            WheelInput::Intent::PanVertical);
     passOrFail("wheel actions can be remapped without changing direction semantics",
         WheelInput::resolve(0, 120, panStep,
             ShortcutConfig::WheelAction::SwitchImage,
@@ -2725,6 +2729,22 @@ void expectWheelInput() {
     passOrFail("zero wheel delta does not enqueue an action",
         WheelInput::resolveDefault(WheelInput::CONTROL_FLAG | WheelInput::SHIFT_FLAG, 0, panStep).intent ==
             WheelInput::Intent::Default);
+    for (bool horizontal : {false, true}) {
+        const auto plain = WheelInput::resolveReader(0, -120, panStep, horizontal,
+            ShortcutConfig::DEFAULT_READER_WHEEL_ACTIONS[0], ShortcutConfig::DEFAULT_READER_WHEEL_ACTIONS[1],
+            ShortcutConfig::DEFAULT_READER_WHEEL_ACTIONS[2]);
+        const auto cross = WheelInput::resolveReader(WheelInput::SHIFT_FLAG, -120, panStep, horizontal,
+            ShortcutConfig::DEFAULT_READER_WHEEL_ACTIONS[0], ShortcutConfig::DEFAULT_READER_WHEEL_ACTIONS[1],
+            ShortcutConfig::DEFAULT_READER_WHEEL_ACTIONS[2]);
+        passOrFail("reading wheel follows the reading axis and Shift follows the other axis",
+            plain.intent == (horizontal ? WheelInput::Intent::PanHorizontal : WheelInput::Intent::PanVertical) &&
+            cross.intent == (horizontal ? WheelInput::Intent::PanVertical : WheelInput::Intent::PanHorizontal) &&
+            (horizontal ? plain.horizontalDelta : plain.verticalDelta) == -panStep);
+        passOrFail("reading Ctrl wheel zooms independently of orientation and single-image defaults",
+            WheelInput::resolveReader(WheelInput::CONTROL_FLAG | WheelInput::SHIFT_FLAG, 120, panStep, horizontal,
+                ShortcutConfig::DEFAULT_READER_WHEEL_ACTIONS[0], ShortcutConfig::DEFAULT_READER_WHEEL_ACTIONS[1],
+                ShortcutConfig::DEFAULT_READER_WHEEL_ACTIONS[2]).intent == WheelInput::Intent::ZoomIn);
+    }
 }
 
 void expectShortcutConfig() {
@@ -2759,8 +2779,8 @@ void expectShortcutConfig() {
         ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::PanRight) == ShortcutConfig::binding('D'));
     passOrFail("shortcut storage upgrades old settings to the requested defaults",
         storage[ShortcutConfig::MAGIC_INDEX] == ShortcutConfig::STORAGE_MAGIC &&
-        ShortcutConfig::getWheelAction(storage.data(), 0) == ShortcutConfig::WheelAction::PanVertical &&
-        ShortcutConfig::getWheelAction(storage.data(), 1) == ShortcutConfig::WheelAction::Zoom &&
+        ShortcutConfig::getWheelAction(storage.data(), 0) == ShortcutConfig::WheelAction::Zoom &&
+        ShortcutConfig::getWheelAction(storage.data(), 1) == ShortcutConfig::WheelAction::PanVertical &&
         ShortcutConfig::getWheelAction(storage.data(), 2) == ShortcutConfig::WheelAction::PanHorizontal &&
         ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::RenameImage) ==
             ShortcutConfig::binding(0x71));
@@ -2784,6 +2804,65 @@ void expectShortcutConfig() {
         ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::OpenFile) ==
             ShortcutConfig::DEFAULT_BINDINGS[ShortcutConfig::actionIndex(ShortcutConfig::Action::OpenFile)] &&
         ShortcutConfig::keyName(ShortcutConfig::binding(0x71), UiLanguage::SIMPLIFIED) == "F2");
+
+    for (uint32_t oldVersion = 1; oldVersion <= 4; ++oldVersion) {
+        auto legacy = storage;
+        legacy[ShortcutConfig::VERSION_INDEX] = oldVersion;
+        legacy[ShortcutConfig::WHEEL_BASE_INDEX] = 1;
+        legacy[ShortcutConfig::WHEEL_BASE_INDEX + 1] = 0;
+        legacy[ShortcutConfig::WHEEL_BASE_INDEX + 2] = 2;
+        ShortcutConfig::setBinding(legacy.data(), ShortcutConfig::Action::RotateLeft, ShortcutConfig::binding('Z'));
+        ShortcutConfig::initialize(legacy.data(), legacy.size());
+        const auto migrated = legacy;
+        ShortcutConfig::initialize(legacy.data(), legacy.size());
+        passOrFail("legacy wheel defaults migrate once without changing existing keyboard bindings",
+            legacy == migrated && legacy[ShortcutConfig::VERSION_INDEX] == 5 &&
+            legacy[ShortcutConfig::WHEEL_BASE_INDEX] == 0 &&
+            legacy[ShortcutConfig::WHEEL_BASE_INDEX + 1] == 1 &&
+            legacy[ShortcutConfig::WHEEL_BASE_INDEX + 2] == 2 &&
+            ShortcutConfig::getBinding(legacy.data(), ShortcutConfig::Action::RotateLeft) == ShortcutConfig::binding('Z'));
+        bool customPreserved = true;
+        for (uint32_t plain = 0; plain < 4; ++plain)
+            for (uint32_t ctrl = 0; ctrl < 4; ++ctrl)
+                for (uint32_t shift = 0; shift < 4; ++shift) {
+                    if (plain == 1 && ctrl == 0 && shift == 2) continue;
+                    auto custom = storage;
+                    custom[ShortcutConfig::VERSION_INDEX] = oldVersion;
+                    custom[ShortcutConfig::WHEEL_BASE_INDEX] = plain;
+                    custom[ShortcutConfig::WHEEL_BASE_INDEX + 1] = ctrl;
+                    custom[ShortcutConfig::WHEEL_BASE_INDEX + 2] = shift;
+                    ShortcutConfig::initialize(custom.data(), custom.size());
+                    customPreserved &= custom[ShortcutConfig::WHEEL_BASE_INDEX] == plain &&
+                        custom[ShortcutConfig::WHEEL_BASE_INDEX + 1] == ctrl &&
+                        custom[ShortcutConfig::WHEEL_BASE_INDEX + 2] == shift;
+                }
+        passOrFail("all nondefault legacy wheel combinations remain user-defined", customPreserved);
+        passOrFail("legacy settings gain independent reading wheel defaults",
+            legacy[ShortcutConfig::READER_WHEEL_BASE_INDEX] == 1 &&
+            legacy[ShortcutConfig::READER_WHEEL_BASE_INDEX + 1] == 0 &&
+            legacy[ShortcutConfig::READER_WHEEL_BASE_INDEX + 2] == 2);
+    }
+    auto independent = storage;
+    ShortcutConfig::setReaderWheelAction(independent.data(), 0, ShortcutConfig::WheelAction::SwitchImage);
+    ShortcutConfig::setWheelAction(independent.data(), 1, ShortcutConfig::WheelAction::PanHorizontal);
+    ShortcutConfig::initialize(independent.data(), independent.size());
+    passOrFail("reading and single-image wheel edits persist without changing one another",
+        ShortcutConfig::getReaderWheelAction(independent.data(), 0) == ShortcutConfig::WheelAction::SwitchImage &&
+        ShortcutConfig::getReaderWheelAction(independent.data(), 1) == ShortcutConfig::WheelAction::Zoom &&
+        ShortcutConfig::getWheelAction(independent.data(), 0) == ShortcutConfig::WheelAction::Zoom &&
+        ShortcutConfig::getWheelAction(independent.data(), 1) == ShortcutConfig::WheelAction::PanHorizontal);
+    independent[ShortcutConfig::READER_WHEEL_BASE_INDEX + 1] = 999;
+    ShortcutConfig::initialize(independent.data(), independent.size());
+    passOrFail("invalid reading wheel value resets only its own slot",
+        ShortcutConfig::getReaderWheelAction(independent.data(), 1) == ShortcutConfig::WheelAction::Zoom &&
+        ShortcutConfig::getReaderWheelAction(independent.data(), 0) == ShortcutConfig::WheelAction::SwitchImage &&
+        ShortcutConfig::getWheelAction(independent.data(), 1) == ShortcutConfig::WheelAction::PanHorizontal);
+    ShortcutConfig::reset(independent.data(), independent.size());
+    passOrFail("restore defaults resets both independent wheel schemes",
+        ShortcutConfig::getReaderWheelAction(independent.data(), 0) == ShortcutConfig::WheelAction::PanVertical &&
+        ShortcutConfig::getReaderWheelAction(independent.data(), 1) == ShortcutConfig::WheelAction::Zoom &&
+        ShortcutConfig::getReaderWheelAction(independent.data(), 2) == ShortcutConfig::WheelAction::PanHorizontal &&
+        ShortcutConfig::getWheelAction(independent.data(), 1) == ShortcutConfig::WheelAction::PanVertical);
 
     // 追加动作后升级旧配置：只补新动作，用户改过的绑定必须原样保留。整体 reset 会
     // 清空全部自定义快捷键，所以这条回归盯的就是“别把用户配置洗掉”。
