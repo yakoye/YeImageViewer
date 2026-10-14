@@ -61,7 +61,7 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.38.1-rc2";
+std::wstring_view appVersion = L"v1.38.1";
 constinit int appVersionCode = 13801; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
@@ -2981,16 +2981,16 @@ public:
             operateQueue.push({ ActionENUM::rotateRight });
             break;
         case ShortcutConfig::Action::PanUp:
-            panByKeyboard(0, panStep);
-            break;
-        case ShortcutConfig::Action::PanDown:
             panByKeyboard(0, -panStep);
             break;
+        case ShortcutConfig::Action::PanDown:
+            panByKeyboard(0, panStep);
+            break;
         case ShortcutConfig::Action::PanLeft:
-            panByKeyboard(panStep, 0);
+            panByKeyboard(-panStep, 0);
             break;
         case ShortcutConfig::Action::PanRight:
-            panByKeyboard(-panStep, 0);
+            panByKeyboard(panStep, 0);
             break;
         case ShortcutConfig::Action::ZoomIn:
             beginHeldZoom(keyValue, 1);
@@ -3274,39 +3274,19 @@ public:
             }break;
 
             case 'W': {
-                const int newTargetYMax = (int)(((curPar.rotation == 0 or curPar.rotation == 2) ?
-                    curPar.height : curPar.width) * curPar.zoomTarget / 2 / curPar.ZOOM_BASE);
-                int newTargetY = curPar.slideTarget.y + ((winHeight + winWidth) / 16);
-                newTargetY = std::clamp(newTargetY, -newTargetYMax, newTargetYMax);
-                curPar.slideTarget.y = newTargetY;
-                smoothShift = true;
+                panByKeyboard(0, -std::max(1, (winHeight + winWidth) / 16));
             }break;
 
             case 'S': {
-                const int newTargetYMax = (int)(((curPar.rotation == 0 or curPar.rotation == 2) ?
-                    curPar.height : curPar.width) * curPar.zoomTarget / 2 / curPar.ZOOM_BASE);
-                int newTargetY = curPar.slideTarget.y - ((winHeight + winWidth) / 16);
-                newTargetY = std::clamp(newTargetY, -newTargetYMax, newTargetYMax);
-                curPar.slideTarget.y = newTargetY;
-                smoothShift = true;
+                panByKeyboard(0, std::max(1, (winHeight + winWidth) / 16));
             }break;
 
             case 'A': {
-                const int newTargetXMax = (int)(((curPar.rotation == 0 || curPar.rotation == 2) ?
-                    curPar.width : curPar.height) * curPar.zoomTarget / 2 / curPar.ZOOM_BASE);
-                int newTargetX = curPar.slideTarget.x + ((winHeight + winWidth) / 16);
-                newTargetX = std::clamp(newTargetX, -newTargetXMax, newTargetXMax);
-                curPar.slideTarget.x = newTargetX;
-                smoothShift = true;
+                panByKeyboard(-std::max(1, (winHeight + winWidth) / 16), 0);
             }break;
 
             case 'D': {
-                const int newTargetXMax = (int)(((curPar.rotation == 0 || curPar.rotation == 2) ?
-                    curPar.width : curPar.height) * curPar.zoomTarget / 2 / curPar.ZOOM_BASE);
-                int newTargetX = curPar.slideTarget.x - ((winHeight + winWidth) / 16);
-                newTargetX = std::clamp(newTargetX, -newTargetXMax, newTargetXMax);
-                curPar.slideTarget.x = newTargetX;
-                smoothShift = true;
+                panByKeyboard(std::max(1, (winHeight + winWidth) / 16), 0);
             }break;
 
             case VK_UP: {

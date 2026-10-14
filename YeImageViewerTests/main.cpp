@@ -2744,6 +2744,11 @@ void expectShortcutConfig() {
     ShortcutConfig::initialize(storage.data(), storage.size());
     passOrFail("old conflicting bindings are sanitized without occupying the fixed menu entry",
         ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::RotateLeft) != fixedMenuBinding);
+    passOrFail("default keyboard panning uses W up S down A left D right",
+        ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::PanUp) == ShortcutConfig::binding('W') &&
+        ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::PanDown) == ShortcutConfig::binding('S') &&
+        ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::PanLeft) == ShortcutConfig::binding('A') &&
+        ShortcutConfig::getBinding(storage.data(), ShortcutConfig::Action::PanRight) == ShortcutConfig::binding('D'));
     passOrFail("shortcut storage upgrades old settings to the requested defaults",
         storage[ShortcutConfig::MAGIC_INDEX] == ShortcutConfig::STORAGE_MAGIC &&
         ShortcutConfig::getWheelAction(storage.data(), 0) == ShortcutConfig::WheelAction::PanVertical &&

@@ -133,7 +133,7 @@ $cases = @(
     @{
         Name = "发版只改了 .rc，关于页的版本号还停在上一版"
         File = "YeImageViewer\src\main.cpp"
-        Old = 'appVersion = L"v1.38.1-rc2"'
+        Old = 'appVersion = L"v1.38.1"'
         New = 'appVersion = L"v1.37.5"'
         Expect = "the About page shows v1.37.5 while the version resource says"
     },
@@ -147,23 +147,23 @@ $cases = @(
     @{
         Name = "README 的版本号没跟着发版一起改"
         File = "README.md"
-        Old = "当前版本：**v1.38.1-rc2**"
+        Old = "当前版本：**v1.38.1**"
         New = "当前版本：**v1.37.2-rc1**"
         Expect = "README.md says v1.37.2-rc1 while the program is"
     },
     @{
         Name = "测试文档里那份版本号没跟着发版一起改"
         File = "test\README.md"
-        Old = 'EXE 版本为 `1.38.1.0`（ProductVersion `1.38.1-rc2`）'
+        Old = 'EXE 版本为 `1.38.1.0`（ProductVersion `1.38.1`）'
         New = 'EXE 版本为 `1.37.5.0`（ProductVersion `1.37.5`）'
         Expect = "test/README.md says 1.37.5.0 / 1.37.5 while the program is"
     },
     @{
         Name = "候选版本后缀与关于页不一致"
         File = "YeImageViewer\YeImageViewer.rc"
-        Old = 'VALUE "ProductVersion", "1.38.1-rc2"'
+        Old = 'VALUE "ProductVersion", "1.38.1"'
         New = 'VALUE "ProductVersion", "1.38.1-rc3"'
-        Expect = "the About page shows v1.38.1-rc2 while the version resource says 1.38.1-rc3"
+        Expect = "the About page shows v1.38.1 while the version resource says 1.38.1-rc3"
     }
 )
 
