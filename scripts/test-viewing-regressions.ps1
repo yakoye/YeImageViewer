@@ -498,7 +498,7 @@ function Test-SensitivitySliders {
         Message $window 0x0100 0x25; $s=Wait-State {param($v) $v[$field] -eq '18'} '左键微调未减一档'
         Assert-True ($s[$field] -eq '18') ("工具栏 $field 支持 Home／End／方向键微调")
         $moves=$s.panMoves
-        foreach($edge in @(-100,[int](Number $s 'width')+100)) {
+        foreach($edge in @(-100,([int](Number $s 'width')+100))) {
             Message $window 0x0201 1 (($sx -band 65535) -bor (($sy -band 65535) -shl 16))
             Message $window 0x0200 1 (($edge -band 65535) -bor (($sy -band 65535) -shl 16))
             Message $window 0x0202 0 (($edge -band 65535) -bor (($sy -band 65535) -shl 16))
@@ -780,7 +780,7 @@ function Test-Inertia {
             ("惯性第 $($level+1) 档终点符合减速曲线，松手后额外移动 $distance px，不重复乘拖拽倍率")
         $results.Add([pscustomobject]@{档位=$level+1;时长=$seconds;松手速度=$velocity;滑行距离=$distance})
     }
-    $results | Export-Csv -LiteralPath (Join-Path $evidence '惯性九档实际位移.csv') -NoTypeInformation -Encoding utf8BOM
+    $results | Export-Csv -LiteralPath (Join-Path $evidence '惯性二十档实际位移.csv') -NoTypeInformation -Encoding utf8BOM
     foreach($mode in @(-1,8)) {
         $s=Set-Pan $mode
         $s=Set-Option 22 0 333
