@@ -11,7 +11,7 @@
 namespace ShortcutConfig {
 
 inline constexpr uint32_t STORAGE_MAGIC = 0x594B4559u; // "YKEY"
-inline constexpr uint32_t STORAGE_VERSION = 4;
+inline constexpr uint32_t STORAGE_VERSION = 5;
 
 // 各历史版本的动作数量。新动作只能追加在 Action 末尾：动作的枚举值就是它在存储里的
 // 下标，中间插入会让其后所有已保存的自定义绑定整体错位。升级时要按「存的是哪一版」
@@ -22,6 +22,7 @@ inline constexpr std::size_t VERSION3_BINDING_COUNT = 32;
 inline constexpr std::size_t MAGIC_INDEX = 0;
 inline constexpr std::size_t VERSION_INDEX = 1;
 inline constexpr std::size_t WHEEL_BASE_INDEX = 2;
+inline constexpr std::size_t READER_WHEEL_BASE_INDEX = 5;
 inline constexpr std::size_t BINDING_BASE_INDEX = 16;
 
 inline constexpr uint32_t MODIFIER_CONTROL = 1u << 16;
@@ -136,10 +137,15 @@ constexpr std::size_t bindingCountForVersion(uint32_t version) {
 }
 
 inline constexpr std::array<WheelAction, 3> DEFAULT_WHEEL_ACTIONS{
-    WheelAction::PanVertical,
     WheelAction::Zoom,
+    WheelAction::PanVertical,
     WheelAction::PanHorizontal,
 };
+// 连续阅读中两个平移动作分别表示沿阅读轴、沿另一轴，不是固定屏幕方向。
+inline constexpr std::array<WheelAction, 3> DEFAULT_READER_WHEEL_ACTIONS{
+    WheelAction::PanVertical, WheelAction::Zoom, WheelAction::PanHorizontal,
+};
+static_assert(READER_WHEEL_BASE_INDEX + DEFAULT_READER_WHEEL_ACTIONS.size() <= BINDING_BASE_INDEX);
 
 constexpr std::size_t actionIndex(Action action) {
     return static_cast<std::size_t>(action);
@@ -164,6 +170,8 @@ inline void reset(uint32_t* storage, std::size_t count) {
     storage[VERSION_INDEX] = STORAGE_VERSION;
     for (std::size_t index = 0; index < DEFAULT_WHEEL_ACTIONS.size(); ++index)
         storage[WHEEL_BASE_INDEX + index] = static_cast<uint32_t>(DEFAULT_WHEEL_ACTIONS[index]);
+    for (std::size_t index = 0; index < DEFAULT_READER_WHEEL_ACTIONS.size(); ++index)
+        storage[READER_WHEEL_BASE_INDEX + index] = static_cast<uint32_t>(DEFAULT_READER_WHEEL_ACTIONS[index]);
     for (std::size_t index = 0; index < DEFAULT_BINDINGS.size(); ++index)
         storage[BINDING_BASE_INDEX + index] = DEFAULT_BINDINGS[index];
 }
@@ -197,12 +205,25 @@ inline uint32_t initialize(uint32_t* storage, std::size_t count) {
         return 0;
     }
     if (storedVersion < STORAGE_VERSION) {
+        for (std::size_t index = 0; index < DEFAULT_READER_WHEEL_ACTIONS.size(); ++index)
+            storage[READER_WHEEL_BASE_INDEX + index] = static_cast<uint32_t>(DEFAULT_READER_WHEEL_ACTIONS[index]);
+        // v1～v4 使用另一套默认值。只迁移整套旧默认，任何不同的自定义方案都保留。
+        if (storage[WHEEL_BASE_INDEX] == static_cast<uint32_t>(WheelAction::PanVertical) &&
+            storage[WHEEL_BASE_INDEX + 1] == static_cast<uint32_t>(WheelAction::Zoom) &&
+            storage[WHEEL_BASE_INDEX + 2] == static_cast<uint32_t>(WheelAction::PanHorizontal)) {
+            for (std::size_t index = 0; index < DEFAULT_WHEEL_ACTIONS.size(); ++index)
+                storage[WHEEL_BASE_INDEX + index] = static_cast<uint32_t>(DEFAULT_WHEEL_ACTIONS[index]);
+        }
         migrate(storage, bindingCountForVersion(storedVersion));
         storage[VERSION_INDEX] = STORAGE_VERSION;
     }
     for (std::size_t index = 0; index < DEFAULT_WHEEL_ACTIONS.size(); ++index) {
         if (storage[WHEEL_BASE_INDEX + index] >= static_cast<uint32_t>(WheelAction::Count))
             storage[WHEEL_BASE_INDEX + index] = static_cast<uint32_t>(DEFAULT_WHEEL_ACTIONS[index]);
+    }
+    for (std::size_t index = 0; index < DEFAULT_READER_WHEEL_ACTIONS.size(); ++index) {
+        if (storage[READER_WHEEL_BASE_INDEX + index] >= static_cast<uint32_t>(WheelAction::Count))
+            storage[READER_WHEEL_BASE_INDEX + index] = static_cast<uint32_t>(DEFAULT_READER_WHEEL_ACTIONS[index]);
     }
     for (std::size_t index = 0; index < DEFAULT_BINDINGS.size(); ++index) {
         if (!isStoredBindingValid(storage[BINDING_BASE_INDEX + index]))
@@ -239,6 +260,17 @@ inline WheelAction getWheelAction(const uint32_t* storage, std::size_t modifierI
 inline void setWheelAction(uint32_t* storage, std::size_t modifierIndex, WheelAction action) {
     if (modifierIndex < DEFAULT_WHEEL_ACTIONS.size() && action < WheelAction::Count)
         storage[WHEEL_BASE_INDEX + modifierIndex] = static_cast<uint32_t>(action);
+}
+
+inline WheelAction getReaderWheelAction(const uint32_t* storage, std::size_t modifierIndex) {
+    if (modifierIndex >= DEFAULT_READER_WHEEL_ACTIONS.size()) return WheelAction::PanVertical;
+    const auto value = storage[READER_WHEEL_BASE_INDEX + modifierIndex];
+    return value < static_cast<uint32_t>(WheelAction::Count) ?
+        static_cast<WheelAction>(value) : DEFAULT_READER_WHEEL_ACTIONS[modifierIndex];
+}
+inline void setReaderWheelAction(uint32_t* storage, std::size_t modifierIndex, WheelAction action) {
+    if (modifierIndex < DEFAULT_READER_WHEEL_ACTIONS.size() && action < WheelAction::Count)
+        storage[READER_WHEEL_BASE_INDEX + modifierIndex] = static_cast<uint32_t>(action);
 }
 
 constexpr bool matches(uint32_t storedBinding, uint32_t virtualKey, uint32_t modifiers) {

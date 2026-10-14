@@ -515,17 +515,17 @@ public:
             TipRow{ "瀏覽", "檢視", "更多" });
         const auto lines = UiLanguage::pick(GlobalVar::settingParameter.UI_LANG,
             TipBlock{
-                TipRow{ "滚轮  上下浏览", "Ctrl+滚轮  缩放", "Shift+滚轮  左右" },
+                TipRow{ "滚轮  缩放", "Ctrl+滚轮  上下拖动", "Shift+滚轮  左右" },
                 TipRow{ "拖动  平移图片", "双击/最大化  沉浸", "Esc  退出/关闭" },
                 TipRow{ "I/Tab  图片信息", "F2  重命名", "F3  自定义快捷键" },
             },
             TipBlock{
-                TipRow{ "Wheel  Vertical", "Ctrl+Wheel  Zoom", "Shift+Wheel  Horizontal" },
+                TipRow{ "Wheel  Zoom", "Ctrl+Wheel  Vertical", "Shift+Wheel  Horizontal" },
                 TipRow{ "Drag  Pan image", "Double-click  Immersive", "Esc  Exit / close" },
                 TipRow{ "I/Tab  Image info", "F2  Rename", "F3  Shortcuts" },
             },
             TipBlock{
-                TipRow{ "滾輪  上下瀏覽", "Ctrl+滾輪  縮放", "Shift+滾輪  左右" },
+                TipRow{ "滾輪  縮放", "Ctrl+滾輪  上下拖曳", "Shift+滾輪  左右" },
                 TipRow{ "拖曳  平移圖片", "按兩下/最大化  沉浸", "Esc  離開/關閉" },
                 TipRow{ "I/Tab  圖片資訊", "F2  重新命名", "F3  自訂快速鍵" },
             });

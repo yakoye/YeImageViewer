@@ -24,9 +24,9 @@ This project is based on [JarkViewer](https://github.com/jark006/JarkViewer) and
 ## Controls
 
 1. Switch images: use the bottom toolbar, or press `Left` / `Right`
-2. Zoom: use `Ctrl + mouse wheel`, or press `Up` / `Down`
+2. Zoom: use the unmodified mouse wheel, or press `Up` / `Down`
 3. Rotate: use the bottom-right toolbar, or press `Q` / `E`
-4. Pan: use the unmodified wheel vertically and `Shift + mouse wheel` horizontally, drag with the mouse, or press `W` / `A` / `S` / `D`
+4. Pan: use `Ctrl + mouse wheel` vertically and `Shift + mouse wheel` horizontally, drag with the mouse, or press `W` / `A` / `S` / `D`
 5. Image information: click the mouse wheel, or press `Tab` / `I`
 6. Fullscreen: double-click, or press `F` / `F11`
 7. Copy image: `Ctrl + C`
@@ -35,7 +35,7 @@ This project is based on [JarkViewer](https://github.com/jark006/JarkViewer) and
 10. Browse frames: use the top controls, or press `J` / `K` / `L`
 11. Split an animation into frames: `Ctrl + S`
 
-Every keyboard shortcut and all three wheel actions can be reassigned on the Settings “Shortcuts” tab. Changes are stored in the existing 4096-byte settings file and survive restarts.
+Every keyboard shortcut and wheel action can be reassigned on the Settings “Shortcuts” tab. 单图／连续阅读分别保存三种滚轮动作；单图默认滚轮缩放、Ctrl 上下拖动，连续阅读默认滚轮沿阅读方向滚动、Ctrl 缩放、Shift 沿另一方向拖动。Changes are stored in the existing 4096-byte settings file and survive restarts.
 
 Opening an image now starts in a borderless immersive preview covering the current monitor work area. A per-pixel-alpha black layer at roughly 60% opacity keeps the desktop visible while the image itself stays opaque; Windows frosted glass is not used. After returning to the framed window, the area outside the image switches to opaque `#7F7F7F` middle gray and remains stable when resized. Small images use logical 100% at the current DPI. Landscape images are capped at 90% of the work-area width and 82.5% of its height; portrait images shrink only when their width exceeds 90%, and may be panned vertically when taller than the viewport.
 Clicking the background outside the image or pressing `Esc` returns to a framed window sized for the image currently visible at the moment presentation ends, capped at 90% of the monitor work area. If another image is selected while immersive, that image determines the restored frame. Once framed, browsing previous or next images keeps the frame fixed while each image retains its own preview zoom. Rotation is remembered per image path.

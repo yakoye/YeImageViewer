@@ -500,11 +500,14 @@ private:
             ShortcutItem{ ShortcutConfig::Action::MoveToTarget, "移动到指定位置", "Move to folder", "移動到指定位置" },
         };
 
+    bool editingReaderWheel = false;
     const char* wheelActionName(ShortcutConfig::WheelAction action) const {
         switch (action) {
         case ShortcutConfig::WheelAction::Zoom: return tr("放大/缩小", "Zoom", "放大/縮小");
-        case ShortcutConfig::WheelAction::PanVertical: return tr("上下拖动", "Pan vertically", "上下拖曳");
-        case ShortcutConfig::WheelAction::PanHorizontal: return tr("左右拖动", "Pan horizontally", "左右拖曳");
+        case ShortcutConfig::WheelAction::PanVertical: return editingReaderWheel ?
+            tr("沿阅读方向滚动", "Scroll reading axis", "沿閱讀方向捲動") : tr("上下拖动", "Pan vertically", "上下拖曳");
+        case ShortcutConfig::WheelAction::PanHorizontal: return editingReaderWheel ?
+            tr("沿另一方向拖动", "Pan across reading axis", "沿另一方向拖曳") : tr("左右拖动", "Pan horizontally", "左右拖曳");
         case ShortcutConfig::WheelAction::SwitchImage: return tr("上一张/下一张", "Previous/next image", "上一張/下一張");
         case ShortcutConfig::WheelAction::Count: break;
         }
@@ -647,8 +650,16 @@ private:
                 target.empty() ? secondaryText() : primaryText());
         }
 
-        textDrawer.putAlignLeft(page, toCanvasRect(SettingLayout::SHORTCUT_WHEEL_HEADER),
-            tr("鼠标滚轮（点击右侧选项可切换）", "MOUSE WHEEL (click an option to change)", "滑鼠滾輪（點右側選項可切換）"), GlobalVar::currentTheme.CHECK);
+        textDrawer.putAlignLeft(page, toCanvasRect(SettingLayout::SHORTCUT_WHEEL_TITLE),
+            tr("滚轮方案（点击选项切换）", "WHEEL (click to change)", "滾輪方案（點選項切換）"), GlobalVar::currentTheme.CHECK);
+        for (int index = 0; index < 2; ++index) {
+            const auto rect = toCanvasRect(SettingLayout::shortcutWheelMode(index));
+            const bool selected = editingReaderWheel == (index == 1);
+            fillRoundedRect(page, rect, selected ? GlobalVar::currentTheme.CHECK : GlobalVar::currentTheme.BG_TAG, 5);
+            textDrawer.putAlignCenter(page, rect, index == 0 ?
+                tr("单图", "Single image", "單圖") : tr("连续阅读", "Continuous reading", "連續閱讀"),
+                selected ? 0xFFFFFFFFu : primaryText());
+        }
         static constexpr std::array<const char*, 3> wheelZH{ "滚轮", "Ctrl + 滚轮", "Shift + 滚轮" };
         static constexpr std::array<const char*, 3> wheelEN{ "Wheel", "Ctrl + wheel", "Shift + wheel" };
         static constexpr std::array<const char*, 3> wheelTW{ "滾輪", "Ctrl + 滾輪", "Shift + 滾輪" };
@@ -661,7 +672,8 @@ private:
             const cv::Rect keyRect = toCanvasRect(SettingLayout::shortcutWheelCell(index));
             fillRoundedRect(page, keyRect, GlobalVar::currentTheme.BG_DEEP, 5);
             textDrawer.putAlignCenter(page, keyRect, wheelActionName(
-                ShortcutConfig::getWheelAction(GlobalVar::settingParameter.reserve, index)),
+                editingReaderWheel ? ShortcutConfig::getReaderWheelAction(GlobalVar::settingParameter.reserve, index) :
+                    ShortcutConfig::getWheelAction(GlobalVar::settingParameter.reserve, index)),
                 GlobalVar::currentTheme.CHECK);
         }
         const cv::Rect reset = toCanvasRect(SettingLayout::SHORTCUT_RESET_BUTTON);
@@ -1150,16 +1162,24 @@ private:
     }
 
     void handleShortcutTab(int x, int y) {
+        for (int index = 0; index < 2; ++index) {
+            if (isInside(x, y, toCvRect(SettingLayout::shortcutWheelMode(index)))) {
+                editingReaderWheel = index == 1;
+                shortcutCapture.reset(); isNeedRefreshUI = true; return;
+            }
+        }
         for (int index = 0; index < 3; ++index) {
             const cv::Rect row = toCvRect(SettingLayout::shortcutWheelRow(index));
             if (!isInside(x, y, row))
                 continue;
-            const auto current = ShortcutConfig::getWheelAction(
-                GlobalVar::settingParameter.reserve, index);
+            const auto current = editingReaderWheel ? ShortcutConfig::getReaderWheelAction(
+                GlobalVar::settingParameter.reserve, index) : ShortcutConfig::getWheelAction(
+                    GlobalVar::settingParameter.reserve, index);
             const auto next = static_cast<ShortcutConfig::WheelAction>(
                 (static_cast<uint32_t>(current) + 1) %
                 static_cast<uint32_t>(ShortcutConfig::WheelAction::Count));
-            ShortcutConfig::setWheelAction(GlobalVar::settingParameter.reserve, index, next);
+            if (editingReaderWheel) ShortcutConfig::setReaderWheelAction(GlobalVar::settingParameter.reserve, index, next);
+            else ShortcutConfig::setWheelAction(GlobalVar::settingParameter.reserve, index, next);
             shortcutCapture.reset();
             isNeedRefreshUI = true;
             return;
@@ -1297,6 +1317,7 @@ private:
             handleShortcutTarget(command);
             break;
         case SettingCommand::Kind::ShortcutWheel:
+        case SettingCommand::Kind::ShortcutWheelMode:
         case SettingCommand::Kind::ShortcutReset:
         case SettingCommand::Kind::ShortcutBinding:
         case SettingCommand::Kind::ShortcutClear:

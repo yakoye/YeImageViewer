@@ -26,6 +26,7 @@ enum class Kind {
     AssociationNone,
     AssociationApply,
     ShortcutWheel,
+    ShortcutWheelMode,
     ShortcutTargetEdit,
     ShortcutTargetChoose,
     ShortcutTargetClear,
@@ -146,6 +147,9 @@ inline Command resolve(int tab, int x, int windowY, int scrollOffset,
     }
 
     if (tab == 2) {
+        for (int index = 0; index < 2; ++index)
+            if (contains(SettingLayout::shortcutWheelMode(index), x, y))
+                return {Kind::ShortcutWheelMode, index, -1};
         for (int index = 0; index < 2; ++index) {
             if (contains(SettingLayout::shortcutTargetClear(index), x, y))
                 return { Kind::ShortcutTargetClear, index, -1 };
