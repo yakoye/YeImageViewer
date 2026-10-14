@@ -16,4 +16,4 @@
 
 ## 键盘方向复现素材
 
-`keyboard-directions.svg` 是 1600 × 1600 灰底图，中间有 60 × 60 红色定位块。`test-viewing-regressions.ps1 -KeyboardPanOnly` 用它检查普通窗口、沉浸窗口、旋转后 W 上／S 下／A 左／D 右的实际屏幕位移及连续按键，并确认改绑 F5 后保存且原 W 不再生效。修复前会在首个 W 向上位移断言失败；源码默认键位本身正确，错误在动作的位移符号。
+`keyboard-directions.svg` 是 3200 × 3200 灰底图，中间有 60 × 60 红色定位块。`test-viewing-regressions.ps1 -KeyboardPanOnly` 用它检查普通窗口、沉浸窗口、旋转后 W 上／S 下／A 左／D 右的实际屏幕位移及连续按键，并确认改绑 F5 后保存且原 W 不再生效。修复前会在首个 W 向上位移断言失败；源码默认键位本身正确，错误在动作的位移符号。扩大后的尺寸也用于 `-KeyboardSmoothOnly`，避免长按／组合键采样碰到边界，从而误判连续移动。
