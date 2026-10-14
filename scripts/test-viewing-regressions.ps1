@@ -1264,8 +1264,9 @@ try {
     Message $window 0x020A 4287102976
     $s = Wait-State {param($v) (Number $v 'readerOffset') -gt $initialOffset} '纵向滚轮未连续移动画布'
     Assert-True ((Number $s 'readerOffset') -gt $initialOffset) '纵向滚轮连续滚动，而非硬切图'
+    $expectedBack = [Math]::Max(0.0,(Number $s 'readerOffset')-((Number $s 'height')-52)/5.0)
     Message $window 0x020A 7864320
-    $s = Wait-State {param($v) [Math]::Abs((Number $v 'readerOffset')-$initialOffset) -lt 2} '反向滚轮没有回到原阅读位置'
+    $s = Wait-State {param($v) [Math]::Abs((Number $v 'readerOffset')-$expectedBack) -lt 2} '反向滚轮没有按视口步长及边界返回'
     $s = Set-Option 20 1 331
     $s = Wait-State {param($v) $v.axis -eq '1' -and $v.readerWaiting -eq '0'} '横向连续阅读未完成布局'
     Assert-True ($s.pageLeftIndex -eq '2' -and $s.pageRightIndex -eq '3') '横向切换保留当前页和配对'
@@ -1281,8 +1282,9 @@ try {
     Message $window 0x020A 4287102976
     $s = Wait-State {param($v) (Number $v 'readerOffset') -gt $initialOffset} '横向滚轮未连续移动画布'
     Assert-True ((Number $s 'readerOffset') -gt $initialOffset) '横向滚轮沿阅读轴连续滚动'
+    $expectedBack = [Math]::Max(0.0,(Number $s 'readerOffset')-(Number $s 'width')/5.0)
     Message $window 0x020A 7864320
-    $s = Wait-State {param($v) [Math]::Abs((Number $v 'readerOffset')-$initialOffset) -lt 2} '横向反向滚轮没有恢复位置'
+    $s = Wait-State {param($v) [Math]::Abs((Number $v 'readerOffset')-$expectedBack) -lt 2} '横向反向滚轮没有按视口步长及边界返回'
     Command 1006
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
     do {
