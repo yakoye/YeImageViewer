@@ -41,6 +41,9 @@ public static class ViewingRegressionNative {
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hwnd,uint msg,UIntPtr w,IntPtr l);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd,uint msg,UIntPtr w,IntPtr l);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
+    [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO {public uint Size; public RECT Monitor,Work; public uint Flags;}
+    [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr hwnd,uint flags);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor,ref MONITORINFO info);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hwnd,ref POINT point);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd,IntPtr after,int x,int y,int w,int h,uint flags);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
@@ -1074,6 +1077,12 @@ function Test-AssociationDpi {
     $frameH = $outer.Bottom-$outer.Top-$client.Bottom
     $baseColor = $null
     $wheelBaseColor = $null
+    $monitorInfo=New-Object ViewingRegressionNative+MONITORINFO
+    $monitorInfo.Size=[Runtime.InteropServices.Marshal]::SizeOf($monitorInfo)
+    if(-not [ViewingRegressionNative]::GetMonitorInfo([ViewingRegressionNative]::MonitorFromWindow($settings,2),[ref]$monitorInfo)) {throw '无法读取设置窗口工作区'}
+    $availableWidth=[Math]::Floor(($monitorInfo.Work.Right-$monitorInfo.Work.Left)*94/100.0)
+    $availableHeight=[Math]::Floor(($monitorInfo.Work.Bottom-$monitorInfo.Work.Top)*94/100.0)
+    $dpiLimit=[Math]::Max(96,[Math]::Min([Math]::Floor($availableWidth*96/620),[Math]::Floor($availableHeight*96/620)))
     foreach ($dpi in @(96,120,144,192)) {
         $rect = New-Object ViewingRegressionNative+RECT
         $rect.Left=20; $rect.Top=20
@@ -1085,7 +1094,11 @@ function Test-AssociationDpi {
             Message $settings 0x02E0 ($dpi -bor ($dpi -shl 16)) $memory.ToInt64()
         } finally {[Runtime.InteropServices.Marshal]::FreeHGlobal($memory)}
         Start-Sleep -Milliseconds 350
-        $scale = $dpi/96.0
+        $fittedDpi=[Math]::Min($dpi,$dpiLimit)
+        $scale = $fittedDpi/96.0
+        [void][ViewingRegressionNative]::GetClientRect($settings,[ref]$client)
+        Assert-True ([Math]::Abs($client.Right-[Math]::Round(620*$scale)) -le 1 -and
+            [Math]::Abs($client.Bottom-[Math]::Round(620*$scale)) -le 1) ("请求 $dpi DPI，工作区有效 $fittedDpi DPI，客户区 $($client.Right)×$($client.Bottom) 符合限位规则")
         Click $settings ([int](232*$scale)) ([int](26*$scale))
         Start-Sleep -Milliseconds 250
         if ($dpi -eq 96) {
@@ -1103,8 +1116,9 @@ function Test-AssociationDpi {
             $g.CopyFromScreen($origin.X+$x,$origin.Y+$y,0,0,$bmp.Size)
             $color=$bmp.GetPixel(0,0)
             if ($null -eq $baseColor) {$baseColor=$color}
+            Save-ClientEvidence $settings ("文件关联-$dpi-DPI.png")
             Assert-True ([Math]::Abs($color.R-$baseColor.R) -le 3 -and [Math]::Abs($color.G-$baseColor.G) -le 3 -and
-                [Math]::Abs($color.B-$baseColor.B) -le 3) ("文件关联网格在 $dpi DPI 按物理像素正确绘制，最后一行标签可见")
+                [Math]::Abs($color.B-$baseColor.B) -le 3) ("文件关联网格请求 $dpi／有效 $fittedDpi DPI，最后一行标签可见：$color / $baseColor")
         } finally {$g.Dispose(); $bmp.Dispose()}
         Save-ClientEvidence $settings ("文件关联-$dpi-DPI.png")
         # 点击实际显示的“立即关联”，真实生产注册只写进该进程的 HKCU 沙箱。
