@@ -38,6 +38,7 @@
 #include "RenamePolicy.h"
 #include "SettingCommand.h"
 #include "SettingLayout.h"
+#include "KeyboardPanMotion.h"
 #include "UiLanguage.h"
 #include "ShortcutConfig.h"
 #include "ViewerOptions.h"
@@ -1961,6 +1962,12 @@ void expectSettingLayout() {
         if (index < radioOptions.size()) radioOptions[index] = static_cast<int>(std::count(ids.begin(),ids.end(),','));
     }
     for (std::size_t index = 0; index < radioOptions.size(); ++index) {
+        if (SensitivitySliderLayout::isSlider(static_cast<int>(index))) {
+            const std::regex sliderPattern("GENERAL_RADIOS\\[" + std::to_string(index) +
+                "\\]\\)\\s*,\\s*\\{[^}]+\\},\\s*&[^}]+,\\s*(\\d+)\\s*\\}");
+            std::smatch slider;
+            if (std::regex_search(settingSource, slider, sliderPattern)) radioOptions[index] = std::stoi(slider[1].str());
+        }
         if (radioOptions[index] != SettingCommand::GENERAL_RADIO_OPTION_COUNTS[index]) {
             everySettingControlRoutes = false;
             std::cerr << "FAIL general radio row " << index << " has " << radioOptions[index]
@@ -1974,10 +1981,11 @@ void expectSettingLayout() {
         const int segmentX = row.x + 138;
         const int segmentWidth = (row.width - 138) / radioOptions[rowIndex];
         for (int option = 0; option < radioOptions[rowIndex]; ++option) {
+            const bool slider = SensitivitySliderLayout::isSlider(rowIndex);
             const auto command = SettingCommand::resolve(0,
-                segmentX + option * segmentWidth + segmentWidth / 2,
+                slider ? SensitivitySliderLayout::position(row, option) : segmentX + option * segmentWidth + segmentWidth / 2,
                 SettingLayout::TAB_HEIGHT + row.y + row.height / 2, 0);
-            everySettingControlRoutes &= command.kind == SettingCommand::Kind::GeneralRadioOption &&
+            everySettingControlRoutes &= command.kind == (slider ? SettingCommand::Kind::GeneralSlider : SettingCommand::Kind::GeneralRadioOption) &&
                 command.index == rowIndex && command.option == option;
         }
     }
@@ -4347,7 +4355,7 @@ void expectPanPolicies() {
     const auto last = gesture.move(100,0,.1,96,options.data(),false);
     passOrFail("Shift changes only subsequent gesture increments without jumps", first.x == 100 && held.x == 25 && last.x == 100);
     options[PanOptions::MODE] = 0;
-    for (uint32_t sensitivity=0; sensitivity<9; ++sensitivity) {
+    for (uint32_t sensitivity=0; sensitivity<20; ++sensitivity) {
         gesture.reset(); options[PanOptions::SENSITIVITY] = sensitivity;
         int slow=0;
         for (int i=0; i<1000; ++i) slow += gesture.move(1,0,.025,96,options.data(),false).x;
@@ -4386,6 +4394,34 @@ void expectPanPolicies() {
 }
 
 void expectKineticPan() {
+    for (uint32_t level = 0; level < 9; ++level) {
+        std::array<uint32_t, 777> old{};
+        old[PanOptions::BASE] = PanOptions::MAGIC; old[PanOptions::BASE + 1] = 1;
+        old[PanOptions::SENSITIVITY] = level; old[PanOptions::MODE] = 1; old[PanOptions::FIXED] = 11;
+        old[KineticOptions::BASE] = KineticOptions::MAGIC; old[KineticOptions::BASE + 1] = 1;
+        old[KineticOptions::SENSITIVITY] = level; old[KineticOptions::ENABLED] = 1; old[700] = 123;
+        PanOptions::initialize(old.data(), old.size()); KineticOptions::initialize(old.data(), old.size());
+        passOrFail("legacy sensitivity numbers and independent settings are preserved without remapping",
+            old[PanOptions::SENSITIVITY] == level && old[KineticOptions::SENSITIVITY] == level &&
+            old[PanOptions::FIXED] == 11 && old[KineticOptions::ENABLED] == 1 && old[700] == 123);
+    }
+    KeyboardPanMotion::Motion fastFrames, slowFrames;
+    double fastDistance = 0, slowDistance = 0;
+    for (int i=0;i<120;++i) fastDistance += fastFrames.move({0,-1},1.0/120,800).y;
+    for (int i=0;i<30;++i) slowDistance += slowFrames.move({0,-1},1.0/30,800).y;
+    passOrFail("continuous keyboard pan has the same distance at 30 and 120 FPS",
+        fastDistance < -700 && std::abs(fastDistance-slowDistance) <= 1);
+    fastFrames.reset();
+    const auto stalled = fastFrames.move({0,-1},10,800);
+    passOrFail("keyboard pan does not jump after a scheduling stall", std::abs(stalled.y) < 40);
+    fastFrames.reset(); const auto diagonal = fastFrames.move({1,1},.05,800);
+    slowFrames.reset(); const auto straight = slowFrames.move({1,0},.05,800);
+    passOrFail("diagonal keyboard pan is normalized rather than accelerated", std::hypot(diagonal.x,diagonal.y) <= straight.x + 1);
+    passOrFail("opposite held pan keys cancel immediately", fastFrames.move({0,0},.05,800).x == 0);
+    KineticPan::Motion extended;
+    extended.start({0,-1200},19,800,600);
+    passOrFail("level twenty extends the legacy strength range instead of repartitioning nine levels",
+        std::abs(extended.duration()-1.605) < 1e-6);
     std::array<uint32_t, 777> settings{};
     settings[PanOptions::FIXED] = 11; settings[700] = 123;
     KineticOptions::initialize(settings.data(), settings.size());
@@ -4430,7 +4466,7 @@ void expectKineticPan() {
         std::abs(samples.release(3,96).y+1000) < 1e-5);
 
     double previousDuration=0, previousDistance=0;
-    for (uint32_t level=0; level<9; ++level) {
+    for (uint32_t level=0; level<20; ++level) {
         KineticPan::Motion motion;
         const bool started = motion.start({0,-1200},level,800,600);
         const double duration = motion.duration();
@@ -4438,7 +4474,7 @@ void expectKineticPan() {
         const auto middle = motion.at(duration/2);
         const auto third = motion.at(duration*3/4);
         const auto end = motion.at(duration);
-        passOrFail("all nine inertia sensitivities have increasing finite duration and distance",
+        passOrFail("all twenty inertia sensitivities have increasing finite duration and distance",
             started && duration > previousDuration && -end.y > previousDistance && !motion.active());
         passOrFail("inertia smoothly decelerates with zero terminal velocity rather than easing in again",
             -first.y > -(middle.y-first.y) && -(middle.y-first.y) > -(third.y-middle.y) &&

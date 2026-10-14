@@ -1,5 +1,6 @@
 #pragma once
 #include "ViewingOptions.h"
+#include "SensitivityScale.h"
 #include <array>
 #include <cmath>
 
@@ -12,17 +13,21 @@ inline constexpr std::array<const char*, 12> LABELS{
     "0.1×", "0.25×", "0.5×", "0.75×", "1×", "1.25×", "1.5×", "2×", "3×", "5×", "7×", "9×" };
 inline void initialize(uint32_t* s, std::size_t count, bool preserveLegacy = true) {
     if (!s || count < BASE + SLOTS) return;
-    if (s[BASE] != MAGIC || s[BASE + 1] != 1) {
+    if (s[BASE] == MAGIC && s[BASE + 1] == 1) {
+        s[SENSITIVITY] = s[SENSITIVITY] <= 8 ? SensitivityScale::fromLegacy(s[SENSITIVITY]) : SensitivityScale::DEFAULT;
+        s[BASE + 1] = 2;
+    }
+    if (s[BASE] != MAGIC || s[BASE + 1] != 2) {
         std::fill_n(s + BASE, SLOTS, 0u);
-        s[BASE] = MAGIC; s[BASE + 1] = 1;
+        s[BASE] = MAGIC; s[BASE + 1] = 2;
         s[MODE] = preserveLegacy ? 1 : 0;
         const auto old = (std::min)(s[ViewingOptions::DRAG_SPEED], 2u);
         s[FIXED] = preserveLegacy ? std::array<uint32_t, 3>{4, 7, 8}[old] : 4;
-        s[SENSITIVITY] = 4;
+        s[SENSITIVITY] = SensitivityScale::DEFAULT;
     }
     s[MODE] = s[MODE] ? 1 : 0;
     if (s[FIXED] >= FACTORS.size()) s[FIXED] = 4;
-    if (s[SENSITIVITY] > 8) s[SENSITIVITY] = 4;
+    if (s[SENSITIVITY] >= SensitivityScale::LEVELS) s[SENSITIVITY] = SensitivityScale::DEFAULT;
 }
 }
 
@@ -53,7 +58,7 @@ public:
             else distance = 0;
             const double velocity = std::clamp((speed - 90) / 610, 0.0, 1.0);
             const double sustained = speed > 180 ? std::clamp((distance - 120) / 480, 0.0, 1.0) : 0;
-            const double maximum = 2 + (std::min)(s[PanOptions::SENSITIVITY], 8u) * .75;
+            const double maximum = 2 + (std::min)(s[PanOptions::SENSITIVITY], 19u) * .75;
             const double target = 1 + (maximum - 1) * (std::max)(velocity, sustained);
             gain += (target - gain) * (1 - std::exp(-(std::max)(.001, seconds) / .055));
             factor = gain;

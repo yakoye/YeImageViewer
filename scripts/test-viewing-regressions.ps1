@@ -5,6 +5,8 @@
     [switch]$SettingsDpiOnly,
     [switch]$PanOnly,
     [switch]$KeyboardPanOnly,
+    [switch]$KeyboardSmoothOnly,
+    [switch]$SensitivitySlidersOnly,
     [switch]$SettingsAuditOnly,
     [switch]$ActualSizeOnly,
     [switch]$ReaderPanOnly,
@@ -165,13 +167,14 @@ function Set-Option([int]$Row,[int]$Option,[int]$Slot,[string]$Field='') {
         Start-Sleep -Milliseconds 50
     } while ([DateTime]::UtcNow -lt $deadline)
     if ($settings -eq [IntPtr]::Zero) { throw '设置窗口未打开' }
-    $counts = @(3,3,3,2,2,4,2,2,2,4,2,2,3,3,2,2,2,3,3,2,2,2,2,2,9,2,9)
+    $counts = @(3,3,3,2,2,4,2,2,2,4,2,2,3,3,2,2,2,3,3,2,2,2,2,2,20,2,20)
     $naturalY = 52 + 216 + $Row*48 + 19
     $steps = [Math]::Max(0,[int][Math]::Ceiling(($naturalY-500)/72.0))
     for ($step=0; $step -lt $steps; $step++) { Message $settings 0x020A 4287102976 }
     $scale = [ViewingRegressionNative]::GetDpiForWindow($settings)/96.0
     $cell = [Math]::Floor(406/$counts[$Row])
     $x = [int][Math]::Round((176 + $cell*($Option+0.5))*$scale)
+    if($Row -eq 24 -or $Row -eq 26) {$x=[int][Math]::Round((188 + [Math]::Round(315*$Option/19))*$scale)}
     $y = [int][Math]::Round(($naturalY-$steps*72)*$scale)
     Click $settings $x $y
     if ($InertiaOnly -and $Row -eq 26 -and $Option -eq 4) {
@@ -190,6 +193,38 @@ function Command([uint32]$Id) { Message $window 0x0111 $Id }
 function Number($State,[string]$Name) {
     return [double]::Parse($State[$Name],[Globalization.CultureInfo]::InvariantCulture)
 }
+function Test-KeyboardSmooth {
+    $s=Set-Option 12 0 323
+    [void][ViewingRegressionNative]::SetWindowPos($window,[IntPtr]::Zero,20,20,800,650,0x0014)
+    Message $window 0x0100 0x31; Message $window 0x0101 0x31; Start-Sleep -Milliseconds 400
+    $before=Read-State; $step=[Math]::Floor(((Number $before 'width')+(Number $before 'height'))/16)
+    Message $window 0x0100 0x57
+    $samples=[Collections.Generic.List[double]]::new()
+    for($i=0;$i -lt 20;$i++) {Start-Sleep -Milliseconds 30; $samples.Add((Number (Read-State) 'slideY'))}
+    $s=Read-State
+    Assert-True ((Number $before 'slideY')-(Number $s 'slideY') -gt 2*$step) 'W 长按不依赖系统重复事件，持续向上移动而非只走一步'
+    $nonzero=0
+    for($i=1;$i -lt $samples.Count;$i++) {if($samples[$i] -lt $samples[$i-1]) {$nonzero++}}
+    Assert-True ($nonzero -ge 16) ("长按期间绝大多数采样持续移动，不反复重启动画造成停顿：$nonzero/19")
+    Message $window 0x0101 0x57; Start-Sleep -Milliseconds 100; $released=Read-State
+    Start-Sleep -Milliseconds 300; $s=Read-State
+    Assert-True ($s.keyboardPanActive -eq '0' -and $s.slideY -eq $released.slideY) '长按松开后立即停止，不误用鼠标惯性'
+    Message $window 0x0100 0x35; Message $window 0x0101 0x35; Start-Sleep -Milliseconds 350
+    Message $window 0x0100 0x31; Message $window 0x0101 0x31; Start-Sleep -Milliseconds 350
+    Message $window 0x0100 0x44; Start-Sleep -Milliseconds 250
+    Message $window 0x0100 0x57; Start-Sleep -Milliseconds 250
+    $before=Read-State
+    Message $window 0x0101 0x44; Start-Sleep -Milliseconds 100; $after=Read-State
+    Start-Sleep -Milliseconds 200; $s=Read-State
+    Assert-True ((Number $s 'slideY') -lt (Number $after 'slideY') -and [Math]::Abs((Number $s 'slideX')-(Number $after 'slideX')) -le 2) '组合键松开 D 后 W 继续移动，横轴不继续漂移'
+    Message $window 0x0101 0x57
+    Message $window 0x0100 0x44; Start-Sleep -Milliseconds 200
+    Message $window 0x0008; Start-Sleep -Milliseconds 100; $after=Read-State
+    Start-Sleep -Milliseconds 200; $s=Read-State
+    Assert-True ($s.keyboardPanActive -eq '0' -and $s.slideX -eq $after.slideX) '失焦取消连续平移，不依赖收到按键释放'
+    Write-Host ("WASD 连续平移回归通过：$script:passed 项")
+}
+
 function Test-KeyboardPan {
     $s=Set-Option 12 0 323
     $s=Set-Option 22 0 333
@@ -212,6 +247,7 @@ function Test-KeyboardPan {
             Message $window 0x0100 0x31; Message $window 0x0101 0x31
             Start-Sleep -Milliseconds 350
             $before=Read-State
+            [ViewingRegressionNative]::Activate($window)
             $step=[Math]::Max(1,[Math]::Floor(((Number $before 'width')+(Number $before 'height'))/16))
             Assert-True ($before.zoom -eq '100' -and [Math]::Abs((Number $before 'slideX')) -le 2 -and [Math]::Abs((Number $before 'slideY')) -le 2) ($mode+' '+$direction.Name+' 测试从居中 100% 开始')
             Message $window 0x0100 $direction.Key; Message $window 0x0101 $direction.Key
@@ -223,8 +259,11 @@ function Test-KeyboardPan {
             $y=[int]([Math]::Round((Number $s 'height')/2+$direction.Y*$step))
             $pixel=Screen-Pixel $x $y
             $opposite=Screen-Pixel ([int]([Math]::Round((Number $s 'width')/2-$direction.X*$step))) ([int]([Math]::Round((Number $s 'height')/2-$direction.Y*$step)))
-            Assert-True ($pixel.R -gt 220 -and $pixel.G -lt 30 -and $opposite.G -gt 100) ($mode+' '+$direction.Name+' 红色定位标记实际绘制在正确方向')
-            Message $window 0x0100 $direction.Key; Message $window 0x0100 $direction.Key; Message $window 0x0101 $direction.Key
+            if($direction.Name -eq 'W 向上') {Save-ClientEvidence $window 'WASD-上移定位.png'}
+            Assert-True ($pixel.R -gt 220 -and $pixel.G -lt 30 -and $opposite.G -gt 100) ($mode+' '+$direction.Name+' 红色定位标记实际绘制在正确方向：'+$pixel.ToString()+' / '+$opposite.ToString())
+            Message $window 0x0100 $direction.Key; Message $window 0x0101 $direction.Key
+            Start-Sleep -Milliseconds 400
+            Message $window 0x0100 $direction.Key; Message $window 0x0101 $direction.Key
             Start-Sleep -Milliseconds 400; $s=Read-State
             Assert-True ([Math]::Abs((Number $s 'slideX')-(Number $before 'slideX')-$direction.X*$step*3) -le 1 -and
                 [Math]::Abs((Number $s 'slideY')-(Number $before 'slideY')-$direction.Y*$step*3) -le 1) ($mode+' '+$direction.Name+' 连续按键保持同一方向')
@@ -297,11 +336,11 @@ function Set-Pan([int]$Level = -1) {
     [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
     [void][ViewingRegressionNative]::SetCursorPos($origin.X+$x,$origin.Y+$y)
     Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
-    Start-Sleep -Milliseconds 60
+    $s=Wait-State {param($v) $v.toolbarVisible -eq '1' -or $v.reader -eq '1' -or $v.panPopover -eq '1'} '工具栏未在实际鼠标悬停后显示'
     Click $window $x $y
     $s=Wait-State {param($v) $v.panPopover -eq '1'} '倍率浮层未打开'
     if ($Level -lt 0) {
-        Click $window ([int]((Number $s 'panPanelX')+(Number $s 'panPanelW')/2)) ([int]((Number $s 'panPanelY')+(Number $s 'panPanelH')/4))
+        Click $window ([int]((Number $s 'panAutoX')+(Number $s 'panAutoW')/2)) ([int]((Number $s 'panAutoY')+(Number $s 'panAutoH')/2))
     } else {
         Click $window ([int]((Number $s 'panTrackX')+(Number $s 'panTrackW')*$Level/11)) ([int]((Number $s 'panTrackY')+(Number $s 'panTrackH')/2))
     }
@@ -328,6 +367,61 @@ function Pan-Drag([int]$Dx,[int]$Dy,[int]$Flags=1,[int]$Steps=1,[int]$Delay=20) 
     Message $window 0x0202 0 (($mx -band 65535) -bor (($my -band 65535) -shl 16))
     Start-Sleep -Milliseconds 100
     return Read-State
+}
+
+function Test-SensitivitySliders {
+    $s=Set-Option 12 0 323
+    foreach($kind in @(1,2)) {
+        $prefix=if($kind -eq 1){'autoSensitivity'}else{'inertiaSensitivityTrack'}
+        $field=if($kind -eq 1){'panSensitivity'}else{'inertiaSensitivity'}
+        foreach($level in 0..19) {
+            $s=Set-Pan 4
+            $x=[int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)
+            $y=[int]((Number $s 'panButtonY')+(Number $s 'panButtonH')/2)
+            Click $window $x $y
+            $s=Wait-State {param($v) $v.panPopover -eq '1'} '滑杆测试弹层未打开'
+            $sx=[int]((Number $s ($prefix+'X'))+(Number $s ($prefix+'W'))*$level/19)
+            $sy=[int]((Number $s ($prefix+'Y'))+(Number $s ($prefix+'H'))/2)
+            Click $window $sx $sy
+            $s=Wait-State {param($v) [int]$v[$field] -eq $level} '工具栏滑杆档位未更新'
+            Assert-True ([int]$s[$field] -eq $level -and $s.panMode -eq '1' -and $s.panFixed -eq '4') ("工具栏 $field 第 $($level+1) 档实际生效，不改固定倍率")
+            if($level -eq 19) {Save-ClientEvidence $window ('二十档工具栏-'+$kind+'.png')}
+            Message $window 0x0100 0x1B
+        }
+        $s=Set-Option $(if($kind -eq 1){24}else{26}) 7 $(if($kind -eq 1){356}else{363})
+        Assert-True ($s[$field] -eq '7') ("设置页滑杆与工具栏 $field 共用配置")
+        $s=Set-Pan 4
+        Click $window ([int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)) ([int]((Number $s 'panButtonY')+(Number $s 'panButtonH')/2))
+        $s=Wait-State {param($v) $v.panPopover -eq '1'} '微调测试弹层未打开'
+        $sx=[int]((Number $s ($prefix+'X'))+(Number $s ($prefix+'W'))/2)
+        $sy=[int]((Number $s ($prefix+'Y'))+(Number $s ($prefix+'H'))/2)
+        Click $window $sx $sy
+        Message $window 0x0100 0x24; $s=Wait-State {param($v) $v[$field] -eq '0'} 'Home 未选择第一档'
+        Message $window 0x0100 0x23; $s=Wait-State {param($v) $v[$field] -eq '19'} 'End 未选择第二十档'
+        Message $window 0x0100 0x25; $s=Wait-State {param($v) $v[$field] -eq '18'} '左键微调未减一档'
+        Assert-True ($s[$field] -eq '18') ("工具栏 $field 支持 Home／End／方向键微调")
+        $moves=$s.panMoves
+        foreach($edge in @(-100,[int](Number $s 'width')+100)) {
+            Message $window 0x0201 1 (($sx -band 65535) -bor (($sy -band 65535) -shl 16))
+            Message $window 0x0200 1 (($edge -band 65535) -bor (($sy -band 65535) -shl 16))
+            Message $window 0x0202 0 (($edge -band 65535) -bor (($sy -band 65535) -shl 16))
+            $expected=if($edge -lt 0){0}else{19}
+            $s=Wait-State {param($v) [int]$v[$field] -eq $expected} '捕获外滑杆未限位'
+            Assert-True ($s.panMoves -eq $moves -and [int]$s[$field] -eq $expected) ("工具栏 $field 拖出轨道限位，不穿透拖动图片")
+        }
+        Message $window 0x0100 0x1B
+        $s=Set-Option $(if($kind -eq 1){24}else{26}) 7 $(if($kind -eq 1){356}else{363})
+        Stop-Viewer; $s=Start-Viewer $paths[0]
+        Assert-True ($s[$field] -eq '7') ("工具栏／设置页 $field 跨重启保存")
+    }
+    $s=Set-Pan 4
+    Click $window ([int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)) ([int]((Number $s 'panButtonY')+(Number $s 'panButtonH')/2))
+    $s=Wait-State {param($v) $v.panPopover -eq '1'} '惯性开关测试弹层未打开'
+    Click $window ([int]((Number $s 'inertiaToggleX')+(Number $s 'inertiaToggleW')/2)) ([int]((Number $s 'inertiaToggleY')+(Number $s 'inertiaToggleH')/2))
+    $s=Wait-State {param($v) $v.inertiaEnabled -eq '1'} '工具栏惯性开关未开启'
+    Assert-True ($s.inertiaEnabled -eq '1') '工具栏可直接开启惯性，与设置页共用开关'
+    Message $window 0x0100 0x1B
+    Write-Host ("二十档滑杆真实窗口回归通过：$script:passed 项")
 }
 
 function Test-RapidPan {
@@ -573,7 +667,7 @@ function Test-Inertia {
     Assert-True ($s.inertiaActive -eq '0' -and (Number $s 'slideY') -eq $release) '默认关闭时快拖松手即停，不改变旧行为'
     $s=Set-Option 25 1 362
     $results=[Collections.Generic.List[object]]::new()
-    for($level=0;$level -lt 9;$level++) {
+    for($level=0;$level -lt 20;$level++) {
         $s=Set-Option 26 $level 363
         $s=Set-Option 22 0 333
         $starts=[int]$s.inertiaStarts
@@ -805,7 +899,7 @@ function Test-ShortcutAudit {
 }
 
 function Test-SettingsAudit {
-    $counts=@(3,3,3,2,2,4,2,2,2,4,2,2,3,3,2,2,2,3,3,2,2,2,2,2,9,2,9)
+    $counts=@(3,3,3,2,2,4,2,2,2,4,2,2,3,3,2,2,2,3,3,2,2,2,2,2,20,2,20)
     $fields=@('settingSwitchAnimation','settingTheme','settingLanguage','settingRightClick',
         'pref325','pref259','pref258','pref261','pref263','pref262','pref264','pref265',
         'pref323','pref324','pref322','pref326','pref327','pref328','pref329','pref330',
@@ -980,15 +1074,16 @@ try {
     $s = Start-Viewer $paths[0]
     if ($SettingsDpiOnly) {Test-AssociationDpi; return}
     if ($PanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-Pan; return}
-    if ($KeyboardPanOnly) {
+    if ($KeyboardPanOnly -or $KeyboardSmoothOnly) {
         Stop-Viewer
         $keyboardFixture=Join-Path $pictures '10-keyboard-directions.svg'
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../test/pan/keyboard-directions.svg') -Destination $keyboardFixture
         $s=Start-Viewer $keyboardFixture
-        Test-KeyboardPan
+        if($KeyboardSmoothOnly) {Test-KeyboardSmooth} else {Test-KeyboardPan}
         return
     }
     if ($SettingsAuditOnly) {Test-SettingsAudit; return}
+    if ($SensitivitySlidersOnly) {Test-SensitivitySliders; return}
     if ($ReaderPanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-ReaderPan; return}
     if ($RapidPanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-RapidPan; return}
     if ($PanVisualOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-PanVisual; return}

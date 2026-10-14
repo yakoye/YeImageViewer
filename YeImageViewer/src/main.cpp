@@ -41,6 +41,7 @@
 #include "ImageResampling.h"
 #include "ReadingLayout.h"
 #include "PanPopoverLayout.h"
+#include "KeyboardPanMotion.h"
 #include "RegistryTestSandbox.h"
 
 #include "D3D11App.h"
@@ -61,8 +62,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.38.1";
-constinit int appVersionCode = 13801; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.38.2-rc1";
+constinit int appVersionCode = 13802; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -367,6 +368,7 @@ public:
     ShowExtraUI extraUIFlag = ShowExtraUI::none;
     bool mouseIsPressing = false;
     bool panPopoverOpen = false, panSliderDragging = false;
+    int panSliderKind = 0;
     PanPolicy::Gesture panGesture;
     PanPolicy::Delta lastPanDelta{};
     int panMoveCount = 0;
@@ -389,6 +391,10 @@ public:
     std::unordered_map<std::wstring, int64_t> rememberedImageZoom;
     std::chrono::steady_clock::time_point lastBoundaryToast{};
     WPARAM heldZoomKey = 0;
+    std::array<WPARAM, 4> heldPanKeys{};
+    std::array<Cood, 4> heldPanDirections{};
+    KeyboardPanMotion::Motion keyboardMotion;
+    std::chrono::steady_clock::time_point keyboardPanSince{}, keyboardPanTick{};
     int heldZoomDirection = 0;
     int64_t heldZoomStart = 0;
     std::chrono::steady_clock::time_point heldZoomSince{};
@@ -1838,6 +1844,7 @@ public:
     // 返回值表示画面是否已经换成新文件的内容（真图或模糊预览）——
     // 还停在上一张时做切图动画没有意义，跳过。
     bool switchToImage(int newIdx, int neighborIdx) {
+        if (!readerScrolling) stopKeyboardPan();
         if (!readerScrolling) stopKinetic();
         if (readingEnabled() && !readerScrolling) {
             readerAnchor = newIdx; readerDirty = true;
@@ -2226,12 +2233,14 @@ public:
 
     void updatePanSlider(int x) {
         auto* options = GlobalVar::settingParameter.reserve;
-        options[PanOptions::MODE] = 1;
-        options[PanOptions::FIXED] = PanPopoverLayout::levelAt(panPanelRect(), x);
+        const auto level = PanPopoverLayout::levelAt(panPanelRect(), x, panSliderKind);
+        if (panSliderKind == 0) { options[PanOptions::MODE] = 1; options[PanOptions::FIXED] = level; }
+        else options[panSliderKind == 1 ? PanOptions::SENSITIVITY : KineticOptions::SENSITIVITY] = level;
         operateQueue.push({ActionENUM::refresh});
     }
 
     void OnMouseDown(WPARAM btnState, int x, int y, WPARAM wParam) override {
+        stopKeyboardPan();
         stopKinetic();
         switch ((uint64_t)btnState)
         {
@@ -2250,8 +2259,14 @@ public:
                     if (PanPopoverLayout::automatic(panel).contains(x, y)) {
                         GlobalVar::settingParameter.reserve[PanOptions::MODE] = 0;
                     }
-                    else if (PanPopoverLayout::sliderHit(panel).contains(x, y)) {
-                        panSliderDragging = true; SetCapture(m_hWnd); updatePanSlider(x);
+                    else if (PanPopoverLayout::inertiaToggle(panel).contains(x, y)) {
+                        auto& enabled = GlobalVar::settingParameter.reserve[KineticOptions::ENABLED];
+                        enabled = !enabled;
+                    } else {
+                        for (int kind = 0; kind < 3; ++kind) if (PanPopoverLayout::sliderHit(panel, kind).contains(x,y)) {
+                            panSliderKind = kind;
+                            SetCapture(m_hWnd); panSliderDragging = true; updatePanSlider(x); break;
+                        }
                     }
                     operateQueue.push({ActionENUM::refresh});
                     return;
@@ -2762,6 +2777,7 @@ public:
     }
 
     void OnMouseWheel(UINT nFlags, short zDelta, int x, int y) override {
+        stopKeyboardPan();
         stopKinetic();
         POINT clientPoint{ static_cast<short>(x), static_cast<short>(y) };
         ScreenToClient(m_hWnd, &clientPoint);
@@ -2871,6 +2887,7 @@ public:
     }
 
     void panByKeyboard(int deltaX, int deltaY) {
+        if (readingEnabled()) { applyReaderPan({double(deltaX), double(deltaY)}); operateQueue.push({ActionENUM::refresh}); return; }
         const int displayWidth = (curPar.rotation == 0 || curPar.rotation == 2) ?
             curPar.width : curPar.height;
         const int displayHeight = (curPar.rotation == 0 || curPar.rotation == 2) ?
@@ -2884,6 +2901,77 @@ public:
         curPar.slideTarget.y = std::clamp(curPar.slideTarget.y + deltaY,
             -targetYMax, targetYMax);
         smoothShift = true;
+    }
+
+    bool keyboardPanning() const {
+        return std::any_of(heldPanKeys.begin(), heldPanKeys.end(), [](WPARAM key) { return key != 0; });
+    }
+
+    void stopKeyboardPan() {
+        if (keyboardPanning()) { curPar.slideTarget = curPar.slideCur; smoothShift = false; }
+        heldPanKeys.fill(0); keyboardMotion.reset();
+    }
+
+    void beginKeyboardPan(WPARAM key, Cood direction) {
+        if (std::find(heldPanKeys.begin(), heldPanKeys.end(), key) != heldPanKeys.end()) return;
+        if (!keyboardPanning()) {
+            keyboardMotion.reset();
+            keyboardPanSince = keyboardPanTick = std::chrono::steady_clock::now();
+            const int step = std::max(1, (winWidth + winHeight) / 16);
+            panByKeyboard(direction.x * step, direction.y * step);
+        }
+        for (std::size_t i = 0; i < heldPanKeys.size(); ++i) {
+            if (!heldPanKeys[i]) { heldPanKeys[i] = key; heldPanDirections[i] = direction; break; }
+        }
+        Cood combined{};
+        for (std::size_t i = 0; i < heldPanKeys.size(); ++i) if (heldPanKeys[i]) {
+            combined.x += heldPanDirections[i].x; combined.y += heldPanDirections[i].y;
+        }
+        if (combined.x == 0 && combined.y == 0) {
+            keyboardMotion.reset(); curPar.slideTarget = curPar.slideCur; smoothShift = false;
+        }
+        operateQueue.push({ActionENUM::refresh});
+    }
+
+    void endKeyboardPan(WPARAM key) {
+        const auto found = std::find(heldPanKeys.begin(), heldPanKeys.end(), key);
+        if (found == heldPanKeys.end()) return;
+        *found = 0;
+        if (keyboardPanning()) {
+            curPar.slideTarget = curPar.slideCur; smoothShift = false;
+            keyboardPanSince -= std::chrono::milliseconds(180);
+            return;
+        }
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - keyboardPanSince).count();
+        keyboardMotion.reset();
+        if (seconds >= .18) { curPar.slideTarget = curPar.slideCur; smoothShift = false; }
+        operateQueue.push({ActionENUM::refresh});
+    }
+
+    void updateKeyboardPan() {
+        if (!keyboardPanning()) return;
+        if (GetForegroundWindow() != m_hWnd || !hasCurrentImagePath() || curPar.imageAssetPtr->isLoading) {
+            stopKeyboardPan(); return;
+        }
+        KeyboardPanMotion::Vector direction{};
+        for (std::size_t i = 0; i < heldPanKeys.size(); ++i) if (heldPanKeys[i]) {
+            direction.x += heldPanDirections[i].x; direction.y += heldPanDirections[i].y;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration<double>(now - keyboardPanSince).count() < .18) {
+            keyboardPanTick = now;
+            return;
+        }
+        const auto delta = keyboardMotion.move(direction,
+            std::chrono::duration<double>(now - keyboardPanTick).count(), std::max(1, (winWidth + winHeight) / 2));
+        keyboardPanTick = now;
+        if (readingEnabled()) applyReaderPan({delta.x, delta.y});
+        else {
+            curPar.slideTarget = curPar.slideCur;
+            panByKeyboard(static_cast<int>(delta.x), static_cast<int>(delta.y));
+            curPar.slideCur = curPar.slideTarget;
+        }
+        smoothShift = false;
     }
 
     bool dispatchConfiguredShortcut(WPARAM keyValue) {
@@ -2903,7 +2991,7 @@ public:
         if (!matched)
             return false;
 
-        const int panStep = std::max(1, (winHeight + winWidth) / 16);
+        if (*matched < ShortcutConfig::Action::PanUp || *matched > ShortcutConfig::Action::PanRight) stopKeyboardPan();
         switch (*matched) {
         case ShortcutConfig::Action::OpenFile: {
             openImageFromDialog();
@@ -2981,16 +3069,16 @@ public:
             operateQueue.push({ ActionENUM::rotateRight });
             break;
         case ShortcutConfig::Action::PanUp:
-            panByKeyboard(0, -panStep);
+            beginKeyboardPan(keyValue, {0, -1});
             break;
         case ShortcutConfig::Action::PanDown:
-            panByKeyboard(0, panStep);
+            beginKeyboardPan(keyValue, {0, 1});
             break;
         case ShortcutConfig::Action::PanLeft:
-            panByKeyboard(-panStep, 0);
+            beginKeyboardPan(keyValue, {-1, 0});
             break;
         case ShortcutConfig::Action::PanRight:
-            panByKeyboard(panStep, 0);
+            beginKeyboardPan(keyValue, {1, 0});
             break;
         case ShortcutConfig::Action::ZoomIn:
             beginHeldZoom(keyValue, 1);
@@ -3078,6 +3166,24 @@ public:
             if (GetCapture() == m_hWnd) ReleaseCapture();
             operateQueue.push({ActionENUM::refresh});
             return;
+        }
+        if (panPopoverOpen) {
+            if (keyValue == VK_TAB) { panSliderKind = (panSliderKind + 1) % 3; operateQueue.push({ActionENUM::refresh}); return; }
+            auto* options = GlobalVar::settingParameter.reserve;
+            const auto slot = panSliderKind == 0 ? PanOptions::FIXED :
+                (panSliderKind == 1 ? PanOptions::SENSITIVITY : KineticOptions::SENSITIVITY);
+            int level = options[slot];
+            const int maximum = panSliderKind == 0 ? 11 : 19;
+            if (keyValue == VK_LEFT || keyValue == VK_DOWN) --level;
+            else if (keyValue == VK_RIGHT || keyValue == VK_UP) ++level;
+            else if (keyValue == VK_HOME) level = 0;
+            else if (keyValue == VK_END) level = maximum;
+            else level = -1;
+            if (level != -1 || keyValue == VK_LEFT || keyValue == VK_DOWN) {
+                options[slot] = std::clamp(level, 0, maximum);
+                if (panSliderKind == 0) options[PanOptions::MODE] = 1;
+                operateQueue.push({ActionENUM::refresh}); return;
+            }
         }
         const auto menuModifiers = currentShortcutModifiers();
         if (ContextMenuPolicy::isFixedMenuKey(static_cast<uint32_t>(keyValue),
@@ -3362,6 +3468,7 @@ public:
     }
 
     void OnKeyUp(WPARAM keyValue) override {
+        endKeyboardPan(keyValue);
         if (keyValue == heldZoomKey) {
             heldZoomKey = 0;
             curPar.selectZoomTarget(curPar.zoomTarget);
@@ -3397,6 +3504,7 @@ public:
     }
 
     void OnContextMenuClosed() override {
+        stopKeyboardPan();
         stopKinetic();
         // 原生菜单的消息循环会消耗 Ctrl 松开消息；同步真实状态，避免后续快捷键卡住。
         ctrlIsPressing = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -3405,6 +3513,7 @@ public:
     }
 
     void OnCaptureLost() override {
+        stopKeyboardPan();
         stopKinetic();
         mouseIsPressing = false; panSliderDragging = false;
         frameDragging = false; panGesture.reset();
@@ -3412,6 +3521,7 @@ public:
     }
 
     void OnFocusLost() override {
+        stopKeyboardPan();
         stopKinetic();
         if (panPopoverOpen) operateQueue.push({ActionENUM::refresh});
         heldZoomKey = 0;
@@ -3425,6 +3535,7 @@ public:
     }
 
     void OnDestroy() override {
+        stopKeyboardPan();
         stopKinetic();
         if (hasCurrentImagePath() && !displayedImagePath.empty() && !curPar.imageAssetPtr->isLoading &&
             GlobalVar::settingParameter.reserve[ViewingOptions::SCALE] == 2) {
@@ -3741,6 +3852,7 @@ public:
         if (winWidth == width && winHeight == height)
             return;
 
+        stopKeyboardPan();
         stopKinetic();
 
         const int oldHeight = winHeight;
@@ -5089,7 +5201,6 @@ public:
             0xF20D0F14u, 0x557E8AA3u);
         jarkUtils::overlayImg(canvas, surface, panel.x, panel.y);
         const auto automatic = PanPopoverLayout::automatic(panel);
-        const auto track = PanPopoverLayout::slider(panel);
         const auto* options = GlobalVar::settingParameter.reserve;
         textDrawer.setSize(std::max(10, std::min(
             OverlayLayout::scaled(16, OverlayLayout::dpiScale(overlayDpi())), automatic.height/2)));
@@ -5099,16 +5210,32 @@ public:
         const std::string fixed = std::format("{}  {}", tr("固定倍率", "Fixed multiplier", "固定倍率"),
             PanOptions::LABELS[options[PanOptions::FIXED]]);
         textDrawer.putAlignLeft(canvas,
-            {automatic.x, automatic.y + automatic.height, automatic.width, panel.height/6},
+            toCvRect(PanPopoverLayout::fixedLabel(panel)),
             fixed.c_str(), options[PanOptions::MODE] ? 0xFF60A5FAu : 0xFF9AA5B8u);
-        const int cy = track.y + track.height/2;
-        cv::line(canvas, {track.x,cy}, {track.x+track.width,cy}, cv::Scalar(130,120,110,255), 2);
-        for (int level=0; level<12; ++level) {
-            const int x = track.x + track.width * level / 11;
-            cv::line(canvas, {x,cy-3}, {x,cy+3}, cv::Scalar(210,210,210,255), 1);
+        const std::string inertia = std::format("{}  {}", options[KineticOptions::ENABLED] ? "●" : "○",
+            tr("惯性滑动", "Inertia", "慣性滑動"));
+        textDrawer.putAlignLeft(canvas, toCvRect(PanPopoverLayout::inertiaToggle(panel)), inertia.c_str(), 0xFFE6EAF2u);
+        for (int kind = 1; kind <= 2; ++kind) {
+            const auto level = options[kind == 1 ? PanOptions::SENSITIVITY : KineticOptions::SENSITIVITY];
+            const std::string caption = std::format("{}  {} / 20",
+                kind == 1 ? tr("智能加速灵敏度", "Auto sensitivity", "智慧加速靈敏度") :
+                    tr("惯性滑动灵敏度", "Inertia sensitivity", "慣性滑動靈敏度"), level + 1);
+            textDrawer.putAlignLeft(canvas, toCvRect(PanPopoverLayout::sensitivityLabel(panel, kind)), caption.c_str(), 0xFFE6EAF2u);
         }
-        cv::circle(canvas, {track.x + track.width * static_cast<int>(options[PanOptions::FIXED])/11,cy},
-            std::max(3,track.height/5), cv::Scalar(250,165,96,255), -1, cv::LINE_AA);
+        for (int kind = 0; kind < 3; ++kind) {
+            const auto track = PanPopoverLayout::slider(panel, kind);
+            const int cy = track.y + track.height/2;
+            const int maximum = kind == 0 ? 11 : 19;
+            const int selected = options[kind == 0 ? PanOptions::FIXED :
+                (kind == 1 ? PanOptions::SENSITIVITY : KineticOptions::SENSITIVITY)];
+            cv::line(canvas, {track.x,cy}, {track.x+track.width,cy}, cv::Scalar(130,120,110,255), 2);
+            for (int level=0; level<=maximum; ++level) {
+                const int x = track.x + track.width * level / maximum;
+                cv::line(canvas, {x,cy-3}, {x,cy+3}, cv::Scalar(210,210,210,255), 1);
+            }
+            cv::circle(canvas, {track.x + track.width * selected/maximum,cy},
+                std::max(3,track.height/5), cv::Scalar(250,165,96,255), -1, cv::LINE_AA);
+        }
     }
 
     void drawViewerToolbar(cv::Mat& canvas) {
@@ -5457,6 +5584,17 @@ public:
         put("panMode", GlobalVar::settingParameter.reserve[PanOptions::MODE]);
         put("panFixed", GlobalVar::settingParameter.reserve[PanOptions::FIXED]);
         put("panSensitivity", GlobalVar::settingParameter.reserve[PanOptions::SENSITIVITY]);
+        const auto panAuto = PanPopoverLayout::automatic(panPanel);
+        put("panAutoX",panAuto.x); put("panAutoY",panAuto.y); put("panAutoW",panAuto.width); put("panAutoH",panAuto.height);
+        for (int kind=1;kind<=2;++kind) {
+            const auto track=PanPopoverLayout::slider(panPanel,kind);
+            const auto prefix=kind==1?"autoSensitivity":"inertiaSensitivityTrack";
+            put((std::string(prefix)+"X").c_str(),track.x); put((std::string(prefix)+"Y").c_str(),track.y);
+            put((std::string(prefix)+"W").c_str(),track.width); put((std::string(prefix)+"H").c_str(),track.height);
+        }
+        const auto inertiaToggleRect=PanPopoverLayout::inertiaToggle(panPanel);
+        put("inertiaToggleX",inertiaToggleRect.x); put("inertiaToggleY",inertiaToggleRect.y);
+        put("inertiaToggleW",inertiaToggleRect.width); put("inertiaToggleH",inertiaToggleRect.height);
         put("inertiaEnabled", GlobalVar::settingParameter.reserve[KineticOptions::ENABLED]);
         put("inertiaSensitivity", GlobalVar::settingParameter.reserve[KineticOptions::SENSITIVITY]);
         put("inertiaActive", kineticMotion.active() ? 1 : 0); put("inertiaStarts", kineticStarts);
@@ -5519,6 +5657,7 @@ public:
             !currentImageHistogram().empty() ? 1 : 0);
         put("footer", ImageInfoPresentation::LOGICAL_FOOTER_HEIGHT);
         put("heldKey", heldZoomKey); put("ctrl", ctrlIsPressing ? 1 : 0);
+        put("keyboardPanActive", keyboardPanning() ? 1 : 0);
         put("zoomLevels", curPar.zoomList.size());
         put("reserveOffset", offsetof(SettingParameter, reserve));
         const auto text = state.str();
@@ -5731,13 +5870,15 @@ public:
         }
 
         auto operateAction = operateQueue.get();
-        if (operateAction.action != ActionENUM::none && operateAction.action != ActionENUM::refresh) stopKinetic();
+        if (operateAction.action != ActionENUM::none && operateAction.action != ActionENUM::refresh) {
+            stopKinetic(); stopKeyboardPan();
+        }
         const int64_t oldReaderZoom = curPar.zoomTarget;
         if (operateAction.action == ActionENUM::none &&
             curPar.zoomCur == curPar.zoomTarget &&
             curPar.slideCur == curPar.slideTarget &&
             zoomIndicatorStartedAt == std::chrono::steady_clock::time_point{} &&
-            heldZoomKey == 0 &&
+            heldZoomKey == 0 && !keyboardPanning() &&
             !kineticMotion.active() &&
             (!readingEnabled() || !readerWaiting) &&
             (curPar.imageAssetPtr->format != ImageFormat::Animated || 
@@ -6190,6 +6331,7 @@ public:
         }
 
         updateHeldZoom();
+        updateKeyboardPan();
         applyReaderZoom(oldReaderZoom, operateAction.action);
         if (curPar.zoomCur != curPar.zoomTarget || curPar.slideCur != curPar.slideTarget) {
             if (GlobalVar::settingParameter.isAllowZoomAnimation && smoothShift) {

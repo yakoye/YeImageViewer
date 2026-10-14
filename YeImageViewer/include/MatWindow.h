@@ -232,6 +232,8 @@ protected:
     virtual void onLButtonUp() {}
     virtual void onRButtonUp() {}
     virtual void onMouseMove(WPARAM keyState) {}
+    virtual void onCaptureLost() {}
+    virtual void onFocusLost() {}
     virtual void onMouseWheel(int delta) {}
     virtual void onKeyDown(WPARAM key) {}
     // Alt 组合键走的是 WM_SYSKEYDOWN 而不是 WM_KEYDOWN。返回 true 表示自己收下了，
@@ -267,6 +269,8 @@ protected:
 
     LRESULT wndProc(UINT msg, WPARAM wParam, LPARAM lParam) {
         switch (msg) {
+        case WM_CAPTURECHANGED: onCaptureLost(); return 0;
+        case WM_KILLFOCUS: onFocusLost(); return 0;
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(m_hwnd, &ps);
