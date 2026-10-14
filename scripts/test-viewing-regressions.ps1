@@ -388,8 +388,8 @@ function Test-KeyboardPan {
     Assert-True ((Number $s 'slideY') -lt (Number $before 'slideY') -and $s.slideX -eq $before.slideX) '自定义 F5 的向上动作同样使用修正后的屏幕方向'
     Write-Host ("键盘平移真实窗口回归通过：$script:passed 项")
 }
-function Screen-Pixel([int]$X,[int]$Y) {
-    [void][ViewingRegressionNative]::SetWindowPos($window,[IntPtr](-1),0,0,0,0,0x0013)
+function Screen-Pixel([int]$X,[int]$Y,[bool]$AlreadyTopmost=$false) {
+    if(-not $AlreadyTopmost) {[void][ViewingRegressionNative]::SetWindowPos($window,[IntPtr](-1),0,0,0,0,0x0013)}
     Start-Sleep -Milliseconds 30
     $origin = New-Object ViewingRegressionNative+POINT
     [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
@@ -725,6 +725,7 @@ function Test-Pan {
 }
 
 function Inertia-Flick([int]$Flags=1,[int]$Step=20,[int]$Delay=20,[int]$Pause=0,[int]$ReleaseExtra=0,[int]$DxStep=0,[bool]$MidShift=$false,[bool]$FinalSlow=$false,[bool]$CaptureBeforeRelease=$false) {
+    if($CaptureBeforeRelease) {[void][ViewingRegressionNative]::SetWindowPos($window,[IntPtr](-1),0,0,0,0,0x0013)}
     $s=Read-State; $releaseCount=[int]$s.panReleases
     $x=[int]((Number $s 'width')/2); $y=[int]((Number $s 'height')/2)
     $origin=New-Object ViewingRegressionNative+POINT
@@ -737,6 +738,12 @@ function Inertia-Flick([int]$Flags=1,[int]$Step=20,[int]$Delay=20,[int]$Pause=0,
         Start-Sleep -Milliseconds $Delay
         $moveFlags=if($MidShift -and ($i -eq 4 -or $i -eq 5)){5}else{$Flags}
         Message $window 0x0200 $moveFlags ((($x+$DxStep*$i) -band 65535) -bor (($y-$Step*$i) -shl 16))
+        if($CaptureBeforeRelease -and $i -eq 6) {
+            # GDI 读屏可能超过松手采样的 80ms 间隔，提前采样后再继续两步真实拖动。
+            $pixelTimer=[Diagnostics.Stopwatch]::StartNew()
+            $script:beforeReleasePixel=Screen-Pixel $x 180 $true
+            $pixelTimer.Stop(); Write-Host ("读屏耗时 $($pixelTimer.ElapsedMilliseconds) ms，随后继续两步拖动再释放")
+        }
         if($MidShift -and $i -eq 5) {
             # 中途按键会清理速度采样，但不能清掉本次手势已使用精细模式的事实。
             Message $window 0x0100 0x10; Message $window 0x0101 0x10
@@ -748,7 +755,6 @@ function Inertia-Flick([int]$Flags=1,[int]$Step=20,[int]$Delay=20,[int]$Pause=0,
         Message $window 0x0200 $Flags ((($x+$DxStep*8) -band 65535) -bor ($lastY -shl 16))
     }
     if($Pause){Start-Sleep -Milliseconds $Pause}
-    if($CaptureBeforeRelease) {$script:beforeReleasePixel=Screen-Pixel $x 180}
     Message $window 0x0202 ($Flags -band 4) ((($x+$DxStep*8) -band 65535) -bor (($lastY-$ReleaseExtra) -shl 16))
     return Wait-State {param($v) [int]$v.panReleases -gt $releaseCount} '甩动释放事件未完成'
 }
@@ -799,12 +805,14 @@ function Test-Inertia {
     $starts=[int]$s.inertiaStarts; $s=Inertia-Flick 1 1 40 0 0 20
     Assert-True ([int]$s.inertiaStarts -eq $starts) '长图锁定 X 轴的快速横移不会让慢速 Y 轴误触惯性'
     $s=Set-Option 22 0 333
+    $starts=[int]$s.inertiaStarts
     $s=Inertia-Flick 1 20 20 0 0 0 $false $false $true
+    Assert-True ([int]$s.inertiaStarts -gt $starts) '像素核验手势松手后确实启动惯性，读屏不替代拖动采样'
     $s=Wait-State {param($v) $v.inertiaActive -eq '0'} '像素核验前惯性未结束'
     $afterPixel=Screen-Pixel ([int]((Number $s 'width')/2)) 180
     Assert-True ($script:beforeReleasePixel.R -gt 220 -and $script:beforeReleasePixel.G -lt 30 -and
         [Math]::Abs($afterPixel.R-$afterPixel.G) -lt 5 -and $afterPixel.G -gt 150) `
-        '真实屏幕像素从红色标记变为灰色，验证松手惯性确实绘制而非只更新状态'
+        ("真实屏幕像素从红色标记变为灰色，验证松手惯性确实绘制而非只更新状态：$($script:beforeReleasePixel) → $afterPixel")
     Save-ClientEvidence $window '惯性停止后实际画面.png'
     foreach($kind in @('slow','pause','precision','midShift','finalSlow')) {
         $s=Set-Option 22 0 333
