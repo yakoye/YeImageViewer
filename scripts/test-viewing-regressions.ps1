@@ -147,6 +147,8 @@ function Click([IntPtr]$Target,[int]$X,[int]$Y) {
     Message $Target 0x0202 0 $point
 }
 function Save-ClientEvidence([IntPtr]$Target,[string]$Name) {
+    [void][ViewingRegressionNative]::SetWindowPos($Target,[IntPtr](-1),0,0,0,0,0x0013)
+    Start-Sleep -Milliseconds 60
     $client=New-Object ViewingRegressionNative+RECT
     $origin=New-Object ViewingRegressionNative+POINT
     [void][ViewingRegressionNative]::GetClientRect($Target,[ref]$client)
@@ -298,6 +300,8 @@ function Test-KeyboardPan {
     Write-Host ("键盘平移真实窗口回归通过：$script:passed 项")
 }
 function Screen-Pixel([int]$X,[int]$Y) {
+    [void][ViewingRegressionNative]::SetWindowPos($window,[IntPtr](-1),0,0,0,0,0x0013)
+    Start-Sleep -Milliseconds 30
     $origin = New-Object ViewingRegressionNative+POINT
     [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
     $bitmap = New-Object Drawing.Bitmap 1,1
@@ -1361,7 +1365,12 @@ try {
     $x = [int]((Number $s 'width')/2)+5
     $y = [int]((Number $s 'height')/2)+5
     $pixel = Screen-Pixel $x $y
-    Assert-True ([Math]::Abs($pixel.R-128) -le 3 -and [Math]::Abs($pixel.G-128) -le 3 -and [Math]::Abs($pixel.B-128) -le 3) '高质量缩小的实际屏幕棋盘消除锯齿，面积平均为中灰'
+    $deadline=[DateTime]::UtcNow.AddSeconds(3)
+    while(([Math]::Abs($pixel.R-128) -gt 3 -or [Math]::Abs($pixel.G-128) -gt 3 -or [Math]::Abs($pixel.B-128) -gt 3) -and [DateTime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds 60; $pixel=Screen-Pixel $x $y
+    }
+    Save-ClientEvidence $window '棋盘格高质量实际画面.png'
+    Assert-True ([Math]::Abs($pixel.R-128) -le 3 -and [Math]::Abs($pixel.G-128) -le 3 -and [Math]::Abs($pixel.B-128) -le 3) ('高质量缩小的实际屏幕棋盘消除锯齿，面积平均为中灰：'+$pixel.ToString())
     $s = Set-Option 17 2 328
     $pixel = Screen-Pixel $x $y
     Assert-True ($pixel.R -le 3 -or $pixel.R -ge 252) '像素清晰模式实际屏幕保留最近邻黑白，不混入灰色'
