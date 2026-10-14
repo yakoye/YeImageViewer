@@ -2697,7 +2697,9 @@ public:
             }
         }
 
-        if (cursorPosLast != cursorPos) {
+        {
+            // 失焦会隐藏工具栏，但命中区域可能没变；同一区域内的移动也应恢复可见状态。
+            const auto previousUIFlag = extraUIFlag;
             switch (cursorPos) {
             case CursorPos::leftEdge:
                 extraUIFlag = ShowExtraUI::leftArrow;
@@ -2740,7 +2742,8 @@ public:
             if (zoomTextEditing)
                 extraUIFlag = ShowExtraUI::bottomToolbar;
 
-            operateQueue.push({ ActionENUM::refresh });
+            if (cursorPosLast != cursorPos || previousUIFlag != extraUIFlag)
+                operateQueue.push({ ActionENUM::refresh });
             cursorPosLast = cursorPos;
         }
 

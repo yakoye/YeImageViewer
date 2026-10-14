@@ -709,6 +709,9 @@ function Test-Pan {
     Message $window 0x0201 1 (($x -band 65535) -bor ($y -shl 16))
     Message $window 0x0008 0
     $s=Wait-State {param($v) $v.panPopover -eq '0' -and $v.imageDragging -eq '0'} '失焦后浮层或拖拽状态未释放'
+    Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
+    $s=Wait-State {param($v) $v.toolbarVisible -eq '1'} '失焦后同一手掌热区未重新显示工具栏'
+    Assert-True ($s.toolbarVisible -eq '1') '失焦后鼠标仍在同一手掌热区，工具栏重新显示'
     $before=Number $s 'slideY'
     Message $window 0x0200 1 (($x -band 65535) -bor (($y-100) -shl 16))
     Start-Sleep -Milliseconds 100; $s=Read-State
