@@ -5626,6 +5626,7 @@ public:
         const auto rect = currentImageRect();
         put("left", rect.left); put("top", rect.top); put("right", rect.right); put("bottom", rect.bottom);
         put("loading", curPar.imageAssetPtr->isLoading || !pendingImagePath.empty() ? 1 : 0); put("rotation", curPar.rotation);
+        put("viewSettled", curPar.zoomCur == curPar.zoomTarget && curPar.slideCur == curPar.slideTarget ? 1 : 0);
         for (size_t slot = ViewingOptions::BASE; slot < ViewingOptions::BASE + ViewingOptions::SLOTS; ++slot)
             put(("pref" + std::to_string(slot)).c_str(), GlobalVar::settingParameter.reserve[slot]);
         put("lock", viewingLocked() ? 1 : 0); put("long", currentIsLongImage() ? 1 : 0);
