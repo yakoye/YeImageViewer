@@ -385,7 +385,7 @@ function Test-SensitivitySliders {
             Click $window $sx $sy
             $s=Wait-State {param($v) [int]$v[$field] -eq $level} '工具栏滑杆档位未更新'
             Assert-True ([int]$s[$field] -eq $level -and $s.panMode -eq '1' -and $s.panFixed -eq '4') ("工具栏 $field 第 $($level+1) 档实际生效，不改固定倍率")
-            if($level -eq 19) {Save-ClientEvidence $window ('二十档工具栏-'+$kind+'.png')}
+            if($level -eq 19) {Start-Sleep -Milliseconds 120; Save-ClientEvidence $window ('二十档工具栏-'+$kind+'.png')}
             Message $window 0x0100 0x1B
         }
         $s=Set-Option $(if($kind -eq 1){24}else{26}) 7 $(if($kind -eq 1){356}else{363})
@@ -1127,7 +1127,7 @@ try {
     $s = Set-Option 13 0 324
     $s = Set-Option 14 1 322
     Message $window 0x0100 0x27
-    $s = Wait-State {param($v) $v.image -eq '2' -and $v.loading -eq '0'} '锁定后的下一张未加载'
+    $s = Wait-State {param($v) $v.image -eq '2' -and $v.loading -eq '0' -and $v.viewSettled -eq '1'} '锁定后的下一张未加载或观看动画未完成'
     $expected = [Math]::Round([Math]::Min(1,[Math]::Min((Number $s 'width')/800,(Number $s 'height')/1200))*100)
     Assert-True ($s.shape -eq '1' -and [Math]::Abs((Number $s 'zoom')-$expected) -le 1) '切图保持沉浸和适应窗口，按新分辨率计算比例'
     Message $window 0x0100 0x26
@@ -1136,7 +1136,7 @@ try {
     $larger = Read-State
     Assert-True ((Number $larger 'zoom') -gt $expected) '手动放大当前图片可用'
     Message $window 0x0100 0x27
-    $s = Wait-State {param($v) $v.image -eq '3' -and $v.loading -eq '0'} '切图未恢复锁定规则'
+    $s = Wait-State {param($v) $v.image -eq '3' -and $v.loading -eq '0' -and $v.viewSettled -eq '1'} '切图未恢复锁定规则或观看动画未完成'
     $expected = [Math]::Round([Math]::Min(1,[Math]::Min((Number $s 'width')/1200,(Number $s 'height')/900))*100)
     Assert-True ([Math]::Abs((Number $s 'zoom')-$expected) -le 1) '临时缩放不会污染下一张的锁定规则'
     $s = Set-Option 12 2 323
