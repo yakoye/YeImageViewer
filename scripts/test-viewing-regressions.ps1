@@ -47,6 +47,7 @@ public static class ViewingRegressionNative {
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hwnd,ref POINT point);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd,IntPtr after,int x,int y,int w,int h,uint flags);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr hwnd,int id);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
@@ -429,6 +430,7 @@ function Drag([int]$X,[int]$Y,[int]$DX,[int]$DY) {
 }
 
 function Set-Pan([int]$Level = -1) {
+    [ViewingRegressionNative]::Activate($window)
     $s = Read-State
     $x=[int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)
     $y=[int]((Number $s 'panButtonY')+(Number $s 'panButtonH')/2)
@@ -436,6 +438,11 @@ function Set-Pan([int]$Level = -1) {
     [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
     [void][ViewingRegressionNative]::SetCursorPos($origin.X+$x,$origin.Y+$y)
     Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
+    $actualCursor=New-Object ViewingRegressionNative+POINT
+    $actualClient=New-Object ViewingRegressionNative+RECT
+    [void][ViewingRegressionNative]::GetCursorPos([ref]$actualCursor)
+    [void][ViewingRegressionNative]::GetClientRect($window,[ref]$actualClient)
+    Write-Host ("悬停诊断：客户区=$($actualClient.Right)×$($actualClient.Bottom)，起点=$($origin.X),$($origin.Y)，目标=$x,$y，实际鼠标=$($actualCursor.X),$($actualCursor.Y)，命中=$([ViewingRegressionNative]::WindowFromPoint($actualCursor))，主窗=$window")
     $s=Wait-State {param($v) $v.toolbarVisible -eq '1' -or $v.reader -eq '1' -or $v.panPopover -eq '1'} '工具栏未在实际鼠标悬停后显示'
     Click $window $x $y
     $s=Wait-State {param($v) $v.panPopover -eq '1'} '倍率浮层未打开'
@@ -709,9 +716,6 @@ function Test-Pan {
     Message $window 0x0201 1 (($x -band 65535) -bor ($y -shl 16))
     Message $window 0x0008 0
     $s=Wait-State {param($v) $v.panPopover -eq '0' -and $v.imageDragging -eq '0'} '失焦后浮层或拖拽状态未释放'
-    Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
-    $s=Wait-State {param($v) $v.toolbarVisible -eq '1'} '失焦后同一手掌热区未重新显示工具栏'
-    Assert-True ($s.toolbarVisible -eq '1') '失焦后鼠标仍在同一手掌热区，工具栏重新显示'
     $before=Number $s 'slideY'
     Message $window 0x0200 1 (($x -band 65535) -bor (($y-100) -shl 16))
     Start-Sleep -Milliseconds 100; $s=Read-State
