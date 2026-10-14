@@ -4,6 +4,7 @@
     [switch]$KeepEvidence,
     [switch]$SettingsDpiOnly,
     [switch]$PanOnly,
+    [switch]$KeyboardPanOnly,
     [switch]$SettingsAuditOnly,
     [switch]$ActualSizeOnly,
     [switch]$ReaderPanOnly,
@@ -188,6 +189,70 @@ function Set-Option([int]$Row,[int]$Option,[int]$Slot,[string]$Field='') {
 function Command([uint32]$Id) { Message $window 0x0111 $Id }
 function Number($State,[string]$Name) {
     return [double]::Parse($State[$Name],[Globalization.CultureInfo]::InvariantCulture)
+}
+function Test-KeyboardPan {
+    $s=Set-Option 12 0 323
+    $s=Set-Option 22 0 333
+    [void][ViewingRegressionNative]::SetWindowPos($window,[IntPtr]::Zero,20,20,800,650,0x0014)
+    Start-Sleep -Milliseconds 250
+    foreach($mode in @('普通窗口','沉浸窗口','旋转后')) {
+        if($mode -eq '沉浸窗口') {$s=Set-Option 12 1 323}
+        if($mode -eq '旋转后') {
+            $s=Set-Option 12 0 323
+            Message $window 0x0100 0x45; Message $window 0x0101 0x45
+            Start-Sleep -Milliseconds 350
+        }
+        foreach($direction in @(
+            @{Key=0x57; Name='W 向上'; X=0; Y=-1},
+            @{Key=0x53; Name='S 向下'; X=0; Y=1},
+            @{Key=0x41; Name='A 向左'; X=-1; Y=0},
+            @{Key=0x44; Name='D 向右'; X=1; Y=0})) {
+            Message $window 0x0100 0x35; Message $window 0x0101 0x35
+            Start-Sleep -Milliseconds 350
+            Message $window 0x0100 0x31; Message $window 0x0101 0x31
+            Start-Sleep -Milliseconds 350
+            $before=Read-State
+            $step=[Math]::Max(1,[Math]::Floor(((Number $before 'width')+(Number $before 'height'))/16))
+            Assert-True ($before.zoom -eq '100' -and [Math]::Abs((Number $before 'slideX')) -le 2 -and [Math]::Abs((Number $before 'slideY')) -le 2) ($mode+' '+$direction.Name+' 测试从居中 100% 开始')
+            Message $window 0x0100 $direction.Key; Message $window 0x0101 $direction.Key
+            Start-Sleep -Milliseconds 400
+            $s=Read-State
+            Assert-True ([Math]::Abs((Number $s 'slideX')-(Number $before 'slideX')-$direction.X*$step) -le 1 -and
+                [Math]::Abs((Number $s 'slideY')-(Number $before 'slideY')-$direction.Y*$step) -le 1) ($mode+' '+$direction.Name+' 按屏幕方向移动且另一轴不变')
+            $x=[int]([Math]::Round((Number $s 'width')/2+$direction.X*$step))
+            $y=[int]([Math]::Round((Number $s 'height')/2+$direction.Y*$step))
+            $pixel=Screen-Pixel $x $y
+            $opposite=Screen-Pixel ([int]([Math]::Round((Number $s 'width')/2-$direction.X*$step))) ([int]([Math]::Round((Number $s 'height')/2-$direction.Y*$step)))
+            Assert-True ($pixel.R -gt 220 -and $pixel.G -lt 30 -and $opposite.G -gt 100) ($mode+' '+$direction.Name+' 红色定位标记实际绘制在正确方向')
+            Message $window 0x0100 $direction.Key; Message $window 0x0100 $direction.Key; Message $window 0x0101 $direction.Key
+            Start-Sleep -Milliseconds 400; $s=Read-State
+            Assert-True ([Math]::Abs((Number $s 'slideX')-(Number $before 'slideX')-$direction.X*$step*3) -le 1 -and
+                [Math]::Abs((Number $s 'slideY')-(Number $before 'slideY')-$direction.Y*$step*3) -le 1) ($mode+' '+$direction.Name+' 连续按键保持同一方向')
+        }
+    }
+    $settings=Open-ShortcutSettings
+    $source=Get-Content (Join-Path $PSScriptRoot '../YeImageViewer/include/Setting.h') -Raw
+    $rows=@([regex]::Matches($source,'ShortcutItem\{\s*ShortcutConfig::Action::(\w+),') | ForEach-Object {$_.Groups[1].Value})
+    $row=[Array]::IndexOf($rows,'PanUp')
+    $natural=52+288+40*$row+20
+    $steps=[Math]::Max(0,[int][Math]::Ceiling(($natural-500)/72.0))
+    for($i=0;$i -lt $steps;$i++) {Message $settings 0x020A 4287102976}
+    $scale=[ViewingRegressionNative]::GetDpiForWindow($settings)/96.0
+    Click $settings ([int](417*$scale)) ([int](($natural-$steps*72)*$scale))
+    Message $settings 0x0100 0x74; Message $settings 0x0101 0x74
+    Message $settings 0x0010; Start-Sleep -Milliseconds 250
+    Stop-Viewer; $s=Start-Viewer $keyboardFixture
+    Assert-True ($s.binding12 -eq '116') '向上动作自定义 F5 在修复后跨重启保留，不覆盖用户绑定'
+    Message $window 0x0100 0x35; Message $window 0x0101 0x35; Start-Sleep -Milliseconds 350
+    Message $window 0x0100 0x31; Message $window 0x0101 0x31; Start-Sleep -Milliseconds 350
+    $before=Read-State
+    Message $window 0x0100 0x57; Message $window 0x0101 0x57; Start-Sleep -Milliseconds 400
+    $s=Read-State
+    Assert-True ($s.slideX -eq $before.slideX -and $s.slideY -eq $before.slideY) '改绑后原 W 不再触发向上，也不会落入旧硬编码路径'
+    Message $window 0x0100 0x74; Message $window 0x0101 0x74; Start-Sleep -Milliseconds 400
+    $s=Read-State
+    Assert-True ((Number $s 'slideY') -lt (Number $before 'slideY') -and $s.slideX -eq $before.slideX) '自定义 F5 的向上动作同样使用修正后的屏幕方向'
+    Write-Host ("键盘平移真实窗口回归通过：$script:passed 项")
 }
 function Screen-Pixel([int]$X,[int]$Y) {
     $origin = New-Object ViewingRegressionNative+POINT
@@ -915,6 +980,14 @@ try {
     $s = Start-Viewer $paths[0]
     if ($SettingsDpiOnly) {Test-AssociationDpi; return}
     if ($PanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-Pan; return}
+    if ($KeyboardPanOnly) {
+        Stop-Viewer
+        $keyboardFixture=Join-Path $pictures '10-keyboard-directions.svg'
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../test/pan/keyboard-directions.svg') -Destination $keyboardFixture
+        $s=Start-Viewer $keyboardFixture
+        Test-KeyboardPan
+        return
+    }
     if ($SettingsAuditOnly) {Test-SettingsAudit; return}
     if ($ReaderPanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-ReaderPan; return}
     if ($RapidPanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-RapidPan; return}
