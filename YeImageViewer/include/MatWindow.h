@@ -61,7 +61,11 @@ protected:
         const DWORD style = static_cast<DWORD>(GetWindowLongW(m_hwnd, GWL_STYLE));
         const DWORD exStyle = static_cast<DWORD>(GetWindowLongW(m_hwnd, GWL_EXSTYLE));
         RECT rc{ 0, 0, toPhysical(m_width), toPhysical(m_height) };
-        if (!AdjustWindowRectExForDpi(&rc, style, FALSE, exStyle, static_cast<UINT>(m_dpi)))
+        // 工作区不足时只缩小内容，Windows 非客户区仍按窗口的真实 DPI 绘制。
+        // 用内容 DPI 算标题栏会使客户区与画布不等大，拉伸后文字和命中区域偏移。
+        const UINT windowDpi = GetDpiForWindow(m_hwnd);
+        if (!AdjustWindowRectExForDpi(&rc, style, FALSE, exStyle,
+            windowDpi > 0 ? windowDpi : static_cast<UINT>(m_dpi)))
             AdjustWindowRectEx(&rc, style, FALSE, exStyle);
         SetWindowPos(m_hwnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
             SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
@@ -94,11 +98,12 @@ protected:
         m_dpi = static_cast<int>(GetDpiForSystem());
         if (m_dpi <= 0)
             m_dpi = USER_DEFAULT_SCREEN_DPI;
+        const UINT frameDpi = static_cast<UINT>(m_dpi);
         m_dpi = dpiFittedToWorkArea(m_dpi);
 
         // 计算窗口尺寸以获得指定客户区大小
         RECT rc = { 0, 0, toPhysical(width), toPhysical(height) };
-        if (!AdjustWindowRectExForDpi(&rc, style, FALSE, 0, static_cast<UINT>(m_dpi)))
+        if (!AdjustWindowRectExForDpi(&rc, style, FALSE, 0, frameDpi))
             AdjustWindowRect(&rc, style, FALSE);
 
         m_hwnd = CreateWindowExW(
@@ -121,11 +126,9 @@ protected:
         // CW_USEDEFAULT 可能把窗口放到 DPI 与主显示器不同的屏上，按实际落点校正。
         const int actualDpi = static_cast<int>(GetDpiForWindow(m_hwnd));
         if (actualDpi > 0) {
-            const int fittedDpi = dpiFittedToWorkArea(actualDpi);
-            if (fittedDpi != m_dpi) {
-                m_dpi = fittedDpi;
-                applyDpiScaledSize();
-            }
+            m_dpi = dpiFittedToWorkArea(actualDpi);
+            // 即使内容缩放没变，实际落点的标题栏 DPI 仍可能与系统默认不同。
+            applyDpiScaledSize();
         }
 
         jarkUtils::disableWindowResize(m_hwnd);
