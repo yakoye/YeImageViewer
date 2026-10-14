@@ -284,7 +284,16 @@ function Test-ReaderWheel {
                 Assert-True ($s.wheel0 -eq '0' -and $s.wheel1 -eq '1' -and $s.wheel2 -eq '2') '编辑阅读滚轮不覆盖单图方案'
                 Message $window 0x0100 0x35; Message $window 0x0101 0x35
                 Start-Sleep -Milliseconds 350
-                for($i=0;$i -lt 4;$i++) {Message $window 0x0100 0x26; Message $window 0x0101 0x26; Start-Sleep -Milliseconds 100}
+                # 另一轴只有超出视口才可拖；不能假定固定四次放大就一定越界。
+                for($i=0;$i -lt 12;$i++) {
+                    Message $window 0x0100 0x26; Message $window 0x0101 0x26
+                    Start-Sleep -Milliseconds 250
+                    $s=Wait-State {param($v) $v.readerWaiting -eq '0' -and $v.viewSettled -eq '1'} '准备阅读轴溢出时缩放未稳定'
+                    $crossSize=if($axis -eq 0){Number $s 'pageLeftW'}else{Number $s 'pageLeftH'}
+                    $viewportSize=if($axis -eq 0){Number $s 'width'}else{(Number $s 'height')-52}
+                    if($crossSize -gt 1.6*$viewportSize) {break}
+                }
+                Assert-True ($crossSize -gt 1.6*$viewportSize) '阅读测试夹具另一轴确实溢出，可验证完整步长而不触边'
                 $before=Wait-State {param($v) $v.readerWaiting -eq '0' -and $v.viewSettled -eq '1'} '阅读测试缩放未稳定'
                 $flags=@(0,8,4)[$modifier]
                 Message $window 0x020A (4287102976 -bor $flags)
