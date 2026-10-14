@@ -193,6 +193,10 @@ function Command([uint32]$Id) { Message $window 0x0111 $Id }
 function Number($State,[string]$Name) {
     return [double]::Parse($State[$Name],[Globalization.CultureInfo]::InvariantCulture)
 }
+function Expected-FitPercent([double]$Width,[double]$Height,[double]$ImageWidth,[double]$ImageHeight) {
+    # 1 必须为浮点数，否则 PowerShell 可能选择整数 Min 重载并把比例舍入为 0 或 1。
+    return [Math]::Round([Math]::Min(1.0,[Math]::Min($Width/$ImageWidth,$Height/$ImageHeight))*100)
+}
 function Test-KeyboardSmooth {
     $s=Set-Option 12 0 323
     [void][ViewingRegressionNative]::SetWindowPos($window,[IntPtr]::Zero,20,20,800,650,0x0014)
@@ -1123,12 +1127,13 @@ try {
         $s=Start-Viewer (Join-Path $bigFolder '01.png')
         Test-ActualSize; return
     }
+    Assert-True ((Expected-FitPercent 800 600 1600 1200) -eq 50 -and (Expected-FitPercent 2000 1400 1600 1200) -eq 100) '适应窗口期望采用浮点比例，小窗口为 50% 而非整数舍入'
     $s = Set-Option 12 1 323
     $s = Set-Option 13 0 324
     $s = Set-Option 14 1 322
     Message $window 0x0100 0x27
     $s = Wait-State {param($v) $v.image -eq '2' -and $v.loading -eq '0' -and $v.viewSettled -eq '1'} '锁定后的下一张未加载或观看动画未完成'
-    $expected = [Math]::Round([Math]::Min(1,[Math]::Min((Number $s 'width')/800,(Number $s 'height')/1200))*100)
+    $expected = Expected-FitPercent (Number $s 'width') (Number $s 'height') 800 1200
     Assert-True ($s.shape -eq '1' -and [Math]::Abs((Number $s 'zoom')-$expected) -le 1) '切图保持沉浸和适应窗口，按新分辨率计算比例'
     Message $window 0x0100 0x26
     Message $window 0x0101 0x26
@@ -1137,7 +1142,7 @@ try {
     Assert-True ((Number $larger 'zoom') -gt $expected) '手动放大当前图片可用'
     Message $window 0x0100 0x27
     $s = Wait-State {param($v) $v.image -eq '3' -and $v.loading -eq '0' -and $v.viewSettled -eq '1'} '切图未恢复锁定规则或观看动画未完成'
-    $expected = [Math]::Round([Math]::Min(1,[Math]::Min((Number $s 'width')/1200,(Number $s 'height')/900))*100)
+    $expected = Expected-FitPercent (Number $s 'width') (Number $s 'height') 1200 900
     Assert-True ([Math]::Abs((Number $s 'zoom')-$expected) -le 1) '临时缩放不会污染下一张的锁定规则'
     $s = Set-Option 12 2 323
     Assert-True ($s.shape -eq '2') '全屏作为独立窗口形态可选'
