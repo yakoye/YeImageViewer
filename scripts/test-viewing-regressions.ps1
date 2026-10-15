@@ -1283,6 +1283,8 @@ try {
     $expected = Expected-FitPercent (Number $s 'width') (Number $s 'height') 1200 900
     Assert-True ([Math]::Abs((Number $s 'zoom')-$expected) -le 1) '临时缩放不会污染下一张的锁定规则'
     $s = Set-Option 12 2 323
+    # 设置线程先写配置；主渲染线程随后才消费形态变更，不能把配置值当成窗口完成。
+    $s = Wait-State {param($v) $v.shape -eq '2' -and $v.viewSettled -eq '1'} '设置全屏后实际窗口形态未完成'
     Assert-True ($s.shape -eq '2') '全屏作为独立窗口形态可选'
     $s = Set-Option 12 1 323
     Stop-Viewer
