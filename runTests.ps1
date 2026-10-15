@@ -371,6 +371,8 @@ $thumbnailFixtures = @(
     (Join-Path $formatCorpusRoot "files\common.dds"),
     (Join-Path $formatCorpusRoot "files\common.jxr"),
     (Join-Path $formatCorpusRoot "files\common.psdt"),
+    (Join-Path $repoRoot 'test/compatibility/psb-CMYK-8-RLE.psb'),
+    (Join-Path $repoRoot 'test/compatibility/psd-CMYK-16-RLE.psd'),
     (Join-Path $formatCorpusRoot "files\libavif-static.avif"),
     (Join-Path $formatCorpusRoot "files\libavif-animated.avifs"),
     (Join-Path $formatCorpusRoot "files\libheif-rainbow.heic"),
@@ -411,13 +413,11 @@ if ($formatCases.Count -lt 40) {
     throw "Format corpus is unexpectedly small: only $($formatCases.Count) registered cases."
 }
 
-$declaredStaticExtensions = @(
-    "apng", "avif", "avifs", "blp", "bmp", "dds", "dib", "exr", "gif", "hdr",
-    "heic", "heif", "ico", "icon", "jfif", "jp2", "jpe", "jpeg", "jpg", "jxl",
-    "jxr", "lep", "livp", "pbm", "pcx", "pfm", "pgm", "pic", "png", "pnm", "ppm",
-    "psd", "psdt", "pxm", "qoi", "ras", "sr", "svg", "tga", "tif", "tiff", "webm",
-    "webp", "wp2"
-)
+# 从生产清单反推覆盖，不能维护另一份硬编码列表后自证齐全。
+$databaseHeader = Get-Content -LiteralPath (Join-Path $repoRoot 'YeImageViewer/include/ImageDatabase.h') -Raw
+$staticBlock = [regex]::Match($databaseHeader, 'supportExt\s*\{(.*?)\};', 'Singleline')
+if (-not $staticBlock.Success) {throw '无法读取生产静态格式清单'}
+$declaredStaticExtensions = @([regex]::Matches($staticBlock.Groups[1].Value, 'L"([^"]+)"') | ForEach-Object {$_.Groups[1].Value})
 $temporarilyExemptExtensions = @("lep")
 $coveredExtensions = @($formatCases | ForEach-Object {
     [IO.Path]::GetExtension($_.File).TrimStart(".").ToLowerInvariant()
@@ -4373,4 +4373,6 @@ foreach ($donateName in @("donate-alipay.png", "donate-wechat.png")) {
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -ShortcutAuditOnly
 & (Join-Path $repoRoot 'scripts/test-release-archive.ps1') -Viewer $viewer
 
+& (Join-Path $repoRoot 'scripts/test-format-compatibility.ps1') -Viewer $viewer
+if ($LASTEXITCODE -ne 0) {throw '格式兼容性专项回归失败'}
 Write-Host "All regression tests passed."

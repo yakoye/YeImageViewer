@@ -1,4 +1,7 @@
 #include "LRU.h"
+#include "CmykColor.h"
+#include "PsdCompositeDecoder.h"
+#include "RawDecodePolicy.h"
 #include "PrintAdjustments.h"
 #include "RationalText.h"
 #include "PrintLayout.h"
@@ -18,6 +21,7 @@
 #include "InitialWindowLayout.h"
 #include "ImageInfoPresentation.h"
 #include "ExifValueFormat.h"
+#include "MetadataTextPolicy.h"
 #include "ContrastRatio.h"
 #include "WindowTitlePresentation.h"
 #include "PresentationLayout.h"
@@ -126,6 +130,8 @@ void passOrFail(std::string_view name, bool passed) {
         std::cerr << "FAIL " << name << '\n';
     }
 }
+
+#include "PsdCompositeTests.h"
 
 void expectVideoSize(std::string_view name, std::string_view metadata, size_t expected) {
     const size_t actual = MotionPhotoUtils::getVideoSize(metadata);
@@ -4603,6 +4609,8 @@ int main(int argc, char* argv[]) {
     expectVideoSize("non-numeric length", "Item:Semantic: MotionPhoto\nItem:Length: unknown", 0);
     expectVideoSize("overflowing length", "Item:Semantic: MotionPhoto\nItem:Length: 999999999999999999999999999999", 0);
     expectHdrChannelOrder();
+    expectPsdComposites();
+    passOrFail("元数据大值在格式化之前限量", !MetadataTextPolicy::summarize(65536) && MetadataTextPolicy::summarize(65537));
     expectBilinearEnlargement();
     expectBackgroundRendering();
     expectOverlayLayout();

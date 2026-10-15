@@ -428,6 +428,7 @@ struct ImageAsset {
     int sourceWidth = 0;
     int sourceHeight = 0;
     std::shared_ptr<const AudioClip> audio;  // 实况照片随视频录下的声音，没有则为空
+    bool embeddedRawPreview = false;        // RAW 不可解码时的内嵌 JPEG，不能伪装成原始成像。
 };
 
 enum class ActionENUM:int64_t {

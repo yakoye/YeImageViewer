@@ -1,6 +1,8 @@
 #include "ImageDatabase.h"
 
-#include "PsdMemoryFile.h"
+#include "PsdCompositeDecoder.h"
+#include "CmykColor.h"
+#include "RawDecodePolicy.h"
 #include "PngFastDecode.h"
 #include "StartupTrace.h"
 #include "MotionPhotoUtils.h"
@@ -817,7 +819,8 @@ ImageAsset ImageDatabase::loadAvif(wstring_view path, std::span<const uint8_t> f
 }
 
 
-cv::Mat ImageDatabase::loadRaw(wstring_view path, std::span<const uint8_t> buf) {
+cv::Mat ImageDatabase::loadRaw(wstring_view path, std::span<const uint8_t> buf, bool* embeddedPreview, std::vector<uint8_t>* previewIcc) {
+    if (embeddedPreview) *embeddedPreview = false;
     if (buf.empty()) {
         JARK_LOG("Buf is empty: {}", jarkUtils::wstringToUtf8(path));
         return {};
@@ -831,22 +834,58 @@ cv::Mat ImageDatabase::loadRaw(wstring_view path, std::span<const uint8_t> buf) 
         return {};
     }
 
-    ret = rawProcessor->unpack();
-    if (ret != LIBRAW_SUCCESS) {
-        JARK_LOG("Cannot unpack RAW file: {} {}", jarkUtils::wstringToUtf8(path), libraw_strerror(ret));
+    // RAW 真解失败后重新打开同一份只读缓冲，避免使用失败解包留下的内部状态。
+    const auto preview = [&]() -> cv::Mat {
+        auto fallback = std::make_unique<LibRaw>();
+        if (fallback->open_buffer(buf.data(), buf.size()) != LIBRAW_SUCCESS) return {};
+        std::vector<int> indices;
+        const auto& list = fallback->imgdata.thumbs_list;
+        for (int i = 0; i < std::min(list.thumbcount, LIBRAW_THUMBNAIL_MAXCOUNT); ++i) indices.push_back(i);
+        std::sort(indices.begin(), indices.end(), [&](int a, int b) {
+            return uint64_t(list.thumblist[a].twidth) * list.thumblist[a].theight >
+                uint64_t(list.thumblist[b].twidth) * list.thumblist[b].theight;
+        });
+        if (indices.empty()) indices.push_back(-1);
+        for (int index : indices) {
+            const int status = index < 0 ? fallback->unpack_thumb() : fallback->unpack_thumb_ex(index);
+            const auto& thumbnail = fallback->imgdata.thumbnail;
+            if (status != LIBRAW_SUCCESS || !thumbnail.thumb || thumbnail.tlength < 3) continue;
+            auto jpeg = std::span(reinterpret_cast<const uint8_t*>(thumbnail.thumb), thumbnail.tlength);
+            // 部分 LibRaw 构建的预览格式枚举为 UNKNOWN，但数据本身是有效 JPEG。
+            // 用签名和真实解码验证，不将 UNKNOWN 当作损坏，也不接受任意原始位图。
+            if (jpeg[0] != 255 || jpeg[1] != 216 || jpeg[2] != 255) continue;
+            const bool cmyk = CmykColor::jpeg(jpeg);
+            auto decoded = cmyk ? loadImageWinCOM(path, jpeg) : loadImageOpenCV(path, jpeg);
+            if (decoded.empty()) continue;
+            if (fallback->imgdata.sizes.flip > 0)
+                handleExifOrientation(fallback->imgdata.sizes.flip == 3 ? 3 : fallback->imgdata.sizes.flip == 5 ? 8 :
+                    fallback->imgdata.sizes.flip == 6 ? 6 : 1, decoded);
+            if (embeddedPreview) *embeddedPreview = true;
+            if (previewIcc) *previewIcc = cmyk ? PsdCompositeDecoder::srgbProfile() : ColorManager::readEmbeddedIccProfile(path, jpeg);
+            return decoded;
+        }
         return {};
+    };
+    libraw_decoder_info_t decoder{};
+    if (rawProcessor->get_decoder_info(&decoder) != LIBRAW_SUCCESS ||
+        (decoder.decoder_flags & LIBRAW_DECODER_UNSUPPORTED_FORMAT)) return preview();
+
+    ret = rawProcessor->unpack();
+    if (!RawDecodePolicy::valid(ret, rawProcessor->error_count())) {
+        JARK_LOG("Cannot unpack RAW file: {} {}", jarkUtils::wstringToUtf8(path), libraw_strerror(ret));
+        return preview();
     }
 
     ret = rawProcessor->dcraw_process();
-    if (ret != LIBRAW_SUCCESS) {
+    if (!RawDecodePolicy::valid(ret, rawProcessor->error_count())) {
         JARK_LOG("Cannot process RAW file: {} {}", jarkUtils::wstringToUtf8(path), libraw_strerror(ret));
-        return {};
+        return preview();
     }
 
     libraw_processed_image_t* image = rawProcessor->dcraw_make_mem_image(&ret);
     if (image == nullptr) {
         JARK_LOG("Cannot make image from RAW data: {} {}", jarkUtils::wstringToUtf8(path), libraw_strerror(ret));
-        return {};
+        return preview();
     }
 
     // 下面按 8 位三通道位图解释 image->data，单色机型(colors==1)或 16 位输出
@@ -1674,235 +1713,11 @@ std::tuple<cv::Mat, string> ImageDatabase::loadICO(wstring_view path, std::span<
 }
 
 
-// https://github.com/MolecularMatters/psd_sdk
-cv::Mat ImageDatabase::loadPSD(wstring_view path, std::span<const uint8_t> buf) {
-    const int32_t CHANNEL_NOT_FOUND = UINT_MAX;
-
-    cv::Mat img;
-
-    // 从内存读，不要让 psd_sdk 自己再开一遍文件：myLoader 已经把整个文件读进
-    // fileBuf 了，PSD 动辄几百 MB，白读一遍很贵。
-    // 顺带避开一个坑：原先传的是 path.data()，而 wstring_view 不保证以 '\0' 结尾。
-    psd::MallocAllocator allocator;
-    PsdSupport::MemoryFile file(&allocator, buf);
-
-    if (!file.OpenRead(L"")) {
-        JARK_LOG("Empty PSD buffer {}", jarkUtils::wstringToUtf8(path));
-        return {};
-    }
-
-    psd::Document* document = CreateDocument(&file, &allocator);
-    if (!document) {
-        JARK_LOG("Cannot create document {}", jarkUtils::wstringToUtf8(path));
-        file.Close();
-        return {};
-    }
-
-    // the sample only supports RGB colormode
-    if (document->colorMode != psd::colorMode::RGB)
-    {
-        JARK_LOG("Document is not in RGB color mode {}", jarkUtils::wstringToUtf8(path));
-        DestroyDocument(document, &allocator);
-        file.Close();
-        return {};
-    }
-
-    // extract all layers and masks.
-    bool hasTransparencyMask = false;
-    psd::LayerMaskSection* layerMaskSection = ParseLayerMaskSection(document, &file, &allocator);
-    if (layerMaskSection)
-    {
-        hasTransparencyMask = layerMaskSection->hasTransparencyMask;
-
-        // extract all layers one by one. this should be done in parallel for maximum efficiency.
-        for (unsigned int i = 0; i < layerMaskSection->layerCount; ++i)
-        {
-            psd::Layer* layer = &layerMaskSection->layers[i];
-            ExtractLayer(document, &file, &allocator, layer);
-
-            // check availability of R, G, B, and A channels.
-            // we need to determine the indices of channels individually, because there is no guarantee that R is the first channel,
-            // G is the second, B is the third, and so on.
-            const unsigned int indexR = FindChannel(layer, psd::channelType::R);
-            const unsigned int indexG = FindChannel(layer, psd::channelType::G);
-            const unsigned int indexB = FindChannel(layer, psd::channelType::B);
-            const unsigned int indexA = FindChannel(layer, psd::channelType::TRANSPARENCY_MASK);
-
-            // note that channel data is only as big as the layer it belongs to, e.g. it can be smaller or bigger than the canvas,
-            // depending on where it is positioned. therefore, we use the provided utility functions to expand/shrink the channel data
-            // to the canvas size. of course, you can work with the channel data directly if you need to.
-            void* canvasData[4] = {};
-            unsigned int channelCount = 0u;
-            if ((indexR != CHANNEL_NOT_FOUND) && (indexG != CHANNEL_NOT_FOUND) && (indexB != CHANNEL_NOT_FOUND))
-            {
-                // RGB channels were found.
-                canvasData[0] = ExpandChannelToCanvas(document, &allocator, layer, &layer->channels[indexR]);
-                canvasData[1] = ExpandChannelToCanvas(document, &allocator, layer, &layer->channels[indexG]);
-                canvasData[2] = ExpandChannelToCanvas(document, &allocator, layer, &layer->channels[indexB]);
-                channelCount = 3u;
-
-                if (indexA != CHANNEL_NOT_FOUND)
-                {
-                    // A channel was also found.
-                    canvasData[3] = ExpandChannelToCanvas(document, &allocator, layer, &layer->channels[indexA]);
-                    channelCount = 4u;
-                }
-            }
-
-            // interleave the different pieces of planar canvas data into one RGB or RGBA image, depending on what channels
-            // we found, and what color mode the document is stored in.
-            uint8_t* image8 = nullptr;
-            uint16_t* image16 = nullptr;
-            float32_t* image32 = nullptr;
-            if (channelCount == 3u)
-            {
-                if (document->bitsPerChannel == 8)
-                {
-                    image8 = CreateInterleavedImage<uint8_t>(&allocator, canvasData[0], canvasData[1], canvasData[2], document->width, document->height);
-                }
-                else if (document->bitsPerChannel == 16)
-                {
-                    image16 = CreateInterleavedImage<uint16_t>(&allocator, canvasData[0], canvasData[1], canvasData[2], document->width, document->height);
-                }
-                else if (document->bitsPerChannel == 32)
-                {
-                    image32 = CreateInterleavedImage<float32_t>(&allocator, canvasData[0], canvasData[1], canvasData[2], document->width, document->height);
-                }
-            }
-            else if (channelCount == 4u)
-            {
-                if (document->bitsPerChannel == 8)
-                {
-                    image8 = CreateInterleavedImage<uint8_t>(&allocator, canvasData[0], canvasData[1], canvasData[2], canvasData[3], document->width, document->height);
-                }
-                else if (document->bitsPerChannel == 16)
-                {
-                    image16 = CreateInterleavedImage<uint16_t>(&allocator, canvasData[0], canvasData[1], canvasData[2], canvasData[3], document->width, document->height);
-                }
-                else if (document->bitsPerChannel == 32)
-                {
-                    image32 = CreateInterleavedImage<float32_t>(&allocator, canvasData[0], canvasData[1], canvasData[2], canvasData[3], document->width, document->height);
-                }
-            }
-
-            allocator.Free(canvasData[0]);
-            allocator.Free(canvasData[1]);
-            allocator.Free(canvasData[2]);
-            allocator.Free(canvasData[3]);
-
-            // get the layer name.
-            // Unicode data is preferred because it is not truncated by Photoshop, but unfortunately it is optional.
-            // fall back to the ASCII name in case no Unicode name was found.
-            std::wstringstream layerName;
-            if (layer->utf16Name)
-            {
-                layerName << reinterpret_cast<wchar_t*>(layer->utf16Name);
-            }
-            else
-            {
-                layerName << layer->name.c_str();
-            }
-        }
-
-        DestroyLayerMaskSection(layerMaskSection, &allocator);
-    }
-
-    // extract the image data section, if available. the image data section stores the final, merged image, as well as additional
-    // alpha channels. this is only available when saving the document with "Maximize Compatibility" turned on.
-    if (document->imageDataSection.length != 0)
-    {
-        psd::ImageDataSection* imageData = ParseImageDataSection(document, &file, &allocator);
-        if (imageData)
-        {
-            // interleave the planar image data into one RGB or RGBA image.
-            // store the rest of the (alpha) channels and the transparency mask separately.
-            const unsigned int imageCount = imageData->imageCount;
-
-            // note that an image can have more than 3 channels, but still no transparency mask in case all extra channels
-            // are actual alpha channels.
-            bool isRgb = false;
-            if (imageCount == 3)
-            {
-                // imageData->images[0], imageData->images[1] and imageData->images[2] contain the R, G, and B channels of the merged image.
-                // they are always the size of the canvas/document, so we can interleave them using imageUtil::InterleaveRGB directly.
-                isRgb = true;
-            }
-            else if (imageCount >= 4)
-            {
-                // check if we really have a transparency mask that belongs to the "main" merged image.
-                if (hasTransparencyMask)
-                {
-                    // we have 4 or more images/channels, and a transparency mask.
-                    // this means that images 0-3 are RGBA, respectively.
-                    isRgb = false;
-                }
-                else
-                {
-                    // we have 4 or more images stored in the document, but none of them is the transparency mask.
-                    // this means we are dealing with RGB (!) data, and several additional alpha channels.
-                    isRgb = true;
-                }
-            }
-
-            uint8_t* image8 = nullptr;
-            uint16_t* image16 = nullptr;
-            float32_t* image32 = nullptr;
-            if (isRgb)
-            {
-                // RGB
-                if (document->bitsPerChannel == 8)
-                {
-                    image8 = CreateInterleavedImage<uint8_t>(&allocator, imageData->images[0].data, imageData->images[1].data, imageData->images[2].data, document->width, document->height);
-                }
-                else if (document->bitsPerChannel == 16)
-                {
-                    image16 = CreateInterleavedImage<uint16_t>(&allocator, imageData->images[0].data, imageData->images[1].data, imageData->images[2].data, document->width, document->height);
-                }
-                else if (document->bitsPerChannel == 32)
-                {
-                    image32 = CreateInterleavedImage<float32_t>(&allocator, imageData->images[0].data, imageData->images[1].data, imageData->images[2].data, document->width, document->height);
-                }
-            }
-            else
-            {
-                // RGBA
-                if (document->bitsPerChannel == 8)
-                {
-                    image8 = CreateInterleavedImage<uint8_t>(&allocator, imageData->images[0].data, imageData->images[1].data, imageData->images[2].data, imageData->images[3].data, document->width, document->height);
-                }
-                else if (document->bitsPerChannel == 16)
-                {
-                    image16 = CreateInterleavedImage<uint16_t>(&allocator, imageData->images[0].data, imageData->images[1].data, imageData->images[2].data, imageData->images[3].data, document->width, document->height);
-                }
-                else if (document->bitsPerChannel == 32)
-                {
-                    image32 = CreateInterleavedImage<float32_t>(&allocator, imageData->images[0].data, imageData->images[1].data, imageData->images[2].data, imageData->images[3].data, document->width, document->height);
-                }
-            }
-
-            if (document->bitsPerChannel == 8) {
-                img = cv::Mat(document->height, document->width, CV_8UC4, image8).clone();
-            }
-            else if (document->bitsPerChannel == 16) {
-                cv::Mat(document->height, document->width, CV_16UC4, image16).convertTo(img, CV_8UC4, 255.0 / 65535.0);
-            }
-            else if (document->bitsPerChannel == 32) {
-                cv::Mat(document->height, document->width, CV_32FC4, image32).convertTo(img, CV_8UC4, 255.0);
-            }
-
-            allocator.Free(image8);
-            allocator.Free(image16);
-            allocator.Free(image32);
-
-            DestroyImageDataSection(imageData, &allocator);
-        }
-    }
-
-    // don't forget to destroy the document, and close the file.
-    DestroyDocument(document, &allocator);
-    file.Close();
-
-    return img;
+cv::Mat ImageDatabase::loadPSD(wstring_view path, std::span<const uint8_t> buf, std::vector<uint8_t>* iccOut) {
+    auto decoded = PsdCompositeDecoder::decode(buf);
+    if (decoded.bgra.empty()) return {};
+    if (iccOut) *iccOut = std::move(decoded.icc);
+    return cv::Mat(decoded.height, decoded.width, CV_8UC4, decoded.bgra.data()).clone();
 }
 
 
@@ -1985,7 +1800,7 @@ cv::Mat ImageDatabase::loadSVG(wstring_view path, std::span<const uint8_t> buf, 
 }
 
 
-cv::Mat ImageDatabase::loadImageWinCOM(wstring_view path, std::span<const uint8_t> buf) {
+cv::Mat ImageDatabase::loadImageWinCOM(wstring_view path, std::span<const uint8_t> buf, bool onlyCmyk, unsigned page, unsigned* pageCount) {
     if (buf.empty()) {
         JARK_LOG("WIC buffer is empty: {}", jarkUtils::wstringToUtf8(path));
         return {};
@@ -2036,7 +1851,8 @@ cv::Mat ImageDatabase::loadImageWinCOM(wstring_view path, std::span<const uint8_
     }
 
     ComPtr<IWICBitmapFrameDecode> frame;
-    hr = decoder->GetFrame(0, frame.put());
+    if (pageCount && FAILED(decoder->GetFrameCount(pageCount))) return {};
+    hr = decoder->GetFrame(page, frame.put());
     if (FAILED(hr)) {
         JARK_LOG("Failed to get WIC frame: 0x{:X}", static_cast<unsigned long>(hr));
         return {};
@@ -2056,7 +1872,12 @@ cv::Mat ImageDatabase::loadImageWinCOM(wstring_view path, std::span<const uint8_
         return {};
     }
 
-    constexpr size_t bytesPerPixel = 4;
+    WICPixelFormatGUID nativeFormat{};
+    if (FAILED(frame->GetPixelFormat(&nativeFormat))) return {};
+    const bool cmyk16 = IsEqualGUID(nativeFormat, GUID_WICPixelFormat64bppCMYK);
+    const bool cmyk = cmyk16 || IsEqualGUID(nativeFormat, GUID_WICPixelFormat32bppCMYK);
+    if (onlyCmyk && !cmyk) return {};
+    const size_t bytesPerPixel = cmyk16 ? 8 : 4;
     const size_t widthBytes = static_cast<size_t>(width) * bytesPerPixel;
     const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
     if (widthBytes > std::numeric_limits<UINT>::max() ||
@@ -2069,6 +1890,30 @@ cv::Mat ImageDatabase::loadImageWinCOM(wstring_view path, std::span<const uint8_
     if (bufferBytes > std::numeric_limits<UINT>::max()) {
         JARK_LOG("WIC pixel buffer is too large: {} bytes {}", bufferBytes, jarkUtils::wstringToUtf8(path));
         return {};
+    }
+
+    if (cmyk) {
+        // 直接取四个墨量通道，避免 WIC 通用逐像素转换既慢又忽略嵌入 CMYK ICC。
+        std::vector<uint8_t> pixels(bufferBytes);
+        if (FAILED(frame->CopyPixels(nullptr, static_cast<UINT>(widthBytes), static_cast<UINT>(bufferBytes), pixels.data()))) return {};
+        std::vector<uint8_t> profile;
+        UINT contextCount = 0;
+        if (SUCCEEDED(frame->GetColorContexts(0, nullptr, &contextCount)) && contextCount > 0) {
+            ComPtr<IWICColorContext> context;
+            if (SUCCEEDED(factory->CreateColorContext(context.put()))) {
+                auto* pointer = context.get();
+                UINT returned = 0, profileBytes = 0;
+                if (SUCCEEDED(frame->GetColorContexts(1, &pointer, &returned)) && returned > 0 &&
+                    SUCCEEDED(context->GetProfileBytes(0, nullptr, &profileBytes)) && profileBytes > 0 && profileBytes <= 16 * 1024 * 1024) {
+                    profile.resize(profileBytes);
+                    if (FAILED(context->GetProfileBytes(profileBytes, profile.data(), &profileBytes))) profile.clear();
+                }
+            }
+        }
+        if (profile.empty() && page == 0) profile = ColorManager::readEmbeddedIccProfile(path, buf);
+        auto converted = CmykColor::convert(pixels, width, height, profile, cmyk16 ? 16 : 8);
+        if (converted.empty()) return {};
+        return cv::Mat(height, width, CV_8UC4, converted.data()).clone();
     }
 
     ComPtr<IWICFormatConverter> converter;
@@ -2295,6 +2140,35 @@ ImageAsset ImageDatabase::loadAnimation(wstring_view path, std::span<const uint8
 // tiff 多页图片
 ImageAsset ImageDatabase::loadTiff(wstring_view path, std::span<const uint8_t> buf) {
     ImageAsset imageAsset;
+
+    unsigned wicPageCount = 0;
+    if (auto cmyk = loadImageWinCOM(path, buf, true, 0, &wicPageCount); !cmyk.empty()) {
+        std::vector<cv::Mat> pages;
+        size_t bytes = cmyk.total() * cmyk.elemSize();
+        pages.push_back(std::move(cmyk));
+        bool limited = wicPageCount > 120;
+        for (unsigned page = 1; page < std::min(wicPageCount, 120u) && !limited; ++page) {
+            auto next = loadImageWinCOM(path, buf, false, page);
+            if (next.empty()) return {};
+            bytes += next.total() * next.elemSize();
+            if (bytes > 1024ULL * 1024 * 1024) {limited = true; break;}
+            pages.push_back(std::move(next));
+        }
+        if (limited) {
+            pages.resize(1);
+            imageAsset.exifInfo = tr("仅显示第一页：多页解码超过内存或页数预算", "First page only: multi-page decode exceeds memory or page budget", "僅顯示第一頁：多頁解碼超過記憶體或頁數預算");
+        }
+        if (pages.size() == 1) {
+            imageAsset.format = ImageFormat::Still;
+            imageAsset.primaryFrame = std::move(pages.front());
+        } else {
+            imageAsset.format = ImageFormat::Animated;
+            imageAsset.frames = std::move(pages);
+            imageAsset.frameDurations.assign(imageAsset.frames.size(), 1000);
+        }
+        imageAsset.iccProfile = PsdCompositeDecoder::srgbProfile();
+        return imageAsset;
+    }
 
     if (buf.empty()) {
         JARK_LOG("TIFF buffer is empty: {}", jarkUtils::wstringToUtf8(path));
@@ -3140,8 +3014,10 @@ static MotionClip decodeMotionPhotoSidecarVideo(wstring_view path) {
 }
 
 // Android 实况照片 jpg/jpeg/heic/heif
+
 ImageAsset ImageDatabase::loadMotionPhoto(wstring_view path, std::span<const uint8_t> fileBuf, bool isJPG = false) {
-    auto img = isJPG ? loadImageOpenCV(path, fileBuf) : loadHeic(path, fileBuf);
+    const bool cmykJpeg = isJPG && CmykColor::jpeg(fileBuf);
+    auto img = isJPG ? (cmykJpeg ? loadImageWinCOM(path, fileBuf) : loadImageOpenCV(path, fileBuf)) : loadHeic(path, fileBuf);
     if (img.empty())
         img = loadImageWinCOM(path, fileBuf);
 
@@ -3169,6 +3045,7 @@ ImageAsset ImageDatabase::loadMotionPhoto(wstring_view path, std::span<const uin
 
     if (motion.frames.empty()) {
         ImageAsset imageAsset{ ImageFormat::Still, img, {}, {}, exifInfo };
+        if (cmykJpeg) imageAsset.iccProfile = PsdCompositeDecoder::srgbProfile();
         if (GlobalVar::settingParameter.enableColorManagement && !isJPG)
             imageAsset.iccProfile = readHeifIccProfile(fileBuf);
         return imageAsset;
@@ -3176,6 +3053,7 @@ ImageAsset ImageDatabase::loadMotionPhoto(wstring_view path, std::span<const uin
 
     ImageAsset imageAsset{ ImageFormat::Animated, img, std::move(motion.frames), std::move(motion.frameDurationsMs), exifInfo };
     imageAsset.audio = std::move(motion.audio);
+    if (cmykJpeg) imageAsset.iccProfile = PsdCompositeDecoder::srgbProfile();
     if (GlobalVar::settingParameter.enableColorManagement && !isJPG)
         imageAsset.iccProfile = readHeifIccProfile(fileBuf);
     return imageAsset;
@@ -3202,6 +3080,20 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
     auto ext = wstring((dotPos != std::wstring::npos && dotPos < path.size() - 1) ?
         path.substr(dotPos + 1) : path);
     for (auto& c : ext)	c = std::tolower(c);
+
+    // 后缀可能误命名；只使用明确的容器签名覆盖，不按尺寸或像素猜格式。
+    if (PsdCompositeDecoder::signature(fileBuf)) ext = L"psd";
+    else if (fileBuf.size() >= 3 && fileBuf[0] == 0xff && fileBuf[1] == 0xd8 && fileBuf[2] == 0xff) ext = L"jpg";
+    else if (fileBuf.size() >= 8 && std::memcmp(fileBuf.data(), "\x89PNG\r\n\x1a\n", 8) == 0) ext = L"png";
+    else if (fileBuf.size() >= 6 && (std::memcmp(fileBuf.data(), "GIF87a", 6) == 0 || std::memcmp(fileBuf.data(), "GIF89a", 6) == 0)) ext = L"gif";
+    else if (fileBuf.size() >= 4 && (std::memcmp(fileBuf.data(), "II*\0", 4) == 0 || std::memcmp(fileBuf.data(), "MM\0*", 4) == 0 ||
+        std::memcmp(fileBuf.data(), "II+\0", 4) == 0 || std::memcmp(fileBuf.data(), "MM\0+", 4) == 0)) {
+        if (!supportRaw.contains(ext) && ext != L"tif" && ext != L"tiff") {
+            auto identification = std::make_unique<LibRaw>();
+            const bool raw = identification->open_buffer(fileBuf.data(), fileBuf.size()) == LIBRAW_SUCCESS && identification->imgdata.idata.raw_count > 0;
+            ext = raw ? L"raw" : L"tif";
+        }
+    }
     
     if (videoExt.contains(ext)) { // 默认不会打开视频，若强行打开则最多解码 MAX_VIDEO_FRAMES 帧
         ImageAsset imageAsset;
@@ -3358,6 +3250,7 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
     }
     else if (ext == L"tiff" || ext == L"tif") { // tiff 多页图像
         auto imageAsset = loadTiff(path, fileBuf);
+        const auto decodeNotice = imageAsset.exifInfo;
 
         if (imageAsset.format == ImageFormat::None) {
             imageAsset.primaryFrame = loadImageWinCOM(path, fileBuf);
@@ -3380,6 +3273,7 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
             imageAsset.exifInfo = ExifParse::getSimpleInfo(path, imageAsset.frames[0].cols, imageAsset.frames[0].rows, fileBuf.data(), fileBuf.size())
                 + ExifParse::getExif(path, fileBuf.data(), fileBuf.size());
         }
+        if (!decodeNotice.empty()) imageAsset.exifInfo += "\n" + decodeNotice;
         return imageAsset;
     }
     else if (ext == L"lep") {
@@ -3404,6 +3298,8 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
     cv::Mat img;
     std::shared_ptr<SvgRenderer> svgRenderer;
     string exifInfo;
+    std::vector<uint8_t> decodedIcc;
+    bool rawPreview = false;
 
     if (ext == L"jxr") {
         img = loadImageWinCOM(path, fileBuf);
@@ -3445,14 +3341,9 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
     else if (ext == L"ico" || ext == L"icon") {
         std::tie(img, exifInfo) = loadICO(path, fileBuf);
     }
-    else if (ext == L"psd" || ext == L"psdt") {
-        // psd_sdk 优先，stb 兜底。顺序不能反：stb 压根不支持「16 位 + RLE 压缩」
-        // 的 PSD——它那条 RLE 分支按每通道 pixelCount 个字节读，而 16 位每通道是
-        // pixelCount*2 个字节，于是从第二个通道起全部错位，alpha 读成整层零，
-        // 图在界面上完全不可见。它还会返回「成功」，所以兜底根本轮不到。
-        img = loadPSD(path, fileBuf);
-        if (img.empty())
-            img = loadSTB(path, fileBuf);
+    else if (ext == L"psd" || ext == L"psdt" || ext == L"psb") {
+        // 合成图共享解码器负责全部验证；stb 的部分 PSD 支持会把截断或 16 位数据假成功。
+        img = loadPSD(path, fileBuf, &decodedIcc);
         if (img.empty())
             img = getErrorTipsMat();
     }
@@ -3474,7 +3365,7 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
         }
     }
     else if (supportRaw.contains(ext)) {
-        img = loadRaw(path, fileBuf);
+        img = loadRaw(path, fileBuf, &rawPreview, &decodedIcc);
         if (img.empty())
             img = loadImageWinCOM(path, fileBuf);
         if (img.empty())
@@ -3500,6 +3391,12 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
         img = getErrorTipsMat();
 
     ImageAsset imageAsset{ ImageFormat::Still, img, {}, {}, exifInfo };
+    imageAsset.iccProfile = std::move(decodedIcc);
+    imageAsset.embeddedRawPreview = rawPreview;
+    if (rawPreview) {
+        if (imageAsset.iccProfile.empty()) imageAsset.iccProfile = PsdCompositeDecoder::srgbProfile();
+        imageAsset.exifInfo += std::string("\n") + tr("RAW 状态: 内嵌预览（非 RAW 解码）", "RAW status: embedded preview (not RAW decoding)", "RAW 狀態: 內嵌預覽（非 RAW 解碼）");
+    }
     imageAsset.svgRenderer = std::move(svgRenderer);
     return imageAsset;
 }

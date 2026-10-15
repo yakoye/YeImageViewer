@@ -120,15 +120,12 @@ $cases = @(
         Expect = "must be identified by ImageDatabase::isErrorTipsFrame"
     },
     @{
-        Name = "PSD 的解码顺序被改回 stb 优先"
+        Name = "PSD 又绕过共享解码器走宽松 stb"
         File = "YeImageViewer\src\ImageDatabase.cpp"
-        Old = "        img = loadPSD(path, fileBuf);" + $lf +
-            "        if (img.empty())" + $lf +
-            "            img = loadSTB(path, fileBuf);"
+        Old = "        img = loadPSD(path, fileBuf, &decodedIcc);"
         New = "        img = loadSTB(path, fileBuf);" + $lf +
-            "        if (img.empty())" + $lf +
-            "            img = loadPSD(path, fileBuf);"
-        Expect = "loadSTB runs before loadPSD"
+            "        img = loadPSD(path, fileBuf, &decodedIcc);"
+        Expect = "PSD branches must not bypass the shared composite decoder with stb"
     },
     @{
         Name = "发版只改了 .rc，关于页的版本号还停在上一版"

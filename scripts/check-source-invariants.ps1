@@ -324,33 +324,17 @@ Write-Host ("PASS the format lists agree across ImageDatabase, the default assoc
     "both READMEs ($($supportExtList.Count) still, $($videoExtList.Count) video, " +
     "$($supportRawList.Count) RAW).")
 
-# 五、PSD 必须 psd_sdk 优先、stb 兜底，顺序不能反。
-# stb_image 不支持「16 位 + RLE 压缩」的 PSD：它那条 RLE 分支按每通道 pixelCount
-# 个字节解，而 16 位每通道是 pixelCount*2 个字节，从第二个通道起全部错位，
-# alpha 读成整层零，图在界面上完全不可见。要命的是它**返回成功**，所以兜底的
-# loadPSD 永远轮不到，也不会有任何报错。整条诊断过程见 test/corpus/README.md。
-$loaderSource = Get-Content -LiteralPath `
-    (Join-Path $repoRoot "YeImageViewer\src\ImageDatabase.cpp") -Raw -Encoding UTF8
-$psdBranch = [regex]::Match($loaderSource,
-    'ext\s*==\s*L"psd".*?\r?\n\s*\}', 'Singleline')
-if (-not $psdBranch.Success) {
-    throw ("PSD loader regression failed: the psd/psdt branch was not found in " +
-        "ImageDatabase.cpp; this check went stale.")
+# 五、PSD/PSB 必须通过共享合成图解码器；禁止宽松 stb 兜底的假成功。
+$loaderSource = Get-Content -LiteralPath (Join-Path $repoRoot "YeImageViewer/src/ImageDatabase.cpp") -Raw -Encoding UTF8
+$psdBranch = [regex]::Match($loaderSource, 'ext\s*==\s*L"psd".*?\r?\n\s*\}', 'Singleline')
+if (-not $psdBranch.Success -or -not $psdBranch.Value.Contains("loadPSD(") -or $psdBranch.Value.Contains("loadSTB(")) {
+    throw "PSD loader regression failed: PSD branches must not bypass the shared composite decoder with stb."
 }
-$psdBody = $psdBranch.Value
-$psdSdkAt = $psdBody.IndexOf("loadPSD(")
-$stbAt = $psdBody.IndexOf("loadSTB(")
-if ($psdSdkAt -lt 0 -or $stbAt -lt 0) {
-    throw ("PSD loader regression failed: the psd/psdt branch no longer calls both " +
-        "loadPSD and loadSTB.")
+$psdMethod = [regex]::Match($loaderSource, 'cv::Mat ImageDatabase::loadPSD.*?\r?\n\}', 'Singleline')
+if (-not $psdMethod.Success -or -not $psdMethod.Value.Contains("PsdCompositeDecoder::decode")) {
+    throw "PSD loader regression failed: the shared composite decoder is missing."
 }
-if ($psdSdkAt -gt $stbAt) {
-    throw ("PSD loader regression failed: loadSTB runs before loadPSD. stb_image cannot " +
-        "decode 16-bit RLE PSD — it misaligns every channel after the first and returns " +
-        "a fully transparent image, while still reporting success, so loadPSD never gets " +
-        "a turn. Put loadPSD first (see test/corpus/README.md).")
-}
-Write-Host "PASS PSD decoding tries psd_sdk before stb, so 16-bit RLE files stay visible."
+Write-Host "PASS PSD/PSB use the shared composite decoder without permissive stb fallback."
 
 # 六、不许靠「尺寸 + 左上角像素颜色」来认内置的「打不开」提示图。
 # 那是在猜：一张正好 800x600、左上角像素又正好是主题背景色的真图（截图、UI 稿很容易
