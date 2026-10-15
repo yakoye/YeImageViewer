@@ -389,9 +389,14 @@ function Test-KeyboardPan {
     Message $window 0x0100 0x57; Message $window 0x0101 0x57; Start-Sleep -Milliseconds 400
     $s=Read-State
     Assert-True ($s.slideX -eq $before.slideX -and $s.slideY -eq $before.slideY) '改绑后原 W 不再触发向上，也不会落入旧硬编码路径'
-    Message $window 0x0100 0x74; Message $window 0x0101 0x74; Start-Sleep -Milliseconds 400
-    $s=Read-State
-    Assert-True ((Number $s 'slideY') -lt (Number $before 'slideY') -and $s.slideX -eq $before.slideX) '自定义 F5 的向上动作同样使用修正后的屏幕方向'
+    [ViewingRegressionNative]::Activate($window)
+    Assert-True ([ViewingRegressionNative]::GetForegroundWindow() -eq $window) '改绑动作测试发送前被测主窗确实在前台'
+    $panKeyTimer=[Diagnostics.Stopwatch]::StartNew()
+    $panKeyForeground=[ViewingRegressionNative]::DescribeWindow([ViewingRegressionNative]::GetForegroundWindow())
+    Message $window 0x0100 0x74; $panKeyDownMilliseconds=$panKeyTimer.Elapsed.TotalMilliseconds
+    Message $window 0x0101 0x74; $panKeyTimer.Stop(); Start-Sleep -Milliseconds 400
+    $s=Wait-State {param($v) (Number $v 'slideY') -lt (Number $before 'slideY') -and $v.viewSettled -eq '1'} '自定义 F5 未完成向上移动'
+    Assert-True ((Number $s 'slideY') -lt (Number $before 'slideY') -and $s.slideX -eq $before.slideX) ("自定义 F5 的向上动作同样使用修正后的屏幕方向：$($before.slideX),$($before.slideY)→$($s.slideX),$($s.slideY)，按下=$panKeyDownMilliseconds ms，总计=$($panKeyTimer.Elapsed.TotalMilliseconds) ms，前台=$panKeyForeground，主窗=$window")
     Write-Host ("键盘平移真实窗口回归通过：$script:passed 项")
 }
 function Screen-Pixel([int]$X,[int]$Y,[bool]$AlreadyTopmost=$false) {
