@@ -90,9 +90,9 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
      才停线程时派生部分已经销毁，在途那次解码正访问已释放的内存。
   4. 格式清单在 `supportExt`/`supportRaw`/`videoExt`、默认关联列表、两份 README 之间
      对得上。加格式漏改一处不会报错，只会让某个格式「能开但没人知道」。
-  5. PSD 的解码顺序是 psd_sdk 优先、stb 兜底。反过来的话 16 位 RLE 的 PSD 会解成
-     全透明而且不报错——stb 返回「成功」，兜底永远轮不到（经过见
-     `test/corpus/README.md`）。
+  5. PSD/PSB 必须走共享的 `PsdCompositeDecoder`，不允许回退到宽松的 stb。
+     旧 stb 会把 16 位 RLE 解成全透明却返回成功；旧 psd_sdk 的 RGB 限制也无法读
+     CMYK 文档。共享路径直接验证并读取最终合成图，不展开图层，详见格式兼容性专项。
   6. 没人靠「尺寸 + 左上角像素颜色」去认内置的「打不开」提示图。那是在猜，会误伤真图。
   静态检查最危险的失效方式是什么都抓不到（正则写歪一个字符就照样 PASS），所以配了
   `scripts/verify-source-invariant-checks.ps1`：逐条制造该抓的错误，确认真会报错，
@@ -118,10 +118,14 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
   「有没有图」看不出来。
   确实解不出来的（EXR、JP2）登记在 `main.cpp` 的 `thumbnailKnownGaps` 里，连原因一起；
   哪天补上了解码器，测试会提醒把记录删掉。
-  PSD 在组件里也走 psd_sdk（`ThumbPsd.cpp`，用内存版的 `psd::File`），和主程序一致。
-  **那个文件必须单独一个编译单元**：psd_sdk 的 `PsdPlatform.h` 会 `#define NOMSG`
-  `NOUSER` `NOGDI` 一整串把 windows.h 砍瘦，只要它排在 COM 头之前，后面的
-  `oleidl.h` / `ocidl.h` 就会因为缺 `MSG` 编译失败。
+  PSD/PSB 在组件里同样走 `PsdCompositeDecoder`（`ThumbPsd.cpp`），和主程序使用
+  同一合成图／色彩／边界规则；不再依赖 psd_sdk 或其裁剪 Win32 声明的宏副作用。
+- EXIF／XMP／IPTC 单项大值必须在调用 `toString()` **之前**通过 `MetadataTextPolicy`
+  限量。TIFF 的 Photoshop 图层标签可能有几十 MB，先展开再截断仍会阻塞数秒。
+  信息面板保留键名和字节数，不能把整块图层数据当成可读摄影信息。
+- RAW 成功码不等于有效成像，必须检查 `error_count()` 和像素布局。失败时可使用经过
+  JPEG 签名、范围和真实解码验证的最大内嵌预览，并在界面持续标记“RAW 内嵌预览”，
+  不能声称它是 RAW 解码。预览的 ICC 与方向应保留，不再用错误主解码覆盖它。
 - 窗口行为测试里要点对话框按钮时，给**按钮子窗口**发 `BM_CLICK`（`GetDlgItem(dlg, IDYES)`
   再 `SendMessage(btn, 0x00F5)`）。给对话框本身发 `WM_COMMAND` + IDOK/IDYES 关不掉
   MessageBox，实测提示框还在原地；只有一个按钮的提示框可以用 `WM_CLOSE` 顶替确定，

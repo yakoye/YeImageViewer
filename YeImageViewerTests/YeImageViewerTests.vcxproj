@@ -44,7 +44,7 @@
   <PropertyGroup>
     <OutDir>$(SolutionDir)x64\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)x64\$(Configuration)\$(ProjectName)\</IntDir>
-    <LibraryPath>$(ProjectDir)..\YeImageViewer\lib;$(LibraryPath)</LibraryPath>
+    <LibraryPath>$(ProjectDir)..\YeImageViewer\lib;$(ProjectDir)..\YeImageViewer\libopencv;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>

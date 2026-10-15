@@ -85,10 +85,6 @@
 #pragma comment(lib, "pixman-1.lib")
 #pragma comment(lib, "fontconfig.lib")
 
-// psdsdk  https://github.com/MolecularMatters/psd_sdk
-#include "psdsdk.h"
-#pragma comment(lib, "Psd_MT.lib")
-
 // lunasvg v3.5.0  https://github.com/sammycage/lunasvg
 #include "lunasvg.h"
 #pragma comment(lib, "lunasvg.lib")
@@ -231,7 +227,7 @@ public:
         L"gif", L"hdr", L"heic", L"heif", L"ico", L"icon", L"jfif", L"jp2",
         L"jpe", L"jpeg", L"jpg", L"jxl", L"jxr", L"lep", L"livp", L"pbm",
         L"pcx", L"pfm", L"pgm", L"pic", L"png", L"pnm", L"ppm", L"psd",
-        L"psdt", L"pxm", L"qoi", L"ras", L"sr", L"svg", L"tga", L"tif",
+        L"psdt", L"psb", L"pxm", L"qoi", L"ras", L"sr", L"svg", L"tga", L"tif",
         L"tiff", L"webm", L"webp", L"wp2",
     };
 
@@ -579,110 +575,7 @@ public:
     std::tuple<cv::Mat, string> loadICO(wstring_view path, std::span<const uint8_t> buf);
 
 
-    template <typename T, typename DataHolder>
-    void* ExpandChannelToCanvas(psd::Allocator* allocator, const DataHolder* layer, const void* data, unsigned int canvasWidth, unsigned int canvasHeight)
-    {
-        T* canvasData = static_cast<T*>(allocator->Allocate(sizeof(T) * canvasWidth * canvasHeight, 16u));
-        memset(canvasData, 0u, sizeof(T) * canvasWidth * canvasHeight);
-
-        psd::imageUtil::CopyLayerData(static_cast<const T*>(data), canvasData, layer->left, layer->top, layer->right, layer->bottom, canvasWidth, canvasHeight);
-
-        return canvasData;
-    }
-
-
-    void* ExpandChannelToCanvas(const psd::Document* document, psd::Allocator* allocator, psd::Layer* layer, psd::Channel* channel)
-    {
-        if (document->bitsPerChannel == 8)
-            return ExpandChannelToCanvas<uint8_t>(allocator, layer, channel->data, document->width, document->height);
-        else if (document->bitsPerChannel == 16)
-            return ExpandChannelToCanvas<uint16_t>(allocator, layer, channel->data, document->width, document->height);
-        else if (document->bitsPerChannel == 32)
-            return ExpandChannelToCanvas<float32_t>(allocator, layer, channel->data, document->width, document->height);
-
-        return nullptr;
-    }
-
-
-    template <typename T>
-    void* ExpandMaskToCanvas(const psd::Document* document, psd::Allocator* allocator, T* mask)
-    {
-        if (document->bitsPerChannel == 8)
-            return ExpandChannelToCanvas<uint8_t>(allocator, mask, mask->data, document->width, document->height);
-        else if (document->bitsPerChannel == 16)
-            return ExpandChannelToCanvas<uint16_t>(allocator, mask, mask->data, document->width, document->height);
-        else if (document->bitsPerChannel == 32)
-            return ExpandChannelToCanvas<float32_t>(allocator, mask, mask->data, document->width, document->height);
-
-        return nullptr;
-    }
-
-
-    unsigned int FindChannel(psd::Layer* layer, int16_t channelType) {
-        const int32_t CHANNEL_NOT_FOUND = UINT_MAX;
-
-        for (unsigned int i = 0; i < layer->channelCount; ++i)
-        {
-            psd::Channel* channel = &layer->channels[i];
-            if (channel->data && channel->type == channelType)
-                return i;
-        }
-
-        return CHANNEL_NOT_FOUND;
-    }
-
-    template <typename T>
-    struct TmpValue;
-
-    // uint8_t的特化
-    template <>
-    struct TmpValue<uint8_t> {
-        static constexpr uint8_t alphaMax = 255;
-    };
-
-    // uint16_t的特化
-    template <>
-    struct TmpValue<uint16_t> {
-        static constexpr uint16_t alphaMax = 65535;
-    };
-
-    // float的特化
-    template <>
-    struct TmpValue<float> {
-        static constexpr float alphaMax = 1.0f;
-    };
-
-    template <typename T>
-    T* CreateInterleavedImage(psd::Allocator* allocator, const void* srcR, const void* srcG, const void* srcB, unsigned int width, unsigned int height)
-    {
-        T* image = static_cast<T*>(allocator->Allocate(4ULL * width * height * sizeof(T), 16u));
-
-        const T* r = static_cast<const T*>(srcR);
-        const T* g = static_cast<const T*>(srcG);
-        const T* b = static_cast<const T*>(srcB);
-        psd::imageUtil::InterleaveRGB(b, g, r, TmpValue<T>::alphaMax, image, width, height); // RGB -> BGR
-
-        return image;
-    }
-
-
-    template <typename T>
-    T* CreateInterleavedImage(psd::Allocator* allocator, const void* srcR, const void* srcG, const void* srcB, const void* srcA, unsigned int width, unsigned int height)
-    {
-        T* image = static_cast<T*>(allocator->Allocate(4ULL * width * height * sizeof(T), 16u));
-
-        const T* r = static_cast<const T*>(srcR);
-        const T* g = static_cast<const T*>(srcG);
-        const T* b = static_cast<const T*>(srcB);
-        const T* a = static_cast<const T*>(srcA);
-        psd::imageUtil::InterleaveRGBA(b, g, r, a, image, width, height); // RGB -> BGR
-
-        return image;
-    }
-
-
-    // https://github.com/MolecularMatters/psd_sdk
-    cv::Mat loadPSD(wstring_view path, std::span<const uint8_t> buf);
+    cv::Mat loadPSD(wstring_view path, std::span<const uint8_t> buf, std::vector<uint8_t>* iccOut = nullptr);
     cv::Mat loadSTB(wstring_view path, std::span<const uint8_t> buf);
     cv::Mat loadSVG(wstring_view path, std::span<const uint8_t> buf, std::shared_ptr<SvgRenderer>* rendererOut = nullptr);
     cv::Mat loadPFM(wstring_view path, std::span<const uint8_t> buf);
@@ -691,9 +584,9 @@ public:
     cv::Mat loadSunRaster(wstring_view path, std::span<const uint8_t> buf);
     cv::Mat loadBLP(wstring_view path, std::span<const uint8_t> buf);
     cv::Mat loadHeic(wstring_view path, std::span<const uint8_t> buf);
-    cv::Mat loadRaw(wstring_view path, std::span<const uint8_t> buf);
+    cv::Mat loadRaw(wstring_view path, std::span<const uint8_t> buf, bool* embeddedPreview = nullptr, std::vector<uint8_t>* previewIcc = nullptr);
 
-    cv::Mat loadImageWinCOM(wstring_view path, std::span<const uint8_t> buf);
+    cv::Mat loadImageWinCOM(wstring_view path, std::span<const uint8_t> buf, bool onlyCmyk = false, unsigned page = 0, unsigned* pageCount = nullptr);
     cv::Mat loadImageOpenCV(wstring_view path, std::span<const uint8_t> buf);
 
     ImageAsset loadAvif(wstring_view path, std::span<const uint8_t> buf);

@@ -62,7 +62,7 @@
 
 ## 格式支持
 
-- 静态：`apng avif avifs blp bmp dds dib exr gif hdr heic heif ico icon jfif jp2 jpe jpeg jpg jxl jxr lep livp pbm pcx pfm pgm pic png pnm ppm psd psdt pxm qoi ras sr svg tga tif tiff webm webp wp2`
+- 静态：`apng avif avifs blp bmp dds dib exr gif hdr heic heif ico icon jfif jp2 jpe jpeg jpg jxl jxr lep livp pbm pcx pfm pgm pic png pnm ppm psb psd psdt pxm qoi ras sr svg tga tif tiff webm webp wp2`
 - 动态：`gif webp png apng jxl avif`
 - 视频（只在直接打开时解码前若干帧当动图，不出现在同目录的翻页列表里）：`3gp avi evo flv m2ts m4v mkv mov mp4 mts mxf ts vob wmv`
 - 实况：`livp`、`jpg/heic/heif` 中的 LivePhoto、MicroVideo 或 MotionPhoto，可播放随视频录下的声音（打开时的自动播放默认静音，鼠标移到「实况」标记上即出声）

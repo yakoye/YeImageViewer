@@ -2,6 +2,7 @@
 
 #include "FormatSniffer.h"
 #include "ThumbPsd.h"
+#include "RawDecodePolicy.h"
 
 #include <algorithm>
 #include <array>
@@ -604,7 +605,10 @@ bool decodeRaw(std::span<const uint8_t> data, ThumbBitmap& out) {
 
     ret = processor.unpack_thumb();
     if (ret == LIBRAW_SUCCESS && processor.imgdata.thumbnail.thumb && processor.imgdata.thumbnail.tlength > 0 &&
-        processor.imgdata.thumbnail.tformat == LIBRAW_THUMBNAIL_JPEG) {
+        static_cast<uint8_t>(processor.imgdata.thumbnail.thumb[0]) == 255 &&
+        processor.imgdata.thumbnail.tlength >= 3 &&
+        static_cast<uint8_t>(processor.imgdata.thumbnail.thumb[1]) == 216 &&
+        static_cast<uint8_t>(processor.imgdata.thumbnail.thumb[2]) == 255) {
         const uint8_t* thumb = reinterpret_cast<const uint8_t*>(processor.imgdata.thumbnail.thumb);
         if (decodeWic(std::span<const uint8_t>(thumb, processor.imgdata.thumbnail.tlength), out)) {
             processor.recycle();
@@ -613,13 +617,13 @@ bool decodeRaw(std::span<const uint8_t> data, ThumbBitmap& out) {
     }
 
     ret = processor.unpack();
-    if (ret != LIBRAW_SUCCESS) {
+    if (!RawDecodePolicy::valid(ret, processor.error_count())) {
         processor.recycle();
         return false;
     }
 
     ret = processor.dcraw_process();
-    if (ret != LIBRAW_SUCCESS) {
+    if (!RawDecodePolicy::valid(ret, processor.error_count())) {
         processor.recycle();
         return false;
     }
@@ -634,7 +638,8 @@ bool decodeRaw(std::span<const uint8_t> data, ThumbBitmap& out) {
     }
 
     const bool valid = image->type == LIBRAW_IMAGE_BITMAP &&
-        (image->colors == 3 || image->colors == 4) &&
+        image->bits == 8 && image->colors == 3 &&
+        image->data_size >= uint64_t(image->width) * image->height * image->colors &&
         checkedDimensions(image->width, image->height);
     if (!valid) {
         LibRaw::dcraw_clear_mem(image);
@@ -1705,9 +1710,9 @@ bool decodeByFormat(std::span<const uint8_t> data, uint32_t maxEdge, ThumbBitmap
             return decodePcx(data, out);
         case Format::Pfm:
             return decodePfm(data, out);
-        // psd_sdk 优先、stb 兜底。顺序不能反，理由见 decodePsd 上面那段注释。
+        // 与主程序使用同一合成图解码器，不让宽松兜底把坏文件报告成成功。
         case Format::Psd:
-            return decodePsd(data, out) || decodeWic(data, out) || decodeStb(data, out);
+            return decodePsd(data, out);
         case Format::Ras:
         case Format::Sr:
             return decodeSunRaster(data, out);

@@ -1,6 +1,7 @@
 #include "jarkUtils.h"
 #include "exifParse.h"
 #include "ExifValueFormat.h"
+#include "MetadataTextPolicy.h"
 
 #include "RationalText.h"
 
@@ -30,6 +31,12 @@ std::string ExifParse::exifDataToString(wstring_view path, const Exiv2::ExifData
 
     for (const auto& tag : exifData) {
         const std::string& tagName = tag.key();
+        // 必须在 toString 之前限量；一块数十 MB 的图层数据展开成数字串会阻塞数秒。
+        if (MetadataTextPolicy::summarize(static_cast<size_t>(tag.size()))) {
+            ossEnd << '\n' << tagName << ": [" << tag.size() << ' ' <<
+                tr("字节数据，省略展开", "bytes, value omitted", "位元組資料，省略展開") << "]";
+            continue;
+        }
         bool toEnd = true;
         std::string translatedTagName;
 
@@ -291,6 +298,10 @@ std::string ExifParse::xmpDataToString(wstring_view path, const Exiv2::XmpData& 
 
     string xmpStr = "\n\nXmp Data:";
     for (const auto& tag : xmpData) {
+        if (MetadataTextPolicy::summarize(static_cast<size_t>(tag.size()))) {
+            xmpStr += "\n" + tag.key() + ": [" + std::to_string(tag.size()) + " bytes, value omitted]";
+            continue;
+        }
         xmpStr += "\n" + tag.key() + ": " + tag.value().toString();
     }
     return xmpStr;
@@ -303,6 +314,10 @@ std::string ExifParse::iptcDataToString(wstring_view path, const Exiv2::IptcData
 
     string itpcStr = "\n\nIptc Data:";
     for (const auto& tag : IptcData) {
+        if (MetadataTextPolicy::summarize(static_cast<size_t>(tag.size()))) {
+            itpcStr += "\n" + tag.key() + ": [" + std::to_string(tag.size()) + " bytes, value omitted]";
+            continue;
+        }
         itpcStr += "\n" + tag.key() + ": " + tag.value().toString();
     }
     return itpcStr;

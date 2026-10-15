@@ -5511,11 +5511,12 @@ public:
 
     void drawLivePhotoBadge(cv::Mat& canvas) {
         liveBadgeRect = {};
-        if (!currentIsLivePhoto())
+        const bool rawPreview = curPar.imageAssetPtr && curPar.imageAssetPtr->embeddedRawPreview;
+        if (!currentIsLivePhoto() && !rawPreview)
             return;
 
         const int dpi = overlayDpi();
-        const char* label = getUIString(82);
+        const char* label = rawPreview ? tr("RAW 内嵌预览", "Embedded RAW preview", "RAW 內嵌預覽") : getUIString(82);
         textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
             TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
         // 按实际字形量出文字宽度（物理像素），换回逻辑像素交给布局；量不出来才按字符估算。
@@ -5531,7 +5532,7 @@ public:
             dpi, labelWidth);
         if (rect.empty())
             return;
-        liveBadgeRect = rect;
+        if (!rawPreview) liveBadgeRect = rect;
 
         // 悬停或正在出声播放时底色加深，示意这是个可操作的东西
         const bool emphasized = liveBadgeHovered || (livePlayback.active && livePlayback.withSound);
@@ -6864,7 +6865,10 @@ static int runDecodeProbe(const std::wstring& imagePath, const std::wstring& res
     // 走完整的 loader() 会把色彩管理算进去，而那一步取决于本机显示器有没有设
     // ICC profile，同一张图在不同机器上会给出不同的像素均值。
     // 想看各阶段耗时用 YEIMAGEVIEWER_STARTUP_TRACE（见 StartupTrace.h）。
+    const auto decodeStarted = std::chrono::steady_clock::now();
     const ImageAsset asset = imageDatabase.myLoader(imagePath);
+    const auto decodeMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - decodeStarted).count();
 
     const cv::Mat* decodedFrame = nullptr;
     if (!asset.primaryFrame.empty()) {
@@ -6971,9 +6975,18 @@ static int runDecodeProbe(const std::wstring& imagePath, const std::wstring& res
         << MotionTiming::totalMs(asset.frameDurations) << '\t'
         << (asset.audio ? asset.audio->sampleRate : 0) << '\t'
         << (asset.audio ? asset.audio->channels : 0) << '\t'
-        << (asset.audio ? asset.audio->durationMs() : 0) << '\n';
+        << (asset.audio ? asset.audio->durationMs() : 0) << '\t'
+        << (asset.embeddedRawPreview ? 1 : 0) << '\t' << decodeMilliseconds << '\n';
     if (!dumpDirectory.empty())
         dumpMotionForProbe(asset, dumpDirectory);
+    if (!dumpDirectory.empty() && decodedFrame && success) {
+        std::vector<uint8_t> encoded;
+        cv::imencode(".png", *decodedFrame, encoded);
+        std::ofstream png(std::filesystem::path(dumpDirectory) / "primary.png", std::ios::binary);
+        png.write(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+        std::ofstream metadata(std::filesystem::path(dumpDirectory) / "metadata.txt", std::ios::binary);
+        metadata << "embeddedRawPreview=" << (asset.embeddedRawPreview ? 1 : 0) << '\n' << asset.exifInfo;
+    }
     return success ? 0 : 2;
 }
 
