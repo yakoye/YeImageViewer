@@ -14,6 +14,7 @@
     [switch]$ReaderPanOnly,
     [switch]$ShortcutAuditOnly,
     [switch]$RapidPanOnly,
+    [switch]$ResidualPanOnly,
     [switch]$PanVisualOnly,
     [switch]$InertiaOnly,
     [switch]$InertiaAxesOnly,
@@ -55,6 +56,7 @@ public static class ViewingRegressionNative {
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd,int command);
     [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    public static string DescribeWindow(IntPtr h) {uint p; GetWindowThreadProcessId(h,out p); var c=new StringBuilder(256); GetClassName(h,c,256); return c.ToString()+" pid="+p+" hwnd="+h;}
     [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint first,uint second,bool attach);
     [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] public static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr data);
@@ -429,7 +431,7 @@ function Drag([int]$X,[int]$Y,[int]$DX,[int]$DY) {
     Start-Sleep -Milliseconds 320
 }
 
-function Set-Pan([int]$Level = -1) {
+function Open-PanPopover {
     [ViewingRegressionNative]::Activate($window)
     $s = Read-State
     $x=[int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)
@@ -445,7 +447,10 @@ function Set-Pan([int]$Level = -1) {
     Write-Host ("悬停诊断：客户区=$($actualClient.Right)×$($actualClient.Bottom)，起点=$($origin.X),$($origin.Y)，目标=$x,$y，实际鼠标=$($actualCursor.X),$($actualCursor.Y)，命中=$([ViewingRegressionNative]::WindowFromPoint($actualCursor))，主窗=$window")
     $s=Wait-State {param($v) $v.toolbarVisible -eq '1' -or $v.reader -eq '1' -or $v.panPopover -eq '1'} '工具栏未在实际鼠标悬停后显示'
     Click $window $x $y
-    $s=Wait-State {param($v) $v.panPopover -eq '1'} '倍率浮层未打开'
+    return Wait-State {param($v) $v.panPopover -eq '1'} '倍率浮层未打开'
+}
+function Set-Pan([int]$Level = -1) {
+    $s=Open-PanPopover
     if ($Level -lt 0) {
         Click $window ([int]((Number $s 'panAutoX')+(Number $s 'panAutoW')/2)) ([int]((Number $s 'panAutoY')+(Number $s 'panAutoH')/2))
     } else {
@@ -469,11 +474,22 @@ function Pan-Drag([int]$Dx,[int]$Dy,[int]$Flags=1,[int]$Steps=1,[int]$Delay=20) 
         Start-Sleep -Milliseconds $Delay
         $mx=$x+[int][Math]::Round($Dx*$i/$Steps); $my=$y+[int][Math]::Round($Dy*$i/$Steps)
         Message $window 0x0200 $Flags (($mx -band 65535) -bor (($my -band 65535) -shl 16))
+        if($Steps -eq 100 -and [ViewingRegressionNative]::GetForegroundWindow() -ne $window) {
+            Write-Host ('拖动中前台变化：'+[ViewingRegressionNative]::DescribeWindow([ViewingRegressionNative]::GetForegroundWindow()))
+            break
+        }
         if ($ReaderPanOnly) {Start-Sleep -Milliseconds 80; $debug=Read-State; Write-Host ("MOVE 拖动=$($debug.imageDragging)，增量=$($debug.panDeltaY)，次数=$($debug.panMoves)，offset=$($debug.readerOffset)")}
     }
     Message $window 0x0202 0 (($mx -band 65535) -bor (($my -band 65535) -shl 16))
     Start-Sleep -Milliseconds 100
     return Read-State
+}
+
+function Test-ResidualPan {
+    $s=Set-Pan 0
+    $before=Number $s 'slideY'
+    $s=Pan-Drag 0 100 1 100 5
+    Assert-True ([Math]::Abs((Number $s 'slideY')-$before-10) -le 1) ("TB-04 0.1× 每次移动 1px 的残差正确累计：起点=$before，终点=$($s.slideY)，移动次数=$($s.panMoves)，前台=$([ViewingRegressionNative]::DescribeWindow([ViewingRegressionNative]::GetForegroundWindow()))，主窗=$window")
 }
 
 function Test-SensitivitySliders {
@@ -598,14 +614,7 @@ function Test-Pan {
     $s=Set-Option 22 0 333
     $s=Set-Option 14 0 322
     $initialMode=$s.panMode; $initialFixed=$s.panFixed; $initialWidth=$s.width; $initialHeight=$s.height
-    $x=[int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)
-    $y=[int]((Number $s 'panButtonY')+(Number $s 'panButtonH')/2)
-    $origin=New-Object ViewingRegressionNative+POINT
-    [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
-    [void][ViewingRegressionNative]::SetCursorPos($origin.X+$x,$origin.Y+$y)
-    Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16)); Start-Sleep -Milliseconds 60
-    Click $window $x $y
-    $s=Wait-State {param($v) $v.panPopover -eq '1'} '初始倍率浮层未打开'
+    $s=Open-PanPopover
     Assert-True ($s.panMode -eq $initialMode -and $s.panFixed -eq $initialFixed -and
         $s.width -eq $initialWidth -and $s.height -eq $initialHeight) 'TB-01/02 打开手掌浮层不改变模式、固定档位或窗口大小'
     Assert-True ((Number $s 'panPanelX') -ge 0 -and (Number $s 'panPanelY') -ge 0 -and
@@ -629,10 +638,7 @@ function Test-Pan {
         Assert-True ([Math]::Abs((Number $s 'slideY')-$before-25) -le 1 -and [int]$s.panFixed -eq $level) `
             ("TB-10 固定 $($factors[$level])× 的 Shift 临时倍率是 0.25×，原设置不变")
     }
-    $s=Set-Pan 0
-    $before=Number $s 'slideY'
-    $s=Pan-Drag 0 100 1 100 5
-    Assert-True ([Math]::Abs((Number $s 'slideY')-$before-10) -le 1) 'TB-04 0.1× 每次移动 1px 的残差正确累计'
+    Test-ResidualPan
     $s=Set-Pan 8
     $before=Number $s 'slideY'; $s=Pan-Drag 0 100 1 10 50
     $slow=(Number $s 'slideY')-$before
@@ -707,11 +713,7 @@ function Test-Pan {
     $s=Wait-State {param($v) $v.rotation -eq '0' -and $v.viewSettled -eq '1'} '右旋动画没有稳定完成'
     Test-RapidPan
     # 打开浮层和滑块捕获后经过生产失焦消息，关闭浮层、释放手势并刷新。
-    $s=Read-State; $x=[int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)
-    $y=[int]((Number $s 'panButtonY')+(Number $s 'panButtonH')/2)
-    Message $window 0x0200 0 (($x -band 65535) -bor ($y -shl 16))
-    Click $window $x $y
-    $s=Wait-State {param($v) $v.panPopover -eq '1'} '失焦测试浮层未打开'
+    $s=Open-PanPopover
     $x=[int](Number $s 'panTrackX'); $y=[int]((Number $s 'panTrackY')+(Number $s 'panTrackH')/2)
     Message $window 0x0201 1 (($x -band 65535) -bor ($y -shl 16))
     Message $window 0x0008 0
@@ -1215,6 +1217,12 @@ try {
     if ($ReaderWheelOnly) {Test-ReaderWheel; return}
     if ($ReaderPanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-ReaderPan; return}
     if ($RapidPanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-RapidPan; return}
+    if ($ResidualPanOnly) {
+        Stop-Viewer; $s=Start-Viewer $tall
+        $s=Set-Option 12 0 323; $s=Set-Option 22 0 333
+        $s=Set-Pan 4; $s=Pan-Drag 0 (-[int](Number $s 'slideY'))
+        Test-ResidualPan; return
+    }
     if ($PanVisualOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-PanVisual; return}
     if ($InertiaOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-Inertia; return}
     if ($InertiaAxesOnly) {
