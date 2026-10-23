@@ -220,6 +220,12 @@ private:
                     &GlobalVar::settingParameter.reserve[KineticOptions::ENABLED] },
                 { toCvRect(SettingLayout::GENERAL_RADIOS[26]), {131},
                     &GlobalVar::settingParameter.reserve[KineticOptions::SENSITIVITY], 20 },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[27]), {132,94,133,134},
+                    &GlobalVar::settingParameter.reserve[ViewerOptions::RIGHT_DRAG_INDEX] },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[28]), {135},
+                    &GlobalVar::settingParameter.reserve[ViewerOptions::RIGHT_DRAG_SENSITIVITY],20 },
+                { toCvRect(SettingLayout::GENERAL_RADIOS[29]), {136,94,95},
+                    &GlobalVar::settingParameter.reserve[ViewerOptions::TRANSFORM_SAVE_HINT] },
             };
         }
 
@@ -498,6 +504,7 @@ private:
             ShortcutItem{ ShortcutConfig::Action::DeleteImage, "删除图片", "Delete image", "刪除圖片" },
             ShortcutItem{ ShortcutConfig::Action::CopyToTarget, "复制到指定位置", "Copy to folder", "複製到指定位置" },
             ShortcutItem{ ShortcutConfig::Action::MoveToTarget, "移动到指定位置", "Move to folder", "移動到指定位置" },
+            ShortcutItem{ ShortcutConfig::Action::ScreenPicker, "取色", "Pick color", "取色" },
         };
 
     bool editingReaderWheel = false;

@@ -25,7 +25,7 @@ if (-not $SkipBuild) {
     }
 }
 
-foreach ($requiredFile in @($viewer, $thumbnailProvider)) {
+foreach ($requiredFile in @($viewer, $thumbnailProvider,(Join-Path $releaseDirectory 'YeLayerBackend.dll'),(Join-Path $releaseDirectory 'LAYER_BACKEND_NOTICES.txt'))) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Release runtime file is missing: $requiredFile"
     }
@@ -71,6 +71,7 @@ try {
     New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
     Copy-Item -LiteralPath $viewer -Destination (Join-Path $stagingRoot "YeImageViewer.exe")
     Copy-Item -LiteralPath $thumbnailProvider -Destination (Join-Path $stagingRoot "YeThumbnailProvider.dll")
+    foreach($file in @('YeLayerBackend.dll','LAYER_BACKEND_NOTICES.txt')){Copy-Item -LiteralPath (Join-Path $releaseDirectory $file) -Destination (Join-Path $stagingRoot $file)}
     foreach ($document in @(
         "CHANGELOG.md",
         "installLocal.ps1",
@@ -82,6 +83,11 @@ try {
     )) {
         Copy-Item -LiteralPath (Join-Path $repoRoot $document) -Destination (Join-Path $stagingRoot $document)
     }
+    # 当前阶段的真实能力与使用限制随包提供，不把未完成的颜色助手页面当已交付。
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/color-picker/QuickStart.md') -Destination (Join-Path $stagingRoot '颜色取色-候选使用说明.md')
+    foreach($launcher in @('屏幕快速取色.cmd','颜色面板.cmd')) {
+        Copy-Item -LiteralPath (Join-Path $repoRoot ('tools/'+$launcher)) -Destination (Join-Path $stagingRoot $launcher)
+    }
 
     # 包里放一张说明：绿色版到底怎么用、哪个文件是可选的
     $portableNotice = @"
@@ -89,11 +95,16 @@ YeImageViewer 绿色版
 ====================
 
 双击 YeImageViewer.exe 就能用，不需要安装。
+无需打开看图主窗口时，可双击“屏幕快速取色.cmd”或“颜色面板.cmd”。
+两个脚本应与 EXE 放在同一目录；关闭工具即退出，默认不常驻后台。
 
 文件说明
 --------
 YeImageViewer.exe        程序本体。只要这一个文件就能看图，拷到 U 盘、
                          放到任意目录都行，不写注册表、不留后台服务。
+YeLayerBackend.dll      图层与通道的 PhotoCraft 合成后端。高级图层浏览需要
+                         此文件放在 EXE 旁边；普通图片首帧不加载它。
+LAYER_BACKEND_NOTICES.txt 后端及依赖的完整许可，分发 DLL 时必须一起保留。
 YeThumbnailProvider.dll  可选。放在 exe 旁边并运行一次下面的关联步骤之后，
                          资源管理器才会给 RAW、HEIC、AVIF、PSD 这些
                          Windows 自己不认的格式显示缩略图。
@@ -103,12 +114,15 @@ installLocal.ps1         可选。想要开始菜单/桌面快捷方式、或者
 
 配置文件
 --------
-程序只会在自己旁边生成一个 YeImageViewer.db（4 KB 左右）存设置：没有就生成，
-有就直接用。删掉它就恢复出厂默认，程序照常跑。
+通用设置保存在程序旁边的 YeImageViewer.db（固定头4 KB，后接文本配置）：没有就生成，
+有就直接用。快速取色的格式、格数、倍率等偏好另存 YeImageViewer.color-picker.ini。
+删掉某个配置只恢复该部分默认，不会删除图片；程序照常跑。
 
-发给别人、或者换台机器：拷 YeImageViewer.exe 一个文件就够。
+发给别人、或者换台机器：普通看图可只拷 YeImageViewer.exe；需要新版图层/通道功能时
+请解压完整绿色包，保留 YeLayerBackend.dll 及 LAYER_BACKEND_NOTICES.txt。
 想把设置（界面语言、主题、快捷键、关联过的格式、每张图记住的旋转角度）一起
 带走，就把 YeImageViewer.db 也拷过去，放在 exe 旁边即可。
+还要保留快速取色偏好时，一并复制 YeImageViewer.color-picker.ini；新旧候选建议独立目录。
 
 未使用文件关联或 installLocal.ps1 时：删除这个文件夹即可。
 使用过「立即关联」时，先在设置 → 文件关联里点「全不选」再「立即关联」，

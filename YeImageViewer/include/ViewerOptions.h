@@ -12,7 +12,7 @@ namespace ViewerOptions {
 inline constexpr std::size_t STORAGE_BASE = 256;
 inline constexpr std::size_t SLOT_COUNT = 16;
 inline constexpr uint32_t STORAGE_MAGIC = 0x564F5054u; // "VOPT"
-inline constexpr uint32_t STORAGE_VERSION = 4;
+inline constexpr uint32_t STORAGE_VERSION = 5;
 
 inline constexpr std::size_t MAGIC_INDEX = STORAGE_BASE + 0;
 inline constexpr std::size_t VERSION_INDEX = STORAGE_BASE + 1;
@@ -27,6 +27,9 @@ inline constexpr std::size_t INFO_HISTOGRAM_INDEX = STORAGE_BASE + 7;
 inline constexpr std::size_t LIVE_PHOTO_SOUND_INDEX = STORAGE_BASE + 8;
 // 版本 4 新增：全屏/沉浸预览时在左上角显示标题栏那一行信息
 inline constexpr std::size_t FULLSCREEN_INFO_INDEX = STORAGE_BASE + 9;
+inline constexpr std::size_t RIGHT_DRAG_INDEX = STORAGE_BASE + 10; // 0关闭/1上放大/2反转
+inline constexpr std::size_t RIGHT_DRAG_SENSITIVITY = STORAGE_BASE + 11;
+inline constexpr std::size_t TRANSFORM_SAVE_HINT = STORAGE_BASE + 12;
 
 enum class DoubleClickAction : uint32_t {
     ToggleFullscreen = 0,
@@ -104,6 +107,7 @@ inline void reset(uint32_t* storage, std::size_t count) {
     storage[INFO_HISTOGRAM_INDEX] = DEFAULT_INFO_HISTOGRAM ? 1u : 0u;
     storage[LIVE_PHOTO_SOUND_INDEX] = DEFAULT_LIVE_PHOTO_SOUND ? 1u : 0u;
     storage[FULLSCREEN_INFO_INDEX] = DEFAULT_FULLSCREEN_INFO ? 1u : 0u;
+    storage[RIGHT_DRAG_INDEX]=0;storage[RIGHT_DRAG_SENSITIVITY]=9;storage[TRANSFORM_SAVE_HINT]=1;
 }
 
 inline void initialize(uint32_t* storage, std::size_t count) {
@@ -127,7 +131,11 @@ inline void initialize(uint32_t* storage, std::size_t count) {
         storage[LIVE_PHOTO_SOUND_INDEX] = DEFAULT_LIVE_PHOTO_SOUND ? 1u : 0u;
     if (version < 4)
         storage[FULLSCREEN_INFO_INDEX] = DEFAULT_FULLSCREEN_INFO ? 1u : 0u;
+    if(version<5){storage[RIGHT_DRAG_INDEX]=0;storage[RIGHT_DRAG_SENSITIVITY]=9;storage[TRANSFORM_SAVE_HINT]=1;}
     storage[VERSION_INDEX] = STORAGE_VERSION;
+    if(storage[RIGHT_DRAG_INDEX]>2)storage[RIGHT_DRAG_INDEX]=0;
+    if(storage[RIGHT_DRAG_SENSITIVITY]>19)storage[RIGHT_DRAG_SENSITIVITY]=9;
+    if(storage[TRANSFORM_SAVE_HINT]>1)storage[TRANSFORM_SAVE_HINT]=1;
     if (storage[EDGE_ARROWS_INDEX] > 1u)
         storage[EDGE_ARROWS_INDEX] = DEFAULT_EDGE_ARROWS ? 1u : 0u;
     if (storage[DRAG_MOVES_WINDOW_INDEX] > 1u)

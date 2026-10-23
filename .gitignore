@@ -13,3 +13,6 @@ x64
 
 # 重建第三方静态库时自动备份的原件，几百 MB，只在本机留一份
 /lib-backup/
+
+# 本地需求参考软件与截图不随公开源码分发；产品资源及开源许可单独纳入。
+/docs/color-picker/baseline-v2.2/reference/

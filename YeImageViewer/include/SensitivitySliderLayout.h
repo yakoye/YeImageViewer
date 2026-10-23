@@ -4,7 +4,7 @@
 #include <cmath>
 
 namespace SensitivitySliderLayout {
-constexpr bool isSlider(int index) { return index == 24 || index == 26; }
+constexpr bool isSlider(int index) { return index == 24 || index == 26 || index == 28; }
 constexpr SettingLayout::Rect track(const SettingLayout::Rect& row) {
     return {row.x + 150, row.y + row.height / 2 - 2, row.width - 228, 4};
 }

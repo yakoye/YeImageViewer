@@ -51,7 +51,7 @@ struct Command {
 // 曾经不等过：加繁體中文时 stringIDs 从三项变四项，这里还写着 2，于是
 // resolve() 报出来的选项下标按两段算，和界面上实际选中的那一项对不上。
 // 单元测试会拿 Setting.h 那边的条数反过来核对这张表。
-inline constexpr std::array<int, 27> GENERAL_RADIO_OPTION_COUNTS{
+inline constexpr std::array<int, 30> GENERAL_RADIO_OPTION_COUNTS{
     3,  // 切图动画：无/上下/左右
     3,  // 主题：跟随系统/浅色/深色
     3,  // 语言：简体中文/English/繁體中文
@@ -66,6 +66,7 @@ inline constexpr std::array<int, 27> GENERAL_RADIO_OPTION_COUNTS{
     2,  // 全屏信息条
     3, 3, 2, 2, 2, 3, 3, 2, 2, 2, 2, 2, 20,
     2, 20, // 两条灵敏度使用二十档滑杆，其余仍为分段单选
+    3,20,2, // 右键拖动方向/灵敏度/旋转镜像保存操作条
 };
 static_assert(GENERAL_RADIO_OPTION_COUNTS.size() == SettingLayout::GENERAL_RADIOS.size());
 

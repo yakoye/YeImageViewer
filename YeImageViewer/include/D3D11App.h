@@ -27,6 +27,8 @@ public:
     virtual void OnDropFiles(WPARAM wParam) = 0;
     virtual void OnContextMenuCommand(WPARAM wParam) = 0;
     virtual void OnContextMenuClosed() {}
+    virtual void OnScreenPickerResult(WPARAM, LPARAM) {}
+    virtual bool CanBrowseLayers() const { return false; }
     virtual void OnFocusLost() {}
     virtual void OnCaptureLost() {}
     virtual void OnMaximizeRequested() = 0;
@@ -41,11 +43,12 @@ protected:
     void DiscardDeviceResources();
     void ApplyWindowBackgroundMode();
     void SetPresentationBackdrop(bool enabled);
-    // 交换链是支持预乘 alpha 的 DirectComposition 表面：沉浸模式的半透明压暗层靠它。
+    // 交换链是支持预乘 alpha 的 DirectComposition 表面：透明图片和毛玻璃靠它。
     bool IsCompositionAlphaActive() const { return m_compositionAlphaActive; }
-    // 毛玻璃真正可用：DWM 亚克力启用成功，且有 alpha 表面把画布的空洞交给 DWM 合成。
-    // 两个条件缺一不可——只有 alpha 表面而没有亚克力时，透明画布露出的是桌面而不是模糊层。
+    // 毛玻璃可用：DWM 材质或 Win10 兼容模糊申请成功，且存在 alpha 合成表面。
     bool IsFrostedGlassActive() const { return m_compositionAlphaActive && m_isFrostedGlassActive; }
+    bool IsCompatibilityBlurActive() const {return m_compatibilityBlurActive;}
+    bool IsBackgroundRemoteSession() const {return m_backgroundRemoteSession;}
 
     // CPU 画布数据呈现到屏幕
     void PresentCanvas(const uint8_t* data, int width, int height, int stride);
@@ -87,6 +90,7 @@ protected:
     int winHeight = 600;
     bool hasInitWinSize = false;
     bool m_isFrostedGlassActive = false;
+    bool m_compatibilityBlurActive=false,m_backgroundRemoteSession=false;
     bool m_presentationBackdropRequested = false;
     bool m_compositionAlphaActive = false;
     UINT m_swapChainBufferCount = 1;

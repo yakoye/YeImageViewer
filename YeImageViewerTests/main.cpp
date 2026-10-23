@@ -12,6 +12,7 @@
 #include "MonitorPlacement.h"
 #include "BackgroundRenderer.h"
 #include "BackgroundPolicy.h"
+#include "BackgroundOptions.h"
 #include "EscapeBehavior.h"
 #include "ConfigFile.h"
 #include "ExternalEditorConfig.h"
@@ -38,6 +39,7 @@
 #include "ImageHistogram.h"
 #include "DecodeEstimate.h"
 #include "ImageViewTransform.h"
+#include "RightDragZoom.h"
 #include "RotationStore.h"
 #include "RenamePolicy.h"
 #include "SettingCommand.h"
@@ -59,6 +61,15 @@
 #include "ImageResampling.h"
 #include "ReadingLayout.h"
 #include "TextRenderingPolicy.h"
+#include "HintLayout.h"
+#include "ImageExport.h"
+#include "ColorValue.h"
+#include "PsdLayers.h"
+#include "CurrentColor.h"
+#include "ColorPanelModel.h"
+#include "ImageColorPoint.h"
+#include "PsdCapability.h"
+#include "PsdTreeLayout.h"
 #include "ToolbarCommand.h"
 #include "WheelInput.h"
 #include "SlideshowPolicy.h"
@@ -69,15 +80,20 @@
 #include "SystemFont.h"
 
 #include <windows.h>
+#include <dwmapi.h>
+#include "NativeWindowTest.h"
 #include <objbase.h>
 #include <shlwapi.h>
 #include <shobjidl.h>
 #include <thumbcache.h>
+#include <psapi.h>
 #include "FileAssociationManager.h"
 
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "psapi.lib")
 
 #include <algorithm>
 #include <array>
@@ -96,6 +112,7 @@
 #include <vector>
 #include <regex>
 
+#include <unordered_set>
 namespace {
 
 int failedTests = 0;
@@ -132,6 +149,15 @@ void passOrFail(std::string_view name, bool passed) {
 }
 
 #include "PsdCompositeTests.h"
+#include "ImageToolsTests.h"
+#include "PsdRecomposeTests.h"
+#include "CornerCloseTests.h"
+#include "BackgroundWindowTests.h"
+#include "PickerCoreTests.h"
+#include "ColorLibraryTests.h"
+#include "ColorFlowTests.h"
+#include "PickerWindowTests.h"
+#include "GdiLifecycleProbe.h"
 
 void expectVideoSize(std::string_view name, std::string_view metadata, size_t expected) {
     const size_t actual = MotionPhotoUtils::getVideoSize(metadata);
@@ -283,13 +309,20 @@ void expectBilinearEnlargement() {
 void expectBackgroundRendering() {
     constexpr uint32_t theme = 0xFF202020u;
 
-    passOrFail("invalid background setting falls back to transparency grid",
+    passOrFail("transparent canvas leaves actual zero-alpha holes rather than a checkerboard",
+        BackgroundRenderer::canvasPixel(BackgroundMode::Transparent, false, 0, 0, theme) == 0 &&
+        BackgroundRenderer::canvasPixel(BackgroundMode::Transparent, false, 12, 0, theme) == 0);
+    passOrFail("transparent image pixels keep premultiplied alpha for desktop composition",
+        BackgroundRenderer::compositeBgra(0x80804020u, BackgroundMode::Transparent,
+            false, 0, 0, theme) == 0x80402010u);
+
+    passOrFail("invalid background setting falls back to real transparency",
         BackgroundRenderer::normalizeMode(99) == BackgroundMode::Transparent);
-    passOrFail("transparent background alternates checkerboard cells",
-        BackgroundRenderer::canvasPixel(BackgroundMode::Transparent, false, 0, 0,
-            theme) == BackgroundRenderer::GRID_LIGHT &&
-        BackgroundRenderer::canvasPixel(BackgroundMode::Transparent, false, 12, 0,
-            theme) == BackgroundRenderer::GRID_DARK &&
+    passOrFail("light checkerboard alternates cells independently from transparency",
+        BackgroundRenderer::canvasPixel(BackgroundMode::Checkerboard, false, 0, 0,
+            theme, CheckerboardTone::Light) == BackgroundRenderer::GRID_LIGHT &&
+        BackgroundRenderer::canvasPixel(BackgroundMode::Checkerboard, false, 12, 0,
+            theme, CheckerboardTone::Light) == BackgroundRenderer::GRID_DARK &&
         BackgroundRenderer::GRID_WIDTH == 12 &&
         BackgroundRenderer::GRID_DARK == 0xFFEBEBEBu &&
         BackgroundRenderer::GRID_LIGHT == 0xFFF5F5F5u);
@@ -321,39 +354,76 @@ void expectBackgroundRendering() {
     passOrFail("configured background only changes the image area during presentation",
         BackgroundPolicy::imageAreaMode(BackgroundMode::White) == BackgroundMode::White &&
         BackgroundPolicy::imageAreaMode(BackgroundMode::Black) == BackgroundMode::Black);
-    passOrFail("immersive canvas stays sixty percent black regardless of the configured background",
+    passOrFail("沉浸模式图片外保持透明灰，不随图片白色/透明背景变化",
         BackgroundPolicy::windowCanvasPixel(BackgroundMode::White, true, true, false, 0, 0,
-            theme) == BackgroundPolicy::PRESENTATION_TINT &&
+            theme) == 0x99000000u &&
         BackgroundPolicy::windowCanvasPixel(BackgroundMode::Transparent, true, true, false, 0, 0,
-            theme) == BackgroundPolicy::PRESENTATION_TINT &&
-        BackgroundPolicy::PRESENTATION_TINT == 0x99000000u);
+            theme) == 0x99000000u);
     passOrFail("immersive canvas falls back to the opaque theme without alpha composition",
-        BackgroundPolicy::windowCanvasPixel(BackgroundMode::White, true, false, false, 0, 0,
+        BackgroundPolicy::windowCanvasPixel(BackgroundMode::Transparent, true, false, false, 0, 0,
             theme) == theme);
-    passOrFail("framed canvas follows the configured background instead of a fixed gray",
+    passOrFail("窗口模式图片外同样保持透明灰，不随图片白色/黑色背景变化",
         BackgroundPolicy::windowCanvasPixel(BackgroundMode::White, false, true, false, 0, 0,
-            theme) == 0xFFFFFFFFu &&
+            theme) == 0x99000000u &&
         BackgroundPolicy::windowCanvasPixel(BackgroundMode::Black, false, true, false, 0, 0,
-            theme) == 0xFF000000u);
-    passOrFail("frosted glass clears the canvas only once the DWM acrylic backdrop is live",
+            theme) == 0x99000000u);
+    passOrFail("图片毛玻璃不清除图片外透明灰遮罩",
         BackgroundPolicy::windowCanvasPixel(BackgroundMode::FrostedGlass, false, true, true, 0, 0,
-            theme) == 0x00000000u &&
+            theme) == 0x99000000u &&
         BackgroundPolicy::windowCanvasPixel(BackgroundMode::FrostedGlass, false, true, false, 0, 0,
-            theme) == theme);
-    passOrFail("only an explicit frosted-glass choice outside presentation asks DWM for acrylic",
+            theme) == 0x99000000u);
+    passOrFail("frosted-glass choice requests blur in framed and immersive modes",
         BackgroundPolicy::requestsFrostedGlass(false, BackgroundMode::FrostedGlass) &&
-        !BackgroundPolicy::requestsFrostedGlass(true, BackgroundMode::FrostedGlass) &&
+        BackgroundPolicy::requestsFrostedGlass(true, BackgroundMode::FrostedGlass) &&
         !BackgroundPolicy::requestsFrostedGlass(false, BackgroundMode::White) &&
         !BackgroundPolicy::requestsFrostedGlass(false, BackgroundMode::Transparent));
-    passOrFail("framed transparent background tiles the checkerboard across the whole window",
-        BackgroundPolicy::windowCanvasPixel(BackgroundMode::Transparent, false, true, false, 0, 0,
-            theme) == BackgroundRenderer::GRID_LIGHT &&
-        BackgroundPolicy::windowCanvasPixel(BackgroundMode::Transparent, false, true, false,
-            BackgroundRenderer::GRID_WIDTH, 0, theme) == BackgroundRenderer::GRID_DARK);
-    passOrFail("only the framed checkerboard needs per-pixel window canvas evaluation",
+    passOrFail("远程会话或兼容探针优先实时模糊，普通桌面保留系统材质",BackgroundPolicy::preferCompatibilityBlur(true,false)&&BackgroundPolicy::preferCompatibilityBlur(false,true)&&BackgroundPolicy::preferCompatibilityBlur(true,true)&&!BackgroundPolicy::preferCompatibilityBlur(false,false));
+    passOrFail("checkerboard automatically follows light and dark theme backgrounds",
+        BackgroundRenderer::canvasPixel(BackgroundMode::Checkerboard, false, 0, 0,
+            0xFFFFFFFF) == BackgroundRenderer::GRID_LIGHT &&
+        BackgroundRenderer::canvasPixel(BackgroundMode::Checkerboard, false,
+            BackgroundRenderer::GRID_WIDTH, 0, theme) == BackgroundRenderer::DARK_GRID_DARK);
+    passOrFail("图片外留白不再逐像素计算棋盘格",
         BackgroundPolicy::usesUniformWindowCanvas(BackgroundMode::White, false) &&
         BackgroundPolicy::usesUniformWindowCanvas(BackgroundMode::Transparent, true) &&
-        !BackgroundPolicy::usesUniformWindowCanvas(BackgroundMode::Transparent, false));
+        BackgroundPolicy::usesUniformWindowCanvas(BackgroundMode::Checkerboard, false) &&
+        BackgroundPolicy::usesUniformWindowCanvas(BackgroundMode::Checkerboard, true));
+    for(uint32_t value=0;value<5;++value)for(bool immersive:{false,true})for(bool blur:{false,true}){
+        const auto mode=static_cast<BackgroundMode>(value);
+        passOrFail("五种图片背景与图片外留白隔离（两种窗口、两种材质状态）",BackgroundPolicy::imageAreaMode(mode)==mode&&
+            BackgroundPolicy::windowCanvasPixel(mode,immersive,true,blur,37,51,theme)==0x99000000u&&
+            BackgroundPolicy::windowCanvasPixel(mode,immersive,false,blur,37,51,theme)==theme);
+    }
+    passOrFail("manual checkerboard tone overrides the active theme",
+        BackgroundRenderer::canvasPixel(BackgroundMode::Checkerboard, false, 0, 0, 0xFFFFFFFF,
+            CheckerboardTone::Dark) == BackgroundRenderer::DARK_GRID_LIGHT &&
+        BackgroundRenderer::canvasPixel(BackgroundMode::Checkerboard, false, 0, 0, theme,
+            CheckerboardTone::Light) == BackgroundRenderer::GRID_LIGHT);
+    passOrFail("background mode numbers retain old settings compatibility",
+        static_cast<int>(BackgroundMode::Transparent) == 0 && static_cast<int>(BackgroundMode::White) == 1 &&
+        static_cast<int>(BackgroundMode::Black) == 2 && static_cast<int>(BackgroundMode::FrostedGlass) == 3 &&
+        BackgroundRenderer::normalizeMode(4) == BackgroundMode::Checkerboard);
+    uint32_t storage[777]{}; storage[367] = 123; storage[372] = 456;
+    passOrFail("background settings fit reserved ABI space without overlapping motion options",
+        BackgroundOptions::BASE >= KineticOptions::BASE + KineticOptions::SLOTS &&
+        BackgroundOptions::BASE + BackgroundOptions::SLOTS <= std::size(storage));
+    BackgroundOptions::initialize(storage, std::size(storage));
+    passOrFail("old settings initialize automatic checkerboard without touching neighbors",
+        BackgroundOptions::tone(storage) == CheckerboardTone::Automatic && storage[367] == 123 && storage[372] == 456);
+    storage[BackgroundOptions::TONE] = 2;
+    BackgroundOptions::initialize(storage, std::size(storage));
+    passOrFail("manual checkerboard tone survives settings reload validation",
+        BackgroundOptions::tone(storage) == CheckerboardTone::Dark);
+    storage[BackgroundOptions::TONE] = 99;
+    BackgroundOptions::initialize(storage, std::size(storage));
+    passOrFail("invalid checkerboard tone is normalized to automatic",
+        BackgroundOptions::tone(storage) == CheckerboardTone::Automatic);
+    for (int alpha = 0; alpha <= 255; ++alpha) {
+        const auto color = (uint32_t(alpha) << 24) | 0x804020;
+        passOrFail("all alpha levels preserve transparent image edges in premultiplied form",
+            BackgroundRenderer::compositeBgra(color, BackgroundMode::Transparent, false, 0, 0, theme) ==
+            BackgroundRenderer::premultiplyBgra(color));
+    }
 }
 
 void expectOverlayLayout() {
@@ -379,7 +449,7 @@ void expectOverlayLayout() {
         toolbarNext.width == OverlayLayout::BASE_BUTTON_SIZE);
     // 播放键在工具栏里大致居中即可，不再要求严格对齐窗口中心：右侧比左侧多一个
     // 按钮，想严格居中就得在左边留一块空白，那比偏十几像素难看得多。
-    constexpr int playCenterOffset = 265 + OverlayLayout::PAN_INSERT_WIDTH + OverlayLayout::BASE_BUTTON_SIZE / 2 +
+    constexpr int playCenterOffset = 265 + OverlayLayout::PAN_INSERT_WIDTH + OverlayLayout::NAV_INSERT_WIDTH + OverlayLayout::BASE_BUTTON_SIZE / 2 +
         OverlayLayout::BASE_TOOLBAR_PADDING;
     passOrFail("previous, slideshow, and next form the centered primary toolbar group",
         std::abs(playCenterOffset - OverlayLayout::BASE_TOOLBAR_WIDTH / 2) <= 24 &&
@@ -512,14 +582,14 @@ void expectOverlayLayout() {
         !OverlayLayout::showsRedundantFileActions());
     const auto toolbarReveal = OverlayLayout::toolbarRevealRect(width, height);
     passOrFail("toolbar reveal region includes the padded lower strip",
-        toolbarReveal.x == toolbar.x - OverlayLayout::BASE_TOOLBAR_REVEAL_SIDE_PADDING &&
-        toolbarReveal.width == toolbar.width + OverlayLayout::BASE_TOOLBAR_REVEAL_SIDE_PADDING * 2 &&
+        toolbarReveal.x == std::max(0, toolbar.x - OverlayLayout::BASE_TOOLBAR_REVEAL_SIDE_PADDING) &&
+        toolbarReveal.width == std::min(width, toolbar.width + OverlayLayout::BASE_TOOLBAR_REVEAL_SIDE_PADDING * 2) &&
         toolbarReveal.y == toolbar.y - OverlayLayout::BASE_TOOLBAR_REVEAL_TOP_PADDING &&
         toolbarReveal.y + toolbarReveal.height == height &&
         OverlayLayout::hitTest(width, height, toolbarReveal.x + 2,
             toolbarReveal.y + 2) == OverlayLayout::Hit::Toolbar &&
         OverlayLayout::hitTest(width, height, width / 2, height - 2) == OverlayLayout::Hit::Toolbar &&
-        OverlayLayout::hitTest(width, height, 5, 590) == OverlayLayout::Hit::None &&
+        OverlayLayout::hitTest(width, height, 5, toolbarReveal.y - 2) == OverlayLayout::Hit::None &&
         OverlayLayout::hitTest(width, height, 40, 250) == OverlayLayout::Hit::None &&
         OverlayLayout::hitTest(width, height, 20, height / 2) == OverlayLayout::Hit::None &&
         OverlayLayout::hitTest(width, height, width - 20, height / 2) == OverlayLayout::Hit::None);
@@ -528,7 +598,7 @@ void expectOverlayLayout() {
         narrowToolbar.width <= 284 && narrowToolbar.x >= 0 &&
         narrowToolbar.x + narrowToolbar.width <= 300);
     passOrFail("presentation close button stays in the upper-right corner",
-        close.x == 746 && close.y == 12 && close.width == 42 && close.height == 42 &&
+        close.x == 758 && close.y == 0 && close.width == 42 && close.height == 42 &&
         OverlayLayout::hitTest(width, height, 767, 33) == OverlayLayout::Hit::PresentationClose);
     passOrFail("presentation close button does not depend on the optional SVG resource",
         OverlayLayout::shouldDrawPresentationClose(true, false, true) &&
@@ -1122,7 +1192,7 @@ void expectLivePhotoOptions() {
     upgraded[LIVE_PHOTO_SOUND_INDEX] = 1u;
     initialize(upgraded.data(), upgraded.size());
     passOrFail("version 2 settings survive while new fields are seeded",
-        upgraded[VERSION_INDEX] == STORAGE_VERSION && STORAGE_VERSION == 4u &&
+        upgraded[VERSION_INDEX] == STORAGE_VERSION && STORAGE_VERSION == 5u &&
         livePhotoAutoSound(upgraded.data()) == DEFAULT_LIVE_PHOTO_SOUND &&
         fullscreenInfoBar(upgraded.data()) == DEFAULT_FULLSCREEN_INFO &&
         openMode(upgraded.data()) == OpenMode::FitImage &&
@@ -1325,6 +1395,26 @@ void expectDecodeEstimate() {
 }
 
 void expectImageViewTransform() {
+    const auto fixture=readFile("test/image-tools/rotation-nonsquare.ppm");
+    const cv::Mat asymmetric=cv::imdecode(fixture,cv::IMREAD_COLOR);
+    passOrFail("非方形旋转复现夹具可独立解码为7x3",asymmetric.cols==7&&asymmetric.rows==3&&asymmetric.type()==CV_8UC3);
+    if(asymmetric.empty())return;
+    bool oldFailed=false;
+    for(int rotation=0;rotation<4;++rotation)for(bool h:{false,true})for(bool v:{false,true}){
+        const auto expected=ImageExport::transform(asymmetric,rotation,h,v);cv::Mat actual(expected.size(),CV_8UC3);
+        for(int y=0;y<actual.rows;++y)for(int x=0;x<actual.cols;++x){const auto p=ImageViewTransform::forSourceImage(x,y,asymmetric.cols,asymmetric.rows,rotation,h,v);actual.at<cv::Vec3b>(y,x)=asymmetric.at<cv::Vec3b>(p.y,p.x);}
+        passOrFail("非方形图四方向旋转和双镜像逐像素匹配独立OpenCV参考",cv::norm(actual,expected,cv::NORM_INF)==0);
+        if(rotation==1){const auto wrong=ImageViewTransform::displayToSource(0,0,asymmetric.cols,asymmetric.rows,rotation,h,v);const auto correct=ImageViewTransform::forSourceImage(0,0,asymmetric.cols,asymmetric.rows,rotation,h,v);oldFailed|=wrong.x!=correct.x||wrong.y!=correct.y;}
+    }
+    passOrFail("修复前未交换宽高的生产调用在非方形夹具确实失败",oldFailed);
+    RightDragZoom::Gesture gesture;gesture.begin(100,100,65536);
+    passOrFail("右拖阈值内不缩放且短按保留原右键行为",!gesture.move(102,103,96,9,false)&&!gesture.release());
+    gesture.begin(100,100,65536);const auto up=gesture.move(100,0,96,9,false),down=gesture.move(100,200,96,9,false);
+    passOrFail("右拖上放大下缩小，按起点计算不累计漂移",up&&down&&*up>65536&&*down<65536&&gesture.move(100,100,96,9,false)==65536&&gesture.release());
+    gesture.begin(0,0,65536);const auto reverse=gesture.move(0,100,96,9,true);gesture.cancel();
+    passOrFail("反转方向且捕获取消后吞掉右键抬起",reverse&&*reverse>65536&&!gesture.held()&&gesture.release()&&!gesture.release());
+    gesture.begin(0,0,65536);const auto normal=gesture.move(0,-100,96,9,false);gesture.begin(0,0,65536);
+    passOrFail("右拖缩放按DPI等比例且最高灵敏度真正更高",gesture.move(0,-200,192,9,false)==normal&&gesture.move(0,-200,192,19,false)>normal);
     const auto identity = ImageViewTransform::displayToSource(2, 3, 10, 8, 0, false, false);
     const auto horizontal = ImageViewTransform::displayToSource(2, 3, 10, 8, 0, true, false);
     const auto vertical = ImageViewTransform::displayToSource(2, 3, 10, 8, 0, false, true);
@@ -1367,6 +1457,23 @@ void expectViewingPolicies() {
         enlarged.groups[0].scale == vertical.groups[0].scale &&
         enlarged.groups[1].scale == vertical.groups[1].scale * 2 &&
         enlarged.groups[2].scale == vertical.groups[2].scale);
+    // 1357x1018 窗口、800x1200 页：旧的量化倍率往返会在 306% 旁插入
+    // 200541（标准值为200540），使一次滚轮只缩小一个定点刻度，看起来无效。
+    for (const double baseScale : {934.0 / 1200, 0.317, 1.0}) {
+        double multiplier = 1;
+        bool exact = true;
+        for (const int percent : {100, 115, 132, 152, 175, 201, 231, 266, 306, 266, 231, 201}) {
+            const auto target = std::llround(65536.0 * percent / 100);
+            multiplier = ReadingLayout::enlargementForScale(baseScale * multiplier,
+                multiplier, double(target) / 65536);
+            exact &= std::llround(baseScale * multiplier * 65536) == target;
+        }
+        passOrFail("reading zoom preserves exact requested levels without quantization drift", exact);
+    }
+    passOrFail("reading zoom bounds and invalid scale fallback remain safe",
+        ReadingLayout::enlargementForScale(1, 1, 1000) == 100 &&
+        ReadingLayout::enlargementForScale(1, 1, 0.001) == 0.01 &&
+        ReadingLayout::enlargementForScale(0, 1, 1) == 1);
     const std::array<ReadingLayout::Size, 3> smallPages{{{40, 30}, {40, 30}, {40, 30}}};
     const auto tight = ReadingLayout::build(smallPages, 900, 650, false, false, 0, false, false);
     const auto tightHorizontal = ReadingLayout::build(smallPages, 900, 650, true, false, 0, false, false);
@@ -1519,6 +1626,13 @@ void expectViewerOptions() {
     passOrFail("a settings file predating viewer options is seeded rather than left blank",
         legacy[ViewerOptions::VERSION_INDEX] == ViewerOptions::STORAGE_VERSION &&
         ViewerOptions::openMode(legacy.data()) == ViewerOptions::OpenMode::ImmersivePreview);
+    legacy[ViewerOptions::VERSION_INDEX]=4;legacy[ViewerOptions::EDGE_ARROWS_INDEX]=1;
+    legacy[ViewerOptions::RIGHT_DRAG_INDEX]=999;legacy[ViewerOptions::TRANSFORM_SAVE_HINT]=0;
+    ViewerOptions::initialize(legacy.data(),legacy.size());
+    passOrFail("v4设置增量迁移只补新设置，右拖默认关闭，保存提示默认开启",legacy[ViewerOptions::EDGE_ARROWS_INDEX]==1&&legacy[ViewerOptions::RIGHT_DRAG_INDEX]==0&&legacy[ViewerOptions::RIGHT_DRAG_SENSITIVITY]==9&&legacy[ViewerOptions::TRANSFORM_SAVE_HINT]==1);
+    legacy[ViewerOptions::RIGHT_DRAG_INDEX]=2;legacy[ViewerOptions::RIGHT_DRAG_SENSITIVITY]=19;legacy[ViewerOptions::TRANSFORM_SAVE_HINT]=0;
+    ViewerOptions::initialize(legacy.data(),legacy.size());
+    passOrFail("右拖反向20档及关闭保存提示跨重读保留",legacy[ViewerOptions::RIGHT_DRAG_INDEX]==2&&legacy[ViewerOptions::RIGHT_DRAG_SENSITIVITY]==19&&legacy[ViewerOptions::TRANSFORM_SAVE_HINT]==0);
 
     passOrFail("dragging moves the window only when the image cannot pan",
         ViewerOptions::dragShouldMoveWindow(true, false, false) &&
@@ -2822,7 +2936,7 @@ void expectShortcutConfig() {
         const auto migrated = legacy;
         ShortcutConfig::initialize(legacy.data(), legacy.size());
         passOrFail("legacy wheel defaults migrate once without changing existing keyboard bindings",
-            legacy == migrated && legacy[ShortcutConfig::VERSION_INDEX] == 5 &&
+            legacy == migrated && legacy[ShortcutConfig::VERSION_INDEX] == ShortcutConfig::STORAGE_VERSION &&
             legacy[ShortcutConfig::WHEEL_BASE_INDEX] == 0 &&
             legacy[ShortcutConfig::WHEEL_BASE_INDEX + 1] == 1 &&
             legacy[ShortcutConfig::WHEEL_BASE_INDEX + 2] == 2 &&
@@ -3057,10 +3171,12 @@ class CountingCache : public LRU<int, std::string> {
 public:
     std::atomic<int> loadCount{ 0 };
     std::atomic<int> delayMs{ 0 };
+    std::function<void(int)> beforeLoad;
 
     ~CountingCache() override { stopPreloadWorker(); }
 
     std::string loader(const int& key) override {
+        if(beforeLoad)beforeLoad(key);
         const int wait = delayMs.load();
         if (wait > 0)
             std::this_thread::sleep_for(std::chrono::milliseconds(wait));
@@ -3244,16 +3360,22 @@ void expectLruCache() {
 
     // 当前要显示的那张插队首：快速翻页时它不能排在旧的预读任务后面
     {
+        std::mutex gateMutex;std::condition_variable gateCv;bool firstStarted=false,release=false;
         CountingCache cache;
+        struct ReleaseGate {std::mutex& mutex;std::condition_variable& cv;bool& released;~ReleaseGate(){std::lock_guard lock(mutex);released=true;cv.notify_all();}} releaseGate{gateMutex,gateCv,release};
         cache.setCapacity(10);
-        cache.delayMs = 120;
-        cache.requestPreloadBatch({ 1, 2, 3 });               // 工作线程开始解 1
-        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        // sleep(30ms)不能证明工作线程已经取走1；繁忙机器可能合法地先取到99。
+        // 用显式握手保证1已在途并阻塞，插入99后才释放；仍严格检查1,99,2,3顺序。
+        cache.beforeLoad=[&](int key){if(key==1){std::unique_lock lock(gateMutex);firstStarted=true;gateCv.notify_all();gateCv.wait(lock,[&]{return release;});}};
+        cache.requestPreloadBatch({ 1, 2, 3 });
+        bool started=false;{std::unique_lock lock(gateMutex);started=gateCv.wait_for(lock,std::chrono::seconds(5),[&]{return firstStarted;});}
         cache.requestPreload(99, true);                       // 队列变成 [99, 2, 3]
+        {std::lock_guard lock(gateMutex);release=true;gateCv.notify_all();}
         const bool done = waitUntil([&] { return cache.tryGetPtr(3) != nullptr; }, 5000);
         const auto order = cache.takeLoadOrder();
+        if(!started||!done||order!=std::vector<int>{1,99,2,3}){std::cerr<<"LRU urgent diagnostic started="<<started<<" done="<<done<<" order=";for(int key:order)std::cerr<<key<<',';std::cerr<<'\n';}
         passOrFail("an urgent request jumps the preload queue",
-            done && order.size() == 4 && order[0] == 1 && order[1] == 99);
+            started && done && order==std::vector<int>{1,99,2,3});
     }
 
     // 批量预读把整批都解出来
@@ -3796,6 +3918,92 @@ ThumbnailResult renderThumbnail(const ThumbnailModule& module,
     provider->Release();
     initializer->Release();
     return result;
+}
+
+// 独立子进程测峰值提交量，避免前面的测试把峰值抬高后掩盖整图分配。
+// 同时读参考 PNG 核对像素；参考图在峰值采样之后解码，不污染内存指标。
+int thumbnailMemoryProbe(const char* dll, const char* fixture, const char* reference) {
+    ThumbnailModule module;
+    if (!loadThumbnailModule(dll, module)) return 2;
+    const auto bytes = readFile(fixture);
+    PROCESS_MEMORY_COUNTERS before{ sizeof(PROCESS_MEMORY_COUNTERS) };
+    PROCESS_MEMORY_COUNTERS after{ sizeof(PROCESS_MEMORY_COUNTERS) };
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &before, sizeof(before))) return 3;
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = renderThumbnail(module, bytes, 256);
+    const double elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &after, sizeof(after))) return 3;
+    const auto peakDelta = after.PeakPagefileUsage > before.PeakPagefileUsage ?
+        after.PeakPagefileUsage - before.PeakPagefileUsage : 0;
+    const auto expected = renderThumbnail(module, readFile(reference), 256);
+    double meanError = 1000;
+    int worstError = 255;
+    if (!result.pixels.empty() && result.pixels.size() == expected.pixels.size()) {
+        uint64_t total = 0;
+        worstError = 0;
+        for (size_t i = 0; i < result.pixels.size(); ++i) {
+            const int difference = std::abs(int(result.pixels[i]) - int(expected.pixels[i]));
+            total += difference;
+            worstError = std::max(worstError, difference);
+        }
+        meanError = double(total) / result.pixels.size();
+    }
+    std::cout << "{\"success\":" << (SUCCEEDED(result.hr) && !result.allZero ? "true" : "false")
+        << ",\"width\":" << result.width << ",\"height\":" << result.height
+        << ",\"peakCommitDelta\":" << peakDelta << ",\"elapsedMs\":" << elapsed
+        << ",\"meanError\":" << meanError << ",\"worstError\":" << worstError << "}\n";
+    return SUCCEEDED(result.hr) && !result.allZero && result.width == expected.width &&
+        result.height == expected.height && meanError <= 4.0 && worstError <= 32 ? 0 : 4;
+}
+
+// 自建的小型 CMYK ICC，不从用户文件或第三方软件提取 profile。
+// 使用非恒等墨量曲线，使「忽略 ICC」明确产生像素失败。
+int generateThumbnailProfile(const char* path, const char* rgbPath) {
+    cmsHPROFILE profile = cmsCreateProfilePlaceholder(nullptr);
+    cmsHPROFILE rgb = cmsCreate_sRGBProfile();
+    cmsHPROFILE lab = cmsCreateLab4Profile(nullptr);
+    cmsHTRANSFORM toLab = cmsCreateTransform(rgb, TYPE_RGB_DBL, lab, TYPE_Lab_DBL, INTENT_PERCEPTUAL, 0);
+    cmsPipeline* pipeline = cmsPipelineAlloc(nullptr, 4, 3);
+    cmsStage* table = cmsStageAllocCLut16bit(nullptr, 3, 4, 3, nullptr);
+    bool ok = profile && rgb && lab && toLab && pipeline && table;
+    if (ok) {
+        cmsSetProfileVersion(profile, 2.1);
+        cmsSetDeviceClass(profile, cmsSigOutputClass);
+        cmsSetColorSpace(profile, cmsSigCmykData);
+        cmsSetPCS(profile, cmsSigLabData);
+        const auto sampler = +[](const cmsUInt16Number in[], cmsUInt16Number out[], void* cargo) -> cmsInt32Number {
+            double color[3];
+            for (size_t i = 0; i < 3; ++i)
+                color[i] = std::pow((1.0 - in[i] / 65535.0) * (1.0 - in[3] / 65535.0), 0.7);
+            cmsCIELab value{};
+            cmsDoTransform(static_cast<cmsHTRANSFORM>(cargo), color, &value, 1);
+            cmsFloat2LabEncodedV2(out, &value);
+            return 1;
+        };
+        ok = cmsStageSampleCLut16bit(table, sampler, toLab, 0) != 0;
+        if (ok) {
+            ok = cmsPipelineInsertStage(pipeline, cmsAT_END, table) != 0;
+            if (ok) table = nullptr; // pipeline 接管。
+        }
+        cmsMLU* description = cmsMLUalloc(nullptr, 1);
+        if (description) cmsMLUsetASCII(description, "en", "US", "YeImageViewer synthetic CMYK regression profile");
+        ok = ok && description && cmsWriteTag(profile, cmsSigMediaWhitePointTag, cmsD50_XYZ()) &&
+            cmsWriteTag(profile, cmsSigProfileDescriptionTag, description) &&
+            cmsWriteTag(profile, cmsSigCopyrightTag, description) &&
+            cmsWriteTag(profile, cmsSigAToB0Tag, pipeline) && cmsSaveProfileToFile(profile, path);
+        if (description) cmsMLUfree(description);
+    }
+    if (table) cmsStageFree(table);
+    if (pipeline) cmsPipelineFree(pipeline);
+    if (toLab) cmsDeleteTransform(toLab);
+    if (rgb) {
+        ok = cmsSaveProfileToFile(rgb, rgbPath) && ok;
+        cmsCloseProfile(rgb);
+    }
+    if (lab) cmsCloseProfile(lab);
+    if (profile) cmsCloseProfile(profile);
+    return ok ? 0 : 6;
 }
 
 // 已知解不出来的，连同原因。登记在这里而不是把素材从清单里删掉：
@@ -4594,10 +4802,64 @@ void expectKineticPan() {
 }
 
 int main(int argc, char* argv[]) {
+    if(argc==3&&std::string_view(argv[1])=="--gdi-batch-probe")return runGdiBatchProbe(std::string_view(argv[2])=="flush");
+    if(argc==4&&std::string_view(argv[1])=="--corner-close-probe")return runCornerCloseProbe(argv[2],argv[3]);
+    if(argc==4&&std::string_view(argv[1])=="--presentation-scale-probe")return runCornerCloseProbe(argv[2],argv[3],true);
+    if(argc==4&&std::string_view(argv[1])=="--picker-window-probe")return runPickerWindowProbe(argv[2],argv[3]);
+    if(argc==3&&std::string_view(argv[1])=="--color-navigation-probe")return runColorNavigationProbe(argv[2]);
+    if(argc==4&&std::string_view(argv[1])=="--presentation-stale-hover-probe")return runCornerCloseProbe(argv[2],argv[3],true,true);
+    if(argc==3&&std::string_view(argv[1])=="--generate-tools-fixtures") {
+        generateToolFixtures(argv[2]);
+        const auto target=std::filesystem::path(argv[2])/L"visibility-stack.psd";
+        if(!std::filesystem::exists(target))ImageExport::writeNew(target,makeVisibilityPsd());
+        return 0;
+    }
+    if(argc==2&&std::string_view(argv[1])=="--picker-core-selftest") {
+        expectPickerCore();std::cout<<passedTests<<" passed, "<<failedTests<<" failed\n";return failedTests?2:0;
+    }
+    if(argc==2&&std::string_view(argv[1])=="--background-selftest") {
+        expectBackgroundRendering();std::cout<<passedTests<<" passed, "<<failedTests<<" failed\n";return failedTests?2:0;
+    }
+    if(argc==4&&std::string_view(argv[1])=="--background-window-probe")
+        return runBackgroundWindowProbe(std::filesystem::path(ColorLibrary::wide(argv[2])),
+            std::filesystem::path(ColorLibrary::wide(argv[3])));
+    if(argc==2&&std::string_view(argv[1])=="--color-library-selftest") {expectColorLibrary();std::cout<<passedTests<<" passed, "<<failedTests<<" failed\n";return failedTests?2:0;}
+    if(argc==2&&std::string_view(argv[1])=="--color-flow-selftest") {expectColorFlow();std::cout<<passedTests<<" passed, "<<failedTests<<" failed\n";return failedTests?2:0;}
+    if(argc==2&&std::string_view(argv[1])=="--lru-selftest") {expectLruCache();std::cout<<passedTests<<" passed, "<<failedTests<<" failed\n";return failedTests?2:0;}
+    if(argc==4&&std::string_view(argv[1])=="--color-library-writer") {try{ColorLibrary::Store store(std::filesystem::path(ColorLibrary::wide(argv[2])));for(int i=0;i<50;++i)store.record({uint8_t(i),1,2},"editor",std::string(argv[3])+std::to_string(i));return 0;}catch(...){return 2;}}
+    if(argc==2&&std::string_view(argv[1])=="--toolbar-layout-constants") {
+        const auto toolbar=OverlayLayout::toolbarRect(4096,2160);
+        const auto offset=[&](const auto& rect){return rect.x-toolbar.x-OverlayLayout::BASE_TOOLBAR_PADDING;};
+        const auto fullscreen=OverlayLayout::fullscreenRect(4096,2160),minus=OverlayLayout::zoomOutRect(4096,2160);
+        const int bareX=(fullscreen.x+fullscreen.width+minus.x)/2;
+        if(OverlayLayout::hitTest(4096,2160,bareX,fullscreen.y+fullscreen.height/2)!=OverlayLayout::Hit::Toolbar)return 2;
+        std::cout<<"{\"width\":"<<OverlayLayout::BASE_TOOLBAR_WIDTH
+            <<",\"fitOffset\":"<<offset(OverlayLayout::fitImageRect(4096,2160))
+            <<",\"playOffset\":"<<offset(OverlayLayout::toolbarPlayPauseRect(4096,2160))
+            <<",\"nextOffset\":"<<offset(OverlayLayout::toolbarNextRect(4096,2160))
+            <<",\"zoomTextOffset\":"<<offset(OverlayLayout::zoomTextRect(4096,2160))
+            <<",\"bareOffset\":"<<bareX-toolbar.x-OverlayLayout::BASE_TOOLBAR_PADDING<<"}\n";
+        return 0;
+    }
+    if(argc==2&&std::string_view(argv[1])=="--photocraft-selftest") {expectPhotocraftBackend();return failedTests?2:0;}
+    if(argc==2&&std::string_view(argv[1])=="--recompose-selftest") {expectPsdRecompose();expectPsdRecomposeParser();expectPhotocraftBackend();return failedTests?2:0;}
+    if(argc==2&&std::string_view(argv[1])=="--psd-composite-selftest") {expectPsdComposites();return failedTests?2:0;}
     std::cout << std::unitbuf;
     // 缩略图组件内部会用到 COM 对象，和资源管理器一样先把 COM 起起来
     const HRESULT comReady = CoInitializeEx(nullptr,
         COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+
+    if (argc == 4 && std::string_view(argv[1]) == "--generate-thumbnail-profile") {
+        const int result = generateThumbnailProfile(argv[2], argv[3]);
+        if (SUCCEEDED(comReady)) CoUninitialize();
+        return result;
+    }
+
+    if (argc == 5 && std::string_view(argv[1]) == "--thumbnail-memory-probe") {
+        const int result = SUCCEEDED(comReady) ? thumbnailMemoryProbe(argv[2], argv[3], argv[4]) : 5;
+        if (SUCCEEDED(comReady)) CoUninitialize();
+        return result;
+    }
 
     expectVideoSize("no motion-photo metadata", "Exif.Image.Make: DJI", 0);
     expectVideoSize("legacy offset followed by metadata", "Xmp.GCamera.MicroVideoOffset: 12345\nExif.Image.Make: DJI", 12345);
@@ -4610,10 +4872,17 @@ int main(int argc, char* argv[]) {
     expectVideoSize("overflowing length", "Item:Semantic: MotionPhoto\nItem:Length: 999999999999999999999999999999", 0);
     expectHdrChannelOrder();
     expectPsdComposites();
+    expectImageTools();
+    expectPsdRecompose();
+    expectPsdRecomposeParser();
+    expectPhotocraftBackend();
     passOrFail("元数据大值在格式化之前限量", !MetadataTextPolicy::summarize(65536) && MetadataTextPolicy::summarize(65537));
     expectBilinearEnlargement();
     expectBackgroundRendering();
+    expectColorFlow();
     expectOverlayLayout();
+    expectPickerCore();
+    expectColorLibrary();
     expectZoomCommands();
     expectZoomPolicy();
     expectZoomEditPolicy();

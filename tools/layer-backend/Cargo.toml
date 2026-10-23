@@ -1,0 +1,23 @@
+[package]
+name = "ye-layer-backend"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "YeLayerBackend"
+crate-type = ["cdylib"]
+
+[dependencies]
+photocraft-io = { path = "../../artifacts/upstream-photocraft/crates/io" }
+photocraft-psd = { path = "../../artifacts/upstream-photocraft/crates/psd" }
+photocraft-compose = { path = "../../artifacts/upstream-photocraft/crates/compose" }
+photocraft-doc = { path = "../../artifacts/upstream-photocraft/crates/doc" }
+photocraft-color = { path = "../../artifacts/upstream-photocraft/crates/color" }
+photocraft-raster = { path = "../../artifacts/upstream-photocraft/crates/raster" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+panic = "unwind"

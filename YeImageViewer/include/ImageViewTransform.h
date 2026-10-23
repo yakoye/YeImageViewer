@@ -32,4 +32,12 @@ constexpr Point<T> displayToSource(T displayX, T displayY,
     }
 }
 
+// 输入明确是未旋转的源图尺寸，集中交换宽高，避免缩略缓存/阅读路径误传显示尺寸。
+template<typename T>
+constexpr Point<T> forSourceImage(T displayX,T displayY,int sourceWidth,int sourceHeight,
+    int rotation,bool horizontal,bool vertical) {
+    return displayToSource(displayX,displayY,(rotation&1)?sourceHeight:sourceWidth,
+        (rotation&1)?sourceWidth:sourceHeight,rotation,horizontal,vertical);
+}
+
 }

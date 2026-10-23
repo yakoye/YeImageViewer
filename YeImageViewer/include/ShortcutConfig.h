@@ -11,7 +11,7 @@
 namespace ShortcutConfig {
 
 inline constexpr uint32_t STORAGE_MAGIC = 0x594B4559u; // "YKEY"
-inline constexpr uint32_t STORAGE_VERSION = 5;
+inline constexpr uint32_t STORAGE_VERSION = 6;
 
 // 各历史版本的动作数量。新动作只能追加在 Action 末尾：动作的枚举值就是它在存储里的
 // 下标，中间插入会让其后所有已保存的自定义绑定整体错位。升级时要按「存的是哪一版」
@@ -19,6 +19,7 @@ inline constexpr uint32_t STORAGE_VERSION = 5;
 inline constexpr std::size_t VERSION1_BINDING_COUNT = 30;
 inline constexpr std::size_t VERSION2_BINDING_COUNT = 31;
 inline constexpr std::size_t VERSION3_BINDING_COUNT = 32;
+inline constexpr std::size_t VERSION5_BINDING_COUNT = 34;
 inline constexpr std::size_t MAGIC_INDEX = 0;
 inline constexpr std::size_t VERSION_INDEX = 1;
 inline constexpr std::size_t WHEEL_BASE_INDEX = 2;
@@ -66,6 +67,7 @@ enum class Action : uint32_t {
     CloseImage,
     CopyToTarget,
     MoveToTarget,
+    ScreenPicker,
     Count,
 };
 
@@ -119,6 +121,7 @@ inline constexpr std::array<uint32_t, static_cast<std::size_t>(Action::Count)> D
     // 误触的代价比其他动作大，让用户自己指定。
     0,                         // CopyToTarget
     0,                         // MoveToTarget
+    0,                         // ScreenPicker: 不抢占用户已绑定的快捷键
 };
 
 static_assert(DEFAULT_BINDINGS.size() == static_cast<std::size_t>(Action::Count));
@@ -132,6 +135,7 @@ constexpr std::size_t bindingCountForVersion(uint32_t version) {
     case 1: return VERSION1_BINDING_COUNT;
     case 2: return VERSION2_BINDING_COUNT;
     case 3: return VERSION3_BINDING_COUNT;
+    case 4: case 5: return VERSION5_BINDING_COUNT;
     default: return DEFAULT_BINDINGS.size();
     }
 }
@@ -205,14 +209,16 @@ inline uint32_t initialize(uint32_t* storage, std::size_t count) {
         return 0;
     }
     if (storedVersion < STORAGE_VERSION) {
-        for (std::size_t index = 0; index < DEFAULT_READER_WHEEL_ACTIONS.size(); ++index)
-            storage[READER_WHEEL_BASE_INDEX + index] = static_cast<uint32_t>(DEFAULT_READER_WHEEL_ACTIONS[index]);
-        // v1～v4 使用另一套默认值。只迁移整套旧默认，任何不同的自定义方案都保留。
-        if (storage[WHEEL_BASE_INDEX] == static_cast<uint32_t>(WheelAction::PanVertical) &&
-            storage[WHEEL_BASE_INDEX + 1] == static_cast<uint32_t>(WheelAction::Zoom) &&
-            storage[WHEEL_BASE_INDEX + 2] == static_cast<uint32_t>(WheelAction::PanHorizontal)) {
-            for (std::size_t index = 0; index < DEFAULT_WHEEL_ACTIONS.size(); ++index)
-                storage[WHEEL_BASE_INDEX + index] = static_cast<uint32_t>(DEFAULT_WHEEL_ACTIONS[index]);
+        if (storedVersion < 5) {
+            for (std::size_t index = 0; index < DEFAULT_READER_WHEEL_ACTIONS.size(); ++index)
+                storage[READER_WHEEL_BASE_INDEX + index] = static_cast<uint32_t>(DEFAULT_READER_WHEEL_ACTIONS[index]);
+            // v1～v4 使用另一套默认值，只迁移旧默认方案。v5 自定义滚轮绝不重置。
+            if (storage[WHEEL_BASE_INDEX] == static_cast<uint32_t>(WheelAction::PanVertical) &&
+                storage[WHEEL_BASE_INDEX + 1] == static_cast<uint32_t>(WheelAction::Zoom) &&
+                storage[WHEEL_BASE_INDEX + 2] == static_cast<uint32_t>(WheelAction::PanHorizontal)) {
+                for (std::size_t index = 0; index < DEFAULT_WHEEL_ACTIONS.size(); ++index)
+                    storage[WHEEL_BASE_INDEX + index] = static_cast<uint32_t>(DEFAULT_WHEEL_ACTIONS[index]);
+            }
         }
         migrate(storage, bindingCountForVersion(storedVersion));
         storage[VERSION_INDEX] = STORAGE_VERSION;

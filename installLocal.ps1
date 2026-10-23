@@ -12,8 +12,7 @@ $ErrorActionPreference = "Stop"
 $releaseDir = Join-Path $PSScriptRoot "x64\Release"
 if (-not (Test-Path -LiteralPath (Join-Path $releaseDir "YeImageViewer.exe") -PathType Leaf) -and
     (Test-Path -LiteralPath (Join-Path $PSScriptRoot "YeImageViewer.exe") -PathType Leaf)) {
-    # The one-click self-extracting installer places its three runtime files
-    # together in a temporary directory before invoking this script.
+    # 绿色包内脚本和运行库放在同一目录。
     $releaseDir = $PSScriptRoot
 }
 $sourceExe = Join-Path $releaseDir "YeImageViewer.exe"
@@ -32,6 +31,11 @@ $targetExe = Join-Path $InstallDir "YeImageViewer.exe"
 $targetProvider = Join-Path $InstallDir "YeThumbnailProvider.dll"
 Copy-Item -LiteralPath $sourceExe -Destination $targetExe -Force
 Copy-Item -LiteralPath $sourceProvider -Destination $targetProvider -Force
+foreach($name in @('YeLayerBackend.dll','LAYER_BACKEND_NOTICES.txt')){
+    $file=Join-Path $releaseDir $name
+    if(-not(Test-Path -LiteralPath $file -PathType Leaf)){throw "图层后端或许可缺失：$name"}
+    Copy-Item -LiteralPath $file -Destination (Join-Path $InstallDir $name) -Force
+}
 
 $registered = $false
 if (-not $SkipRegistration) {

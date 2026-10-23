@@ -3401,6 +3401,28 @@ ImageAsset ImageDatabase::myLoader(const wstring& path) {
     return imageAsset;
 }
 
+ImageAsset ImageDatabase::decodeForExport(const wstring& path) {
+    auto asset = myLoader(path); // 不使用已转换到显示器色域的观看缓存。
+    if (asset.svgRenderer) {
+        const int width=std::max(1,static_cast<int>(std::lround(asset.svgRenderer->width())));
+        const int height=std::max(1,static_cast<int>(std::lround(asset.svgRenderer->height())));
+        if (uint64_t(width)*height>64ULL*1024*1024) return {};
+        auto bitmap=asset.svgRenderer->renderToBitmap(width,height);
+        if(!bitmap.empty()) asset.primaryFrame=cv::Mat(bitmap.height,bitmap.width,CV_8UC4,bitmap.bgra.data()).clone();
+    }
+    convertImageAssetToCV_8U(asset);
+    if (asset.iccProfile.empty()) {
+        MappedFileReader file(path);
+        if (!file.isEmpty()) asset.iccProfile = ColorManager::readEmbeddedIccProfile(path, file.view());
+    }
+    if (!isErrorTipsFrame(asset.primaryFrame)) {
+        const auto srgb = PsdCompositeDecoder::srgbProfile();
+        ColorManager::applyToMat(asset.primaryFrame, asset.iccProfile, srgb);
+        for (auto& frame : asset.frames) ColorManager::applyToMat(frame, asset.iccProfile, srgb);
+    }
+    return asset;
+}
+
 ImageAsset ImageDatabase::loader(const wstring& path) {
     const auto decodeStart = std::chrono::steady_clock::now();
     auto imageAsset = myLoader(path);

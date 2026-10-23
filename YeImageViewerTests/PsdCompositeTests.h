@@ -62,14 +62,16 @@ inline void expectPsdComposites() {
     }
 
     // 不依赖外部写入器的 32 位浮点、ZIP 预测和真正合成透明通道夹具。
-    for (int depth : {8, 16, 32}) {
+    for (bool matted : {false,true}) for (int depth : {8, 16, 32}) {
         std::vector<uint8_t> data{'8','B','P','S'};
         auto be = [&](uint64_t value, size_t length) {for (size_t i = length; i > 0; --i) data.push_back(static_cast<uint8_t>(value >> ((i - 1) * 8)));};
         be(1,2); be(0,6); be(4,2); be(1,4); be(3,4); be(depth,2); be(3,2);
         be(0,4); be(0,4); be(6,4); be(2,4); be(65535,2); be(3,2);
         std::vector<uint8_t> raw;
         const std::vector<float> values{1,0.5f,0, 0,1,0.5f, 0.5f,0,1, 0,0.5f,1};
-        for(float value : values) {
+        for(size_t sampleIndex=0;sampleIndex<values.size();++sampleIndex) {
+            float value=values[sampleIndex];
+            if(matted&&sampleIndex<9){const float alpha=values[9+sampleIndex%3];value=value*alpha+1-alpha;}
             const uint32_t code = depth == 32 ? std::bit_cast<uint32_t>(value) : static_cast<uint32_t>(std::lround(value * (depth == 16 ? 65535 : 255)));
             for(int b = depth / 8 - 1; b >= 0; --b) raw.push_back(static_cast<uint8_t>(code >> (b * 8)));
         }
@@ -95,7 +97,13 @@ inline void expectPsdComposites() {
         compress2(zipped.data(),&length,raw.data(),static_cast<uLong>(raw.size()),9); zipped.resize(length);
         data.insert(data.end(),zipped.begin(),zipped.end());
         auto image = PsdCompositeDecoder::decode(data);
-        passOrFail("PSD 8/16/32 位 ZIP 预测及合成透明", image.bgra == std::vector<uint8_t>({128,0,255,0, 0,255,128,128, 255,128,0,255}));
+        // 8位蓝色半透明零值被两次量化为128：逆变换(128+128-255)*255/128=1.992 -> 2。
+        // 16位为(32768+32768-65535)*255/32768，仍量化为0。红色 .5 必须稳定舍入到128。
+        const uint8_t blue=matted&&depth==8?2:0;
+        const auto expected=matted?std::vector<uint8_t>({0,0,0,0,blue,255,128,128,255,128,0,255}):
+            std::vector<uint8_t>({128,0,255,0,0,255,128,128,255,128,0,255});
+        passOrFail(matted?"PSD 8/16/32位ZIP合成透明去白衬底":"PSD 8/16/32位第三方无衬底合成图保持直通颜色", image.bgra==expected);
+        if(image.bgra!=expected){std::cout<<"PSD composite depth="<<depth<<" matted="<<matted<<" actual=";for(auto c:image.bgra)std::cout<<int(c)<<",";std::cout<<"\n";}
         data.back() ^= 1;
         passOrFail("PSD ZIP 校验损坏必须失败", PsdCompositeDecoder::decode(data).bgra.empty());
     }

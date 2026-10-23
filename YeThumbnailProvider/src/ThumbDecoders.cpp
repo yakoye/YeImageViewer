@@ -3,6 +3,7 @@
 #include "FormatSniffer.h"
 #include "ThumbPsd.h"
 #include "RawDecodePolicy.h"
+#include "CmykColor.h"
 
 #include <algorithm>
 #include <array>
@@ -532,7 +533,7 @@ bool decodeWp2(std::span<const uint8_t> data, ThumbBitmap& out) {
     return true;
 }
 
-bool decodeWic(std::span<const uint8_t> data, ThumbBitmap& out);
+bool decodeWic(std::span<const uint8_t> data, ThumbBitmap& out, uint32_t maxEdge = 0);
 
 bool decodeDds(std::span<const uint8_t> data, ThumbBitmap& out) {
     DirectX::TexMetadata metadata{};
@@ -1616,7 +1617,7 @@ bool decodePfm(std::span<const uint8_t> data, ThumbBitmap& out) {
     return true;
 }
 
-bool decodeWic(std::span<const uint8_t> data, ThumbBitmap& out) {
+bool decodeWic(std::span<const uint8_t> data, ThumbBitmap& out, uint32_t maxEdge) {
     if (data.empty() || data.size() > std::numeric_limits<DWORD>::max()) {
         return false;
     }
@@ -1657,33 +1658,137 @@ bool decodeWic(std::span<const uint8_t> data, ThumbBitmap& out) {
         return false;
     }
 
-    ComPtr<IWICFormatConverter> converter;
-    hr = factory->CreateFormatConverter(converter.put());
-    if (FAILED(hr)) {
-        return false;
-    }
+    const auto copyBgra = [&](IWICBitmapSource* source, UINT outputWidth, UINT outputHeight) {
+        WICPixelFormatGUID pixelFormat{};
+        if (FAILED(source->GetPixelFormat(&pixelFormat))) return false;
+        const bool cmyk16 = IsEqualGUID(pixelFormat, GUID_WICPixelFormat64bppCMYK);
+        if (cmyk16 || IsEqualGUID(pixelFormat, GUID_WICPixelFormat32bppCMYK)) {
+            const UINT stride = outputWidth * (cmyk16 ? 8 : 4);
+            const uint64_t bytes = uint64_t(stride) * outputHeight;
+            if (bytes > UINT_MAX) return false;
+            std::vector<uint8_t> native(static_cast<size_t>(bytes));
+            if (FAILED(source->CopyPixels(nullptr, stride, static_cast<UINT>(native.size()), native.data()))) {
+                return false;
+            }
+            // 与主程序一致：原生 CMYK 墨量 + 嵌入 ICC → sRGB；不让 WIC
+            // 的通用 BGRA converter 忽略 profile 或套用不同的默认印刷色空间。
+            std::vector<uint8_t> profile;
+            UINT count = 0;
+            if (SUCCEEDED(frame->GetColorContexts(0, nullptr, &count)) && count > 0) {
+                ComPtr<IWICColorContext> context;
+                if (SUCCEEDED(factory->CreateColorContext(context.put()))) {
+                    auto* pointer = context.get();
+                    UINT returned = 0;
+                    UINT size = 0;
+                    if (SUCCEEDED(frame->GetColorContexts(1, &pointer, &returned)) && returned > 0 &&
+                        SUCCEEDED(context->GetProfileBytes(0, nullptr, &size)) && size > 0 && size <= 16 * 1024 * 1024) {
+                        profile.resize(size);
+                        if (FAILED(context->GetProfileBytes(size, profile.data(), &size))) profile.clear();
+                    }
+                }
+            }
+            out.bgra = CmykColor::convert(native, outputWidth, outputHeight, profile, cmyk16 ? 16 : 8);
+            if (out.bgra.empty()) return false;
+            out.width = outputWidth;
+            out.height = outputHeight;
+            out.hasAlpha = false;
+            return true;
+        }
+        ComPtr<IWICFormatConverter> converter;
+        if (FAILED(factory->CreateFormatConverter(converter.put())) ||
+            FAILED(converter->Initialize(source, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone,
+                nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
+            return false;
+        }
+        out.width = outputWidth;
+        out.height = outputHeight;
+        out.bgra.resize(static_cast<size_t>(outputWidth) * outputHeight * 4ULL);
+        if (FAILED(converter->CopyPixels(nullptr, outputWidth * 4,
+            static_cast<UINT>(out.bgra.size()), out.bgra.data()))) {
+            out = {};
+            return false;
+        }
+        out.hasAlpha = false;
+        for (size_t offset = 3; offset < out.bgra.size(); offset += 4) {
+            if (out.bgra[offset] != 255) {
+                out.hasAlpha = true;
+                break;
+            }
+        }
+        return true;
+    };
 
-    hr = converter->Initialize(frame.get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone,
-        nullptr, 0.0, WICBitmapPaletteTypeCustom);
-    if (FAILED(hr)) {
-        return false;
-    }
+    const auto copyResizedBgra = [&](IWICBitmapSource* source, UINT decodedWidth, UINT decodedHeight,
+        UINT targetWidth, UINT targetHeight) {
+        if (!copyBgra(source, decodedWidth, decodedHeight)) return false;
+        if (decodedWidth == targetWidth && decodedHeight == targetHeight) return true;
+        // CMYK 必须先色彩转换，再以 sRGB 缩小；完整解码兜底也不能回到最近邻采样，
+        // 否则海报的细密金色纹理会被采样成大片白点。
+        auto converted = std::move(out);
+        ComPtr<IWICBitmap> rgb;
+        ComPtr<IWICBitmapScaler> scaler;
+        return SUCCEEDED(factory->CreateBitmapFromMemory(converted.width, converted.height,
+            GUID_WICPixelFormat32bppBGRA, converted.width * 4,
+            static_cast<UINT>(converted.bgra.size()), converted.bgra.data(), rgb.put())) &&
+            SUCCEEDED(factory->CreateBitmapScaler(scaler.put())) &&
+            SUCCEEDED(scaler->Initialize(rgb.get(), targetWidth, targetHeight, WICBitmapInterpolationModeFant)) &&
+            copyBgra(scaler.get(), targetWidth, targetHeight);
+    };
 
-    out.width = width;
-    out.height = height;
-    out.hasAlpha = true;
-    out.bgra.resize(static_cast<size_t>(width) * height * 4ULL);
-    hr = converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(out.bgra.size()), out.bgra.data());
-    if (FAILED(hr)) {
+    const UINT longest = std::max(width, height);
+    WICPixelFormatGUID nativeFormat{};
+    if (FAILED(frame->GetPixelFormat(&nativeFormat))) return false;
+    const bool nativeCmyk = IsEqualGUID(nativeFormat, GUID_WICPixelFormat32bppCMYK) ||
+        IsEqualGUID(nativeFormat, GUID_WICPixelFormat64bppCMYK);
+    if (maxEdge > 0 && maxEdge < longest) {
+        const UINT targetWidth = std::max<UINT>(1, uint64_t(width) * maxEdge / longest);
+        const UINT targetHeight = std::max<UINT>(1, uint64_t(height) * maxEdge / longest);
+        // WIC 的通用 scaler 会把 CMYK 隐式转成 BGRA，导致嵌入 profile 丢失。
+        // 先请求 codec 的原生缩减 CMYK，再走上面的共享色彩转换；做不到则完整解码。
+        if (nativeCmyk) {
+            ComPtr<IWICBitmapSourceTransform> transform;
+            UINT reducedWidth = targetWidth;
+            UINT reducedHeight = targetHeight;
+            WICPixelFormatGUID reducedFormat = nativeFormat;
+            if (SUCCEEDED(frame->QueryInterface(IID_PPV_ARGS(transform.put()))) &&
+                SUCCEEDED(transform->GetClosestSize(&reducedWidth, &reducedHeight)) &&
+                checkedDimensions(reducedWidth, reducedHeight) &&
+                reducedWidth <= width && reducedHeight <= height &&
+                SUCCEEDED(transform->GetClosestPixelFormat(&reducedFormat)) &&
+                IsEqualGUID(reducedFormat, nativeFormat)) {
+                const UINT stride = reducedWidth * (IsEqualGUID(nativeFormat, GUID_WICPixelFormat64bppCMYK) ? 8 : 4);
+                const uint64_t bytes = uint64_t(stride) * reducedHeight;
+                if (bytes <= UINT_MAX) {
+                    std::vector<uint8_t> native(static_cast<size_t>(bytes));
+                    ComPtr<IWICBitmap> reduced;
+                    if (SUCCEEDED(transform->CopyPixels(nullptr, reducedWidth, reducedHeight, &reducedFormat,
+                        WICBitmapTransformRotate0, stride, static_cast<UINT>(bytes), native.data())) &&
+                        SUCCEEDED(factory->CreateBitmapFromMemory(reducedWidth, reducedHeight, reducedFormat,
+                            stride, static_cast<UINT>(bytes), native.data(), reduced.put())) &&
+                        copyResizedBgra(reduced.get(), reducedWidth, reducedHeight, targetWidth, targetHeight)) {
+                        // 原生 IDCT 的宽高会分别取整，不能让其比例决定最终尺寸。
+                        // copyResizedBgra 按原图目标矩形缩小，避免 256×170 变成 256×171。
+                        return true;
+                    }
+                }
+            }
+            out = {};
+            if (copyResizedBgra(frame.get(), width, height, targetWidth, targetHeight)) return true;
+            out = {};
+            return copyBgra(frame.get(), width, height);
+        }
+        // Scaler 紧跟 frame，让 WIC 利用 JPEG 原生缩减解码；不要先 CopyPixels
+        // 生成整图 BGRA 再缩小。没有原生缩减的 codec 也只向我们输出目标缓冲。
+        ComPtr<IWICBitmapScaler> scaler;
+        if (SUCCEEDED(factory->CreateBitmapScaler(scaler.put())) &&
+            SUCCEEDED(scaler->Initialize(frame.get(), targetWidth, targetHeight, WICBitmapInterpolationModeFant)) &&
+            copyBgra(scaler.get(), targetWidth, targetHeight)) {
+            return true;
+        }
+        // 某些第三方 WIC codec 不支持缩放链，保留原来的完整解码作为兜底。
         out = {};
-        return false;
     }
-
-    out.hasAlpha = std::ranges::any_of(out.bgra, [index = size_t{ 0 }](uint8_t value) mutable {
-        const bool isAlpha = (index++ % 4) == 3;
-        return isAlpha && value != 255;
-    });
-    return true;
+    return copyBgra(frame.get(), width, height);
 }
 }
 
@@ -1731,9 +1836,9 @@ bool decodeByFormat(std::span<const uint8_t> data, uint32_t maxEdge, ThumbBitmap
             return decodeStb(data, out) || decodePlainPnm(data, out);
         case Format::Jxr:
         case Format::RawTiff:
-            return decodeRaw(data, out) || decodeWic(data, out);
+            return decodeRaw(data, out) || decodeWic(data, out, maxEdge);
         default:
-            return decodeWic(data, out) || decodeStb(data, out) || decodeWp2(data, out) ||
+            return decodeWic(data, out, maxEdge) || decodeStb(data, out) || decodeWp2(data, out) ||
                 decodeLep(data, out) || decodeRaw(data, out);
         }
     }

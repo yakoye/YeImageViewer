@@ -2,8 +2,27 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 
 namespace PresentationLayout {
+
+// 窗口形态切换会同步重入 WM_SIZE/WM_DPICHANGED。整个切换期间禁止重套观看规则，
+// 并冻结正在显示的倍率（而非动画尚未到达的目标倍率）。显式缩放命令不使用此保护。
+template<class View>
+class PreserveDisplayedScale {
+    View& view;
+    bool& resizing;
+    const bool previous;
+    const int64_t displayed;
+    bool active=true;
+public:
+    PreserveDisplayedScale(View& value,bool& flag):view(value),resizing(flag),previous(flag),displayed(value.zoomCur){resizing=true;}
+    PreserveDisplayedScale(const PreserveDisplayedScale&)=delete;
+    PreserveDisplayedScale& operator=(const PreserveDisplayedScale&)=delete;
+    void finish(){if(active){view.setZoom(displayed);resizing=previous;active=false;}}
+    ~PreserveDisplayedScale(){finish();}
+};
 
 inline constexpr int MAX_WIDTH_PERCENT = 90;
 inline constexpr int MAX_LANDSCAPE_HEIGHT_NUMERATOR = 33;
@@ -126,6 +145,19 @@ inline WindowedResult calculateWindowed(const Result& presentation,
         imageLeft - naturallyCenteredLeft,
         topAlignedSlide(presentation.renderedHeight, clientHeight),
     };
+}
+
+// 恢复边框只改变窗口，不能把当前画面替换成默认沉浸缩放（尤其不能乘一遍 DPI）。
+inline WindowedResult calculateWindowedAtScale(int imageWidth,int imageHeight,double scale,
+    int workWidth,int workHeight,bool quarterTurn=false) {
+    if(imageWidth<=0||imageHeight<=0||!std::isfinite(scale)||scale<=0)return {};
+    const double width=(quarterTurn?imageHeight:imageWidth)*scale;
+    const double height=(quarterTurn?imageWidth:imageHeight)*scale;
+    if(width>std::numeric_limits<int>::max()||height>std::numeric_limits<int>::max())return {};
+    Result current;
+    current.renderedWidth=std::max(1,static_cast<int>(std::lround(width)));
+    current.renderedHeight=std::max(1,static_cast<int>(std::lround(height)));
+    return calculateWindowed(current,workWidth,workHeight);
 }
 
 }

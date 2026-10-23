@@ -84,8 +84,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,38,2,0
- PRODUCTVERSION 1,38,2,0
+ FILEVERSION 1,39,0,0
+ PRODUCTVERSION 1,39,0,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -102,12 +102,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "YeImageViewer Project"
             VALUE "FileDescription", "YeImageViewer 图像查看器"
-            VALUE "FileVersion", "1.38.2.0"
+            VALUE "FileVersion", "1.39.0.0"
             VALUE "InternalName", "YeImageViewer"
             VALUE "LegalCopyright", "Copyright (C) 2023-2026 JARK006 and YeImageViewer contributors"
             VALUE "OriginalFilename", "YeImageViewer.exe"
             VALUE "ProductName", "YeImageViewer"
-            VALUE "ProductVersion", "1.38.2"
+            VALUE "ProductVersion", "1.39.0"
         END
     END
     BLOCK "VarFileInfo"
@@ -144,6 +144,8 @@ IDR_SVG_FLIP_VERTICAL_ICON SVG                  "file\\icons\\flip-vertical.svg"
 IDR_SVG_FIT_WINDOW_ICON SVG                     "file\\icons\\fit-window.svg"
 IDR_SVG_FIT_IMAGE_ICON  SVG                     "file\\icons\\fit-image.svg"
 IDR_SVG_HAND_ICON       SVG                     "file\\icons\\hand.svg"
+IDR_SVG_PICKER_ICON     SVG                     "file\\icons\\color-picker.svg"
+IDR_SVG_PALETTE_ICON    SVG                     "file\\icons\\color-palette.svg"
 IDR_SVG_ACTUAL_SIZE_ICON SVG                    "file\\icons\\actual-size.svg"
 IDR_SVG_FULLSCREEN_ICON SVG                     "file\\icons\\fullscreen.svg"
 IDR_SVG_FAVORITE_ICON   SVG                     "file\\icons\\favorite.svg"

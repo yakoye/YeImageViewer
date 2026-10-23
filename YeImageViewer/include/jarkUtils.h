@@ -111,6 +111,7 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #include "ConfigFile.h"
 #include "UiLanguage.h"
 #include "BackgroundRenderer.h"
+#include "BackgroundOptions.h"
 #include "EscapeBehavior.h"
 #include "OverlayLayout.h"
 
@@ -199,7 +200,7 @@ struct SettingParameter {
 
     uint32_t rightClickAction = 0;          // 右键点击行为  0:打开菜单  1:退出程序
 
-    uint32_t backgroundMode = static_cast<uint32_t>(BackgroundMode::Transparent);
+    uint32_t backgroundMode = static_cast<uint32_t>(BackgroundMode::Checkerboard);
     uint32_t monitorSettingsVersion = 1;
     bool rememberLastMonitor = true;
     uint8_t monitorSettingsPadding[3]{};
@@ -217,6 +218,7 @@ struct SettingParameter {
         ViewingOptions::initialize(reserve, std::size(reserve), false);
         PanOptions::initialize(reserve, std::size(reserve), false);
         KineticOptions::initialize(reserve, std::size(reserve));
+        BackgroundOptions::initialize(reserve, std::size(reserve));
     }
 
     SettingParameter(const SettingParameter& other) {
@@ -278,7 +280,7 @@ struct SettingParameter {
         // 右键点击行为检查 (0~1)
         if (rightClickAction > 1) rightClickAction = 0;
 
-        // 背景模式检查 (0~3)
+        // 背景模式检查 (0~4)，既有四个编号保持不变。
         backgroundMode = static_cast<uint32_t>(BackgroundRenderer::normalizeMode(backgroundMode));
 
         // 首次从旧版设置升级时启用显示器记忆；之后保留用户选择。
@@ -303,6 +305,7 @@ struct SettingParameter {
         isOneToOnePreferred = reserve[ViewingOptions::SCALE] == 1;
         PanOptions::initialize(reserve, std::size(reserve));
         KineticOptions::initialize(reserve, std::size(reserve));
+        BackgroundOptions::initialize(reserve, std::size(reserve));
 
         // 确保扩展名列表字符串以空字符结尾
         extCheckedListStr[sizeof(extCheckedListStr) - 1] = 0;
@@ -443,7 +446,7 @@ enum class CursorPos :int {
     centerArea = 0, leftEdge, rightEdge, toolbarPrevious, toolbarPlayPause, toolbarNext,
     toolbarRotateLeft, toolbarRotateRight, toolbarFlipHorizontal, toolbarFlipVertical,
     toolbarZoomFit, toolbarFitImage, toolbarZoomActual, toolbarFullscreen, toolbarFavorite,
-    toolbarCopy, toolbarDelete, toolbarSetting, toolbarZoomOut, toolbarZoomText, toolbarZoomIn,
+    toolbarCopy, toolbarDelete, toolbarSetting, toolbarZoomOut, toolbarZoomText, toolbarZoomIn, toolbarScreenPicker,
     toolbar, centerTop, presentationClose, toolbarPan,
 };
 
@@ -459,6 +462,7 @@ enum class ContextMenu :int {
     editImageLast = 1024,
     editImageChoose = 1025,
     backgroundTransparent = 1100, backgroundWhite, backgroundBlack, backgroundFrostedGlass,
+    backgroundCheckerAutomatic = 1104, backgroundCheckerLight, backgroundCheckerDark,
     // 复制 / 移动到指定位置：每个目标一项，外加「选择位置…」
     copyToTargetFirst = 1200,
     copyToTargetLast = 1204,
@@ -468,6 +472,9 @@ enum class ContextMenu :int {
     moveToTargetChoose = 1215,
     readerToggle = 1300, readerVertical, readerHorizontal, readerSingle, readerDouble,
     readerPlaceLeft, readerPlaceRight, readerPrevious, readerNext,
+    saveImageCopy = 1400, screenColorPicker, psdLayers,
+    colorEditor,
+    imageColorPicker,
 };
 
 struct Action {

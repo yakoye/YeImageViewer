@@ -374,6 +374,22 @@ if ($themeGuessOffenders.Count -gt 0) {
 }
 Write-Host "PASS the built-in tips image is identified exactly, not guessed from a corner pixel."
 
+# 双向切换只改窗口；同步 WM_SIZE 不能把当前倍率替换成默认策略。
+$transitionSource=[IO.File]::ReadAllText((Join-Path $repoRoot 'YeImageViewer/src/main.cpp'))
+$exitTransition=[regex]::Match($transitionSource,'(?s)void exitPresentationMode\(\).*?\n    // 命令行')
+if(-not $exitTransition.Success -or
+    -not $exitTransition.Value.Contains('PresentationLayout::calculateWindowedAtScale') -or
+    -not $exitTransition.Value.Contains('PresentationLayout::PreserveDisplayedScale scaleTransition(curPar,restoringFrameWithoutZoom);') -or
+    -not $exitTransition.Value.Contains('scaleTransition.finish();') -or
+    $exitTransition.Value -match 'framedWindowAnchored\s*=\s*true' -or
+    -not $transitionSource.Contains('if (restoringFrameWithoutZoom)')) {
+    throw '恢复边框必须保留当前显示倍率，并防止同步 WM_SIZE 重套默认缩放'
+}
+if($transitionSource -notmatch '(?s)void enterPresentationMode\(\).*?PreserveDisplayedScale scaleTransition\(curPar,restoringFrameWithoutZoom\);.*?scaleTransition.finish\(\);.*?void exitPresentationMode'){
+    throw '恢复边框必须保留当前显示倍率；进入沉浸也必须使用同一保护'
+}
+Write-Host 'PASS 恢复边框保留实际显示倍率；窗口变化不重套图片缩放规则。'
+
 # 七、关于页显示的版本号要和 .rc 里的版本资源一致。
 # 发 v1.37.4 时只改了 .rc，main.cpp 里的 appVersion 还停在 v1.37.3，于是关于页
 # 写着 v1.37.3、资源管理器属性页写着 1.37.4。两边都不报错，而原有的测试只校验

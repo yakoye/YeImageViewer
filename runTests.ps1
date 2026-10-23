@@ -1,8 +1,10 @@
 ﻿param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$CoreOnly
 )
 
 $ErrorActionPreference = "Stop"
+$env:YEIMAGEVIEWER_COLOR_DATA_DIR=Join-Path ([IO.Path]::GetTempPath()) ('YeColorSuite-'+[guid]::NewGuid().ToString('N'))
 Set-StrictMode -Version Latest
 
 # Keep visible real-window regressions on the primary (small) monitor so they
@@ -75,7 +77,23 @@ foreach ($requiredFile in @($viewer, $unitTests, $crashFixture, $hdrFixture, $sh
     }
 }
 
-$expectedFileVersion = "1.38.2.0"
+# 所有真实窗口共享本轮新建的测试运行区，不读写开发目录的 DB。
+# 保留目录以便失败时核对配置；仅复制程序与 DLL，不带入历史设置/旋转记录。
+& (Join-Path $repoRoot 'scripts/test-regression-runtime.ps1')
+& (Join-Path $repoRoot 'scripts/test-desktop-slot-policy.ps1')
+& (Join-Path $repoRoot 'scripts/test-psd-dock-source-contract.ps1')
+& (Join-Path $repoRoot 'scripts/test-layer-backend-runtime.ps1')
+& (Join-Path $repoRoot 'scripts/test-color-priority-contract.ps1')
+& (Join-Path $repoRoot 'scripts/test-color-workbench-contract.ps1')
+& (Join-Path $repoRoot 'scripts/test-background-source.ps1')
+& (Join-Path $repoRoot 'scripts/test-transform-source.ps1')
+. (Join-Path $repoRoot 'scripts/New-RegressionRuntime.ps1')
+$suiteRuntime = New-IsolatedViewerRuntime -SourceViewer $viewer
+$viewer = $suiteRuntime.Viewer
+Assert-IsolatedViewerRuntime -Viewer $viewer
+Write-Host "隔离回归运行目录：$($suiteRuntime.Directory)"
+
+$expectedFileVersion = "1.39.0.0"
 $actualFileVersion = (Get-Item -LiteralPath $viewer).VersionInfo.FileVersion
 if ($actualFileVersion -ne $expectedFileVersion) {
     throw "Viewer file version mismatch: expected $expectedFileVersion, got $actualFileVersion."
@@ -83,7 +101,7 @@ if ($actualFileVersion -ne $expectedFileVersion) {
 Write-Host "PASS viewer file version is $expectedFileVersion."
 
 # 预发布版的后缀（-rc1 这类）写在 ProductVersion 字符串里，打包脚本据此给安装包命名
-$expectedProductVersion = "1.38.2"
+$expectedProductVersion = "1.39.0"
 $actualProductVersion = (Get-Item -LiteralPath $viewer).VersionInfo.ProductVersion
 if ($actualProductVersion -ne $expectedProductVersion) {
     throw "Viewer product version mismatch: expected $expectedProductVersion, got $actualProductVersion."
@@ -132,6 +150,10 @@ try {
         -NoDesktopShortcut -NoStartMenuShortcut -NoPrompt -NoLaunch -SkipRegistration
     $installedViewer = Join-Path $installerTestDirectory "YeImageViewer.exe"
     $installedProvider = Join-Path $installerTestDirectory "YeThumbnailProvider.dll"
+    foreach($name in @('YeLayerBackend.dll','LAYER_BACKEND_NOTICES.txt')){
+        $installed=Join-Path $installerTestDirectory $name;$original=Join-Path $releaseDir $name
+        if(-not(Test-Path -LiteralPath $installed) -or (Get-FileHash -LiteralPath $installed).Hash -ne (Get-FileHash -LiteralPath $original).Hash){throw "本地复制缺失或改变图层后端/许可：$name"}
+    }
     if (-not (Test-Path -LiteralPath $installedViewer -PathType Leaf) -or
         -not (Test-Path -LiteralPath $installedProvider -PathType Leaf) -or
         $installResult.Launched -or $installResult.Registered -or
@@ -302,7 +324,7 @@ Write-Host "PASS viewer embeds current commit ID $expectedCommitId."
 # 抽成了独立脚本：提交前可以单独跑它自检，只读源码，几秒钟出结果。
 # 它自己 throw，这里直接调，不必再转一手退出码。
 & (Join-Path $repoRoot "scripts\check-source-invariants.ps1") -RepoRoot $repoRoot
-& (Join-Path $repoRoot "scripts\verify-source-invariant-checks.ps1") -RepoRoot $repoRoot
+& (Join-Path $repoRoot "scripts\test-invariant-isolation.ps1") -RepoRoot $repoRoot
 
 Write-Host "Running unit regression tests..."
 $expectedHdrHash = "1A1A661E0A22BECBE019B6C095004315351F28600D9BD7600BD933BEB351E5D5"
@@ -406,6 +428,10 @@ foreach ($thumbnailFixture in $thumbnailFixtures) {
 if ($LASTEXITCODE -ne 0) {
     throw "Unit regression tests failed with exit code $LASTEXITCODE."
 }
+
+& (Join-Path $repoRoot 'scripts/test-thumbnail-scaling.ps1') -Tests $unitTests -Provider $thumbnailProviderDll
+& (Join-Path $repoRoot 'scripts/test-transform-offscreen.ps1') -Viewer $viewer
+if($CoreOnly){Write-Host '核心/源码护栏/缩略图检查完成；未执行格式主程序及真实窗口矩阵，不代表完整回归通过。';return}
 
 Write-Host "Running real format decode corpus..."
 $formatCases = @(Import-Csv -LiteralPath $formatManifest -Delimiter "`t")
@@ -614,6 +640,26 @@ public static class YeImageViewerTestNativeV1365
 
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr window, uint message, UIntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
+    [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint first, uint second, bool attach);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+
+    public static void ActivateForKeyboard(IntPtr window) {
+        uint current = GetCurrentThreadId();
+        uint foreground = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero);
+        uint target = GetWindowThreadProcessId(window, IntPtr.Zero);
+        bool attached = foreground != 0 && foreground != current && AttachThreadInput(current, foreground, true);
+        bool targetAttached = target != 0 && target != current && target != foreground && AttachThreadInput(current, target, true);
+        try { SetForegroundWindow(window); }
+        finally {
+            if (targetAttached) AttachThreadInput(current, target, false);
+            if (attached) AttachThreadInput(current, foreground, false);
+        }
+    }
 
     // 用来探「窗口现在能不能回消息」：句柄出现不等于消息泵已经跑起来了
     [DllImport("user32.dll")]
@@ -963,6 +1009,9 @@ function Get-BitmapPixelDifference {
 # PerMonitorHighDPIAware, so the overlay sizes itself by DPI and only shrinks
 # when the window is too narrow; these helpers keep the synthetic click
 # coordinates on the same geometry the viewer actually draws.
+# 点击探针从已构建的共享布局读取实际偏移；视觉顺序/边界由独立单元断言验证。
+$toolbarConstants = (& $unitTests --toolbar-layout-constants | ConvertFrom-Json)
+if($LASTEXITCODE -ne 0 -or $toolbarConstants.width -le 0){throw '无法读取编译后的工具栏布局'}
 function Get-ToolbarScale {
     param([int]$CanvasWidth, [int]$Dpi)
     if ($Dpi -le 0) { $Dpi = 96 }
@@ -970,7 +1019,7 @@ function Get-ToolbarScale {
     if ($CanvasWidth -le 16) {
         return [int][Math]::Floor(600 * $target / 1000)
     }
-    $widthScale = [int][Math]::Floor(($CanvasWidth - 16) * 1000 / 683)
+    $widthScale = [int][Math]::Floor(($CanvasWidth - 16) * 1000 / $toolbarConstants.width)
     $minimum = [Math]::Min($widthScale,[int][Math]::Floor(400 * $target / 1000))
     $value = [Math]::Min($widthScale, $target)
     return [Math]::Min([Math]::Max($value, $minimum), $target)
@@ -981,7 +1030,22 @@ function Get-ScaledValue {
     return [Math]::Max(1, [int][Math]::Floor(($Value * $Scale + 500) / 1000))
 }
 
+Write-Host 'Checking PSD dock production offscreen components (not desktop screenshots)...'
+$dockOffscreen = Join-Path $suiteRuntime.Directory 'psd-dock-offscreen'
+$dockFixture = Join-Path $repoRoot 'test/image-tools/visibility-stack.psd'
+$dockProbe = Start-Process -FilePath $viewer -ArgumentList ('--psd-dock-selftest "'+$dockFixture+'" "'+$dockOffscreen+'"') -PassThru
+try {
+    if(-not $dockProbe.WaitForExit(30000)){Stop-Process -Id $dockProbe.Id -Force;throw 'PSD停靠组件离屏自检超时'}
+    if($dockProbe.ExitCode -ne 0){throw 'PSD停靠组件离屏自检失败'}
+} finally {$dockProbe.Dispose()}
+Write-Host 'PASS PSD停靠组件异步可见性、显示通道、96/192/288 DPI浅深色离屏布局；不代替真实窗口截图。'
+
+& (Join-Path $repoRoot 'scripts/test-picker-layout.ps1') -Viewer $viewer -OutputDirectory (Join-Path $suiteRuntime.Directory 'picker-layout')
+
 Write-Host "Checking functional startup open button..."
+& (Join-Path $repoRoot 'scripts/test-background.ps1') -Viewer $viewer
+& (Join-Path $repoRoot 'scripts/test-background.ps1') -Viewer $viewer -LegacyBlur
+& (Join-Path $repoRoot 'scripts/test-shortcut-recording.ps1')
 $homeDirectory = Join-Path ([IO.Path]::GetTempPath()) ("YeImageViewer-Home-" + [Guid]::NewGuid().ToString("N"))
 $homeViewer = Join-Path $homeDirectory "YeImageViewer.exe"
 $homeProcess = $null
@@ -1107,8 +1171,8 @@ try {
         throw "Zoom-command regression failed: could not get back to a framed window."
     }
 
-    # 点工具栏上的「适应图片」。坐标用和别处一样的换算：工具栏宽 615、高 50、
-    # 底边距 20，适应图片的按钮在基准偏移 385、宽 34（见 OverlayLayout.h）。
+    # 点工具栏上的「适应图片」；宽度与偏移从已构建的OverlayLayout获取，
+    # 高50、底边距20、按钮宽34，不能沿用旧布局点击到相邻「适应窗口」。
     # 工具栏缩放不只看 DPI 还看窗口宽度，所以必须用 Get-ToolbarScale，
     # 自己按 DPI 乘一下在窄窗口上会算偏。
     [void][YeImageViewerTestNativeV1365]::GetClientRect($zoomWindow, [ref]$zoomClient)
@@ -1116,14 +1180,14 @@ try {
     $zoomClientHeight = $zoomClient.Bottom - $zoomClient.Top
     $zoomDpi = [YeImageViewerTestNativeV1365]::GetDpiForWindow($zoomWindow)
     $zoomScale = Get-ToolbarScale -CanvasWidth $zoomClientWidth -Dpi $zoomDpi
-    $zoomToolbarWidth = Get-ScaledValue -Value 683 -Scale $zoomScale
+    $zoomToolbarWidth = Get-ScaledValue -Value $toolbarConstants.width -Scale $zoomScale
     $zoomToolbarHeight = Get-ScaledValue -Value 50 -Scale $zoomScale
     $zoomToolbarBottom = Get-ScaledValue -Value 20 -Scale $zoomScale
     $zoomToolbarLeft = [int][Math]::Floor(($zoomClientWidth - $zoomToolbarWidth) / 2.0)
     $zoomPadding = Get-ScaledValue -Value 8 -Scale $zoomScale
     $zoomButton = Get-ScaledValue -Value 34 -Scale $zoomScale
     $fitImageX = $zoomToolbarLeft + $zoomPadding +
-        (Get-ScaledValue -Value 453 -Scale $zoomScale) + [int]($zoomButton / 2)
+        (Get-ScaledValue -Value $toolbarConstants.fitOffset -Scale $zoomScale) + [int]($zoomButton / 2)
     $fitImageY = $zoomClientHeight - $zoomToolbarBottom - [int]($zoomToolbarHeight / 2)
 
     # 工具栏是悬停才显示的，先把鼠标移上去，再点
@@ -1193,7 +1257,16 @@ try {
     # SVG 是最容易暴露的：系统给的缩略图是 995x1024，而 SVG 自己是 280x288。
     # 按缩略图尺寸算缩放的话，换成真图那一刻画面会突然缩小三倍。
     if (Test-Path -LiteralPath $sharpSvgFixture -PathType Leaf) {
-        $flashProcess = Start-Process -FilePath $zoomViewer -ArgumentList ('"' + $sharpSvgFixture + '"') -PassThru
+        # 此用例只量同一 SVG 的预览/真图取景。素材也隔离为单文件目录，
+        # 不把旁边的另一个 SVG 翻页结果误归为当前图片的加载跳变。
+        $flashDirectory = Join-Path $zoomTestDirectory 'single-svg'
+        [void](New-Item -ItemType Directory -Path $flashDirectory)
+        $flashFixture = Join-Path $flashDirectory ([IO.Path]::GetFileName($sharpSvgFixture))
+        Copy-Item -LiteralPath $sharpSvgFixture -Destination $flashFixture
+        if ((Get-FileHash -LiteralPath $flashFixture).Hash -ne (Get-FileHash -LiteralPath $sharpSvgFixture).Hash) {
+            throw 'SVG 预览测试素材副本内容不一致'
+        }
+        $flashProcess = Start-Process -FilePath $zoomViewer -ArgumentList ('"' + $flashFixture + '"') -PassThru
         $flashTitles = New-Object Collections.ArrayList
         $flashWatch = [Diagnostics.Stopwatch]::StartNew()
         $flashLast = ""
@@ -2424,6 +2497,8 @@ try {
     if (-not $fifthTitle.ToString().Contains("[5/5]")) {
         throw "Current-image restore regression failed: immersive browsing did not reach image 5."
     }
+    if($fifthTitle.ToString() -notmatch '(\d+)x(\d+)\([^)]*\)\s+(\d+)%') {throw '无法读取退出前第五张的实际像素尺寸和倍率'}
+    $fifthSourceWidth=[int]$matches[1];$fifthSourceHeight=[int]$matches[2];$fifthBeforePercent=[int]$matches[3]
 
     # 同上：Esc 现在默认关闭图片，退出沉浸预览改用点击图片外背景。
     # 坐标按当前这张图的实际留白算，不能写死——写死过 x=4，第五张图够宽时那个点
@@ -2462,10 +2537,19 @@ try {
     [void][YeImageViewerTestNativeV1365]::GetMonitorInfo($restoreMonitor, [ref]$restoreMonitorInfo)
     $maximumRestoreWidth = [int](($restoreMonitorInfo.Work.Right - $restoreMonitorInfo.Work.Left) * 90 / 100)
     $maximumRestoreHeight = [int](($restoreMonitorInfo.Work.Bottom - $restoreMonitorInfo.Work.Top) * 90 / 100)
+    # 新规则：窗口由当前画面大小确定，不重新套默认沉浸比例再把图片放大。
+    # 标题百分比取整，保留 +/-0.5% 的像素区间，不能将标题整数当精确缩放。
+    $restoreLowWidth=[Math]::Floor([Math]::Min($maximumRestoreWidth,$fifthSourceWidth*($fifthBeforePercent-0.5)/100))-1
+    $restoreHighWidth=[Math]::Ceiling([Math]::Min($maximumRestoreWidth,$fifthSourceWidth*($fifthBeforePercent+0.5)/100))+1
+    $restoreLowHeight=[Math]::Floor([Math]::Min($maximumRestoreHeight,$fifthSourceHeight*($fifthBeforePercent-0.5)/100))-1
+    $restoreHighHeight=[Math]::Ceiling([Math]::Min($maximumRestoreHeight,$fifthSourceHeight*($fifthBeforePercent+0.5)/100))+1
+    $fifthAfterTitle=New-Object Text.StringBuilder 2048
+    [void][YeImageViewerTestNativeV1365]::GetWindowText($restoreWindow,$fifthAfterTitle,$fifthAfterTitle.Capacity)
+    if($fifthAfterTitle.ToString() -notmatch '(\d+)%' -or [int]$matches[1] -ne $fifthBeforePercent){throw '恢复边框改变了第五张图片倍率'}
     if (($fifthStyle -band 0x00C00000) -eq 0 -or
         $fifthWidth -eq $firstWidth -or $fifthHeight -eq $firstHeight -or
-        [Math]::Abs($fifthWidth - $maximumRestoreWidth) -gt 1 -or
-        [Math]::Abs($fifthHeight - $maximumRestoreHeight) -gt 1) {
+        $fifthWidth -lt $restoreLowWidth -or $fifthWidth -gt $restoreHighWidth -or
+        $fifthHeight -lt $restoreLowHeight -or $fifthHeight -gt $restoreHighHeight) {
         throw "Current-image restore regression failed: image 5 did not determine the capped framed size."
     }
 
@@ -2511,7 +2595,9 @@ function Set-CloseImageShortcut {
     param(
         [Parameter(Mandatory)][IntPtr]$ViewerWindow,
         [Parameter(Mandatory)][int]$ProcessId,
-        [Parameter(Mandatory)][bool]$Assign
+        [Parameter(Mandatory)][bool]$Assign,
+        # 仅供专项负向对照，正常完整回归始终录入Esc。
+        [byte]$DiagnosticKey = 0x1B
     )
     [void][YeImageViewerTestNativeV1365]::SendMessage($ViewerWindow, 0x0100, [UIntPtr]0x72, [IntPtr]::Zero)
     $deadline = [DateTime]::UtcNow.AddSeconds(3)
@@ -2535,18 +2621,61 @@ function Set-CloseImageShortcut {
     [void][YeImageViewerTestNativeV1365]::SendMessage($settingWindow, 0x0201, [UIntPtr]1, $position)
     [void][YeImageViewerTestNativeV1365]::SendMessage($settingWindow, 0x0202, [UIntPtr]0, $position)
     if ($Assign) {
-        # 点按键格子进入录制，再按 Esc 把它录回去
+        # GetKeyState 来自目标线程输入队列，SendMessage(KEYDOWN) 不等于真实按键。
+        # 在前台发送配对输入，并明确同步已释放的修饰键，避免误录 Ctrl+Esc。
         Start-Sleep -Milliseconds 150
-        [void][YeImageViewerTestNativeV1365]::SendMessage($settingWindow, 0x0100, [UIntPtr]0x1B, [IntPtr]::Zero)
+        [YeImageViewerTestNativeV1365]::ActivateForKeyboard($settingWindow)
+        if ([YeImageViewerTestNativeV1365]::GetForegroundWindow() -ne $settingWindow) {
+            throw '快捷键录制测试未取得前台，不能安全发送真实输入'
+        }
+        foreach ($modifier in @(0x10,0x11,0x12)) {
+            if (([YeImageViewerTestNativeV1365]::GetAsyncKeyState($modifier) -band 0x8000) -ne 0) {
+                Write-Host "录制前检测到修饰键按下：$modifier；在被测窗口同步松开状态。"
+            }
+        }
+        foreach ($modifier in @(0xA0,0xA1,0xA2,0xA3,0xA4,0xA5)) {
+            $releaseFlags = if ($modifier -in @(0xA3,0xA5)) {3} else {2}
+            [YeImageViewerTestNativeV1365]::keybd_event([byte]$modifier,0,$releaseFlags,[UIntPtr]::Zero)
+        }
+        Start-Sleep -Milliseconds 100
+        foreach ($modifier in @(0x10,0x11,0x12)) {
+            if (([YeImageViewerTestNativeV1365]::GetAsyncKeyState($modifier) -band 0x8000) -ne 0) {
+                throw "修饰键松开后再次被按下：$modifier，存在并行输入，停止录制"
+            }
+        }
+        if ([YeImageViewerTestNativeV1365]::GetForegroundWindow() -ne $settingWindow) {
+            throw '录制前前台发生变化，停止发送真实输入'
+        }
+        # 只增加诊断标识，输入语义不变；与外部或人工的退格输入明确区分。
+        [YeImageViewerTestNativeV1365]::keybd_event($DiagnosticKey,0,0,[UIntPtr]0x594556)
+        [YeImageViewerTestNativeV1365]::keybd_event($DiagnosticKey,0,2,[UIntPtr]0x594556)
+        Start-Sleep -Milliseconds 150
     }
     [void][YeImageViewerTestNativeV1365]::SendMessage($settingWindow, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 300
+    if ($Assign) {
+        $db = Join-Path $suiteRuntime.Directory 'YeImageViewer.db'
+        $bytes = [IO.File]::ReadAllBytes($db)
+        $binding = $null
+        for ($offset=0; $offset -le [Math]::Min(4096,$bytes.Length)-4*(16+32); $offset+=4) {
+            if ([BitConverter]::ToUInt32($bytes,$offset) -eq 0x594B4559) {
+                $binding = [BitConverter]::ToUInt32($bytes,$offset+4*(16+31))
+                break
+            }
+        }
+        if ($binding -ne 27) { throw "Esc 录制实际保存值错误：$binding，期望 27（不能误录 Ctrl+Esc）" }
+        Write-Host 'PASS 真实键盘录制 Esc 保存为 27，无 Ctrl/Shift/Alt 修饰。'
+    }
 }
 
 Write-Host "Opening the SVG background-selector fixture..."
 $viewerProcess = $null
+$svgStartupTrace=Join-Path $suiteRuntime.Directory 'svg-escape-startup.txt'
+$previousStartupTrace=$env:YEIMAGEVIEWER_STARTUP_TRACE
 try {
+    $env:YEIMAGEVIEWER_STARTUP_TRACE=$svgStartupTrace
     $viewerProcess = Start-Process -FilePath $viewer -ArgumentList ('"' + $sharpSvgFixture + '"') -PassThru
+    $env:YEIMAGEVIEWER_STARTUP_TRACE=$previousStartupTrace
     $deadline = [DateTime]::UtcNow.AddSeconds(6)
 
     do {
@@ -2558,7 +2687,20 @@ try {
         throw "Background-selector regression failed: viewer did not open a responsive SVG window."
     }
 
-    $backgroundCommands = @(1100, 1101, 1102, 1103, 1100)
+    # HWND在D3D/首次解码前已创建；不能把它当作首帧可交互。等独立启动标记，绝不轮询到目标样式再称成功。
+    Write-Host "DIAG SVG Esc HWND-created style=$([YeImageViewerTestNativeV1365]::GetWindowLongPtr([IntPtr]$viewerProcess.MainWindowHandle,-16))"
+    $startupDeadline=[DateTime]::UtcNow.AddSeconds(12)
+    do {
+        $startupReady=$false
+        try {$startupReady=(Test-Path -LiteralPath $svgStartupTrace) -and ([IO.File]::ReadAllText($svgStartupTrace).Contains('afterShowWindow'))}catch [IO.IOException]{} # 与短暂追加写错开，不改变12秒上限。
+        if($startupReady){break}
+        Start-Sleep -Milliseconds 50
+        $viewerProcess.Refresh()
+    } while(-not $viewerProcess.HasExited -and [DateTime]::UtcNow -lt $startupDeadline)
+    if(-not $startupReady){throw "SVG启动未完成；保留追踪：$svgStartupTrace"}
+    Write-Host "DIAG SVG Esc startup-ready style=$([YeImageViewerTestNativeV1365]::GetWindowLongPtr([IntPtr]$viewerProcess.MainWindowHandle,-16)) trace=$svgStartupTrace"
+
+    $backgroundCommands = @(1100, 1101, 1102, 1103, 1104, 1105, 1106, 1100)
     foreach ($command in $backgroundCommands) {
         [void][YeImageViewerTestNativeV1365]::SendMessage(
             [IntPtr]$viewerProcess.MainWindowHandle, 0x0111, [UIntPtr]$command, [IntPtr]::Zero)
@@ -2580,8 +2722,11 @@ try {
     $window = [IntPtr]$viewerProcess.MainWindowHandle
     # Esc 默认绑在「关闭图片」上，先在快捷键页清掉它，下面这串才是 Esc 的回退链：
     # 退出沉浸预览 -> 退出全屏 -> 还原最大化窗口 -> 普通窗口里什么都不做。
+    $beforeShortcutStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64()
+    Write-Host "DIAG SVG Esc before-shortcut style=$beforeShortcutStyle foreground=$([YeImageViewerTestNativeV1365]::GetForegroundWindow()) main=$window"
     Set-CloseImageShortcut -ViewerWindow $window -ProcessId $viewerProcess.Id -Assign $false
     $presentationStyle = [YeImageViewerTestNativeV1365]::GetWindowLongPtr($window, -16).ToInt64()
+    Write-Host "DIAG SVG Esc after-shortcut style=$presentationStyle foreground=$([YeImageViewerTestNativeV1365]::GetForegroundWindow()) main=$window"
     if (($presentationStyle -band 0x00C00000) -ne 0) {
         throw "Escape regression failed: SVG did not begin in borderless presentation mode."
     }
@@ -2693,7 +2838,7 @@ try {
     $targetClientWidth = $clientWidth
     $targetClientHeight = $clientHeight
     $toolbarScale = Get-ToolbarScale -CanvasWidth $targetClientWidth -Dpi $windowDpi
-    $toolbarWidth = Get-ScaledValue -Value 683 -Scale $toolbarScale
+    $toolbarWidth = Get-ScaledValue -Value $toolbarConstants.width -Scale $toolbarScale
     $toolbarHeight = Get-ScaledValue -Value 50 -Scale $toolbarScale
     $toolbarBottom = Get-ScaledValue -Value 20 -Scale $toolbarScale
     $toolbarX = [int]($targetClientWidth / 2)
@@ -2707,12 +2852,12 @@ try {
     }
     Write-Host "PASS centered reference toolbar hover remains responsive."
 
-    $scaledToolbarWidth = Get-ScaledValue -Value 683 -Scale $toolbarScale
+    $scaledToolbarWidth = Get-ScaledValue -Value $toolbarConstants.width -Scale $toolbarScale
     $scaledButtonSize = Get-ScaledValue -Value 34 -Scale $toolbarScale
     $scaledPadding = Get-ScaledValue -Value 8 -Scale $toolbarScale
-    $scaledZoomTextOffset = Get-ScaledValue -Value 594 -Scale $toolbarScale
+    $scaledZoomTextOffset = Get-ScaledValue -Value $toolbarConstants.zoomTextOffset -Scale $toolbarScale
     $scaledZoomTextWidth = Get-ScaledValue -Value 50 -Scale $toolbarScale
-    $scaledNextOffset = Get-ScaledValue -Value 368 -Scale $toolbarScale
+    $scaledNextOffset = Get-ScaledValue -Value $toolbarConstants.nextOffset -Scale $toolbarScale
     $toolbarLeft = [int][Math]::Floor(($targetClientWidth - $scaledToolbarWidth) / 2.0)
     $zoomTextX = $toolbarLeft + $scaledPadding + $scaledZoomTextOffset +
         [int][Math]::Floor($scaledZoomTextWidth / 2.0)
@@ -2757,11 +2902,10 @@ try {
         [void][YeImageViewerTestNativeV1365]::SendMessage(
             $window, 0x0101, [UIntPtr]$key, [IntPtr]::Zero)
     }
-    # 工具栏上的空白处：沉浸按钮结束在 489、缩小按钮从 502 开始，495 正好在两者之间。
-    # 插入「适应图片」之后按钮整体后移，原来的 458 落进了沉浸按钮里，
-    # 一点就切进沉浸模式、缩放被重算，量出来的自然不是 175%。
+    # 全屏与缩小按钮之间的真实空白。旧563在rc8落入全屏按钮，不能继续硬编码。
+    # 编译后的布局导出同时验证这个点只命中Toolbar而不是任何按钮。
     $bareToolbarX = $toolbarLeft + $scaledPadding +
-        [int][Math]::Floor((563 * $toolbarScale + 500) / 1000.0)
+        [int][Math]::Floor(($toolbarConstants.bareOffset * $toolbarScale + 500) / 1000.0)
     $bareToolbarPosition = [IntPtr](($toolbarY -shl 16) -bor ($bareToolbarX -band 0xFFFF))
     [void][YeImageViewerTestNativeV1365]::PostMessage(
         $window, 0x0200, [UIntPtr]::Zero, $bareToolbarPosition)
@@ -2830,7 +2974,7 @@ try {
     }
     Write-Host "PASS centered toolbar Next button changes images through its precise hit target."
 
-    $scaledPlayOffset = [int][Math]::Floor((333 * $toolbarScale + 500) / 1000.0)
+    $scaledPlayOffset = [int][Math]::Floor(($toolbarConstants.playOffset * $toolbarScale + 500) / 1000.0)
     $playButtonX = $toolbarLeft + $scaledPadding + $scaledPlayOffset +
         [int][Math]::Floor($scaledButtonSize / 2.0)
     $playButtonPosition = [IntPtr](($toolbarY -shl 16) -bor ($playButtonX -band 0xFFFF))
@@ -2905,11 +3049,11 @@ try {
     [void][YeImageViewerTestNativeV1365]::GetClientRect($window, [ref]$presentationClientRect)
     $presentationWidth = $presentationClientRect.Right - $presentationClientRect.Left
     # The close button scales with DPI too, so derive its centre instead of
-    # assuming the 96-DPI 42px button at a 12px margin.
+    # assuming a fixed physical size. The square is flush with the corner.
     $presentationDpi = [YeImageViewerTestNativeV1365]::GetDpiForWindow($window)
     $presentationScale = [int][Math]::Floor($presentationDpi * 1000 / 96)
     $closeSize = Get-ScaledValue -Value 42 -Scale $presentationScale
-    $closeMargin = Get-ScaledValue -Value 12 -Scale $presentationScale
+    $closeMargin = 0
     $closeX = $presentationWidth - $closeMargin - [int][Math]::Floor($closeSize / 2)
     $closeY = $closeMargin + [int][Math]::Floor($closeSize / 2)
     $closePosition = [IntPtr](($closeY -shl 16) -bor ($closeX -band 0xFFFF))
@@ -2927,6 +3071,7 @@ try {
     Write-Host "PASS presentation close waits for mouse-up, preventing click-through, then exits cleanly."
 }
 finally {
+    $env:YEIMAGEVIEWER_STARTUP_TRACE=$previousStartupTrace
     if ($viewerProcess -and -not $viewerProcess.HasExited) {
         [void]$viewerProcess.CloseMainWindow()
         if (-not $viewerProcess.WaitForExit(3000)) {
@@ -3115,10 +3260,18 @@ try {
     $targetSettingsRect = New-Object YeImageViewerTestNativeV1365+RECT
     [void][YeImageViewerTestNativeV1365]::GetClientRect($targetSettings, [ref]$targetSettingsRect)
     $targetSettingsScale = ($targetSettingsRect.Right - $targetSettingsRect.Left) / 620.0
-    $targetScrollOffset = 1822 - (620 - 52)
+    # 新动作会延长快捷键卡片。按生产布局的行数推导目标区与滚动到底的偏移，
+    # 不能一边更新目标行坐标、一边还沿用旧卡片高度1822。
+    $targetLayoutSource = Get-Content (Join-Path $repoRoot 'YeImageViewer/include/SettingLayout.h') -Raw
+    $targetKeyboardCountMatch = [regex]::Match($targetLayoutSource, 'SHORTCUT_KEYBOARD_ROW_COUNT\s*=\s*(\d+)')
+    if (-not $targetKeyboardCountMatch.Success) { throw '无法读取快捷键生产布局行数' }
+    $targetKeyboardCount = [int]$targetKeyboardCountMatch.Groups[1].Value
+    $targetRowY = 288 + $targetKeyboardCount * 40 + 16 + 36
+    $targetContentHeight = $targetRowY + 2 * 46 + 10 + 20
+    $targetScrollOffset = $targetContentHeight - (620 - 52)
     for ($operation = 0; $operation -lt 2; $operation++) {
         $targetPathX = [int][Math]::Round(320 * $targetSettingsScale)
-        $targetPathY = [int][Math]::Round((52 + 1700 + 23 + $operation * 46 -
+        $targetPathY = [int][Math]::Round((52 + $targetRowY + 23 + $operation * 46 -
             $targetScrollOffset) * $targetSettingsScale)
         $targetPathPosition = [IntPtr](($targetPathY -shl 16) -bor $targetPathX)
         [void][YeImageViewerTestNativeV1365]::PostMessage($targetSettings, 0x0201,
@@ -4371,7 +4524,11 @@ foreach ($donateName in @("donate-alipay.png", "donate-wechat.png")) {
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -ActualSizeOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -SettingsAuditOnly
 & (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -ShortcutAuditOnly
+& (Join-Path $repoRoot 'scripts/test-viewing-regressions.ps1') -Viewer $viewer -PsdDockOnly
 & (Join-Path $repoRoot 'scripts/test-release-archive.ps1') -Viewer $viewer
+& (Join-Path $repoRoot 'scripts/test-image-tools.ps1') -Viewer $viewer
+& (Join-Path $repoRoot 'scripts/test-screen-picker.ps1') -Viewer $viewer
+& (Join-Path $repoRoot 'scripts/test-color-library.ps1') -Viewer $viewer
 
 & (Join-Path $repoRoot 'scripts/test-format-compatibility.ps1') -Viewer $viewer
 if ($LASTEXITCODE -ne 0) {throw '格式兼容性专项回归失败'}

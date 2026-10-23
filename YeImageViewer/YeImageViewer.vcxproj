@@ -164,6 +164,7 @@
   <ItemGroup>
     <ClInclude Include="include\BackgroundPolicy.h" />
     <ClInclude Include="include\BackgroundRenderer.h" />
+    <ClInclude Include="include\BackgroundOptions.h" />
     <ClInclude Include="include\BuildInfo.h" />
     <ClInclude Include="include\blpDecoder.h" />
     <ClInclude Include="include\ColorManager.h" />
@@ -201,6 +202,9 @@
     <ClInclude Include="include\TextDrawer.h" />
     <ClInclude Include="include\TextRenderingPolicy.h" />
     <ClInclude Include="include\ToolbarCommand.h" />
+    <ClInclude Include="include\PickerCore.h" />
+    <ClInclude Include="include\PickerPreferences.h" />
+    <ClInclude Include="include\ScreenPickerSession.h" />
     <ClInclude Include="include\WindowTitlePresentation.h" />
     <ClInclude Include="include\YeThumbnailProviderGuids.h" />
     <ClInclude Include="include\ThumbnailRegistrar.h" />

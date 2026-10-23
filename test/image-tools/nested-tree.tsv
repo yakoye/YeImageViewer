@@ -1,0 +1,10 @@
+# section visible name; 1=expanded group, 2=collapsed group, 3=end marker, 0=pixel
+1 1 Outer
+0 1 RootChild
+2 1 Inner
+0 1 DeepVisible
+0 0 DeepHidden
+3 1 InnerEnd
+0 1 Sibling
+3 1 OuterEnd
+0 1 LastRoot

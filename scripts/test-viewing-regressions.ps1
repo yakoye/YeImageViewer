@@ -9,6 +9,8 @@
     [switch]$SensitivitySlidersOnly,
     [switch]$DefaultWheelOnly,
     [switch]$ReaderWheelOnly,
+    [switch]$PsdDockOnly,
+    [switch]$PsdDockDataOnly,
     [switch]$SettingsAuditOnly,
     [switch]$ActualSizeOnly,
     [switch]$ReaderPanOnly,
@@ -23,6 +25,7 @@
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'Wait-DesktopTestSlot.ps1')
 Add-Type -AssemblyName System.Drawing
 if (-not ('ViewingRegressionNative' -as [type])) {
     Add-Type @'
@@ -42,6 +45,24 @@ public static class ViewingRegressionNative {
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hwnd,uint msg,UIntPtr w,IntPtr l);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd,uint msg,UIntPtr w,IntPtr l);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
+    [DllImport("user32.dll")] public static extern bool OpenClipboard(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool CloseClipboard();
+    [DllImport("user32.dll")] public static extern IntPtr GetClipboardData(uint format);
+    [DllImport("kernel32.dll")] public static extern IntPtr GlobalLock(IntPtr memory);
+    [DllImport("kernel32.dll")] public static extern bool GlobalUnlock(IntPtr memory);
+    [DllImport("kernel32.dll")] public static extern UIntPtr GlobalSize(IntPtr memory);
+    public static byte[] ClipboardPixel() {
+        if(!OpenClipboard(IntPtr.Zero))return null;
+        try {
+            IntPtr handle=GetClipboardData(17);if(handle==IntPtr.Zero||GlobalSize(handle).ToUInt64()<128)return null;
+            IntPtr pointer=GlobalLock(handle);if(pointer==IntPtr.Zero)return null;
+            try {
+                int header=Marshal.ReadInt32(pointer);if(header!=124||Marshal.ReadInt16(pointer,14)!=32)return null;
+                byte[] pixel=new byte[4];Marshal.Copy(IntPtr.Add(pointer,header),pixel,0,4);return pixel;
+            }finally{GlobalUnlock(handle);}
+        }finally{CloseClipboard();}
+    }
     [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO {public uint Size; public RECT Monitor,Work; public uint Flags;}
     [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr hwnd,uint flags);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor,ref MONITORINFO info);
@@ -130,6 +151,7 @@ function Wait-State([scriptblock]$Condition,[string]$Message) {
     throw ($Message + '，最后状态：' + ($script:lastState | ConvertTo-Json -Compress) + '，读取错误：' + $script:lastReadError)
 }
 function Start-Viewer([string]$Image) {
+    Wait-YeViewerDesktopTestSlot
     if (Test-Path -LiteralPath $statePath) { Remove-Item -LiteralPath $statePath -Force }
     $script:lastState = @{}
     $script:process = Start-Process -FilePath $testViewer -ArgumentList ('"' + $Image + '"') -PassThru
@@ -301,19 +323,26 @@ function Test-ReaderWheel {
                 }
                 Assert-True ($crossSize -gt 1.6*$viewportSize) '阅读测试夹具另一轴确实溢出，可验证完整步长而不触边'
                 $before=Wait-State {param($v) $v.readerWaiting -eq '0' -and $v.viewSettled -eq '1'} '阅读测试缩放未稳定'
+                if ($modifier -eq 0 -and $choice -eq 0) {
+                    $canonical=[Math]::Round((Number $before 'zoom')*65536/100)
+                    Assert-True ((Number $before 'zoomRaw') -eq $canonical) ("阅读轴 $axis 连续离散放大不累积定点误差或伪档位：$($before.zoomRaw) / $canonical")
+                }
                 $flags=@(0,8,4)[$modifier]
                 Message $window 0x020A (4287102976 -bor $flags)
                 Start-Sleep -Milliseconds 400
-                $s=Wait-State {param($v) $v.readerWaiting -eq '0' -and $v.viewSettled -eq '1'} '阅读滚轮操作未稳定'
                 $step=if($axis -eq 0){((Number $before 'height')-52)/5.0}else{(Number $before 'width')/5.0}
                 $crossStep=if($axis -eq 0){(Number $before 'width')/5.0}else{((Number $before 'height')-52)/5.0}
-                $worked=switch($choice) {
-                    0 {(Number $s 'zoom') -lt (Number $before 'zoom')}
-                    1 {[Math]::Abs((Number $s 'readerOffset')-(Number $before 'readerOffset')-$step) -le 2}
-                    2 {[Math]::Abs((Number $s 'readerCross')-(Number $before 'readerCross')+$crossStep) -le 2}
-                    3 {$s.image -ne $before.image}
-                }
-                Assert-True ([bool]$worked) ("阅读轴 $axis，组合 $modifier 动作 $choice 实际生效：偏移=$($before.readerOffset)→$($s.readerOffset)，横轴=$($before.readerCross)→$($s.readerCross)")
+                $didWork={param($v) switch($choice) {
+                    0 {(Number $v 'zoom') -lt (Number $before 'zoom')}
+                    1 {[Math]::Abs((Number $v 'readerOffset')-(Number $before 'readerOffset')-$step) -le 2}
+                    2 {[Math]::Abs((Number $v 'readerCross')-(Number $before 'readerCross')+$crossStep) -le 2}
+                    3 {$v.image -ne $before.image}
+                }}
+                # 消息先进入操作队列；旧快照也可能是 settled=1，必须等原断言的结果。
+                # 不重发滚轮，距离和倍率条件与原断言完全相同。
+                $s=Wait-State {param($v) $v.readerWaiting -eq '0' -and $v.viewSettled -eq '1' -and (& $didWork $v)} ("阅读滚轮操作未完成原定动作，起点倍率=$($before.zoom)，原始值=$($before.zoomRaw)，档位=$($before.zoomIndex)，前档=$($before.zoomPrevious)")
+                $worked=& $didWork $s
+                Assert-True ([bool]$worked) ("阅读轴 $axis，组合 $modifier 动作 $choice 实际生效：倍率=$($before.zoom)→$($s.zoom)，偏移=$($before.readerOffset)→$($s.readerOffset)，横轴=$($before.readerCross)→$($s.readerCross)，前台=$([ViewingRegressionNative]::DescribeWindow([ViewingRegressionNative]::GetForegroundWindow()))，主窗=$window")
             }
         }
     }
@@ -324,6 +353,105 @@ function Test-ReaderWheel {
     Assert-True ($s.readerWheel0 -eq '1' -and $s.readerWheel1 -eq '0' -and $s.readerWheel2 -eq '2' -and
         $s.wheel0 -eq '0' -and $s.wheel1 -eq '1' -and $s.wheel2 -eq '2') '恢复默认同时还原两套方案，重启保持'
     Write-Host ("连续阅读独立滚轮回归通过：$script:passed 项")
+}
+
+function Test-PsdDock {
+    Stop-Viewer
+    $fixture=Join-Path $pictures '10-visibility.psd'
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../test/image-tools/visibility-stack.psd') -Destination $fixture
+    $beforeHash=(Get-FileHash -LiteralPath $fixture).Hash
+    $s=Start-Viewer $fixture
+    $s=Wait-State {param($v) $v.layerEntry -eq '1' -and $v.contextLayers -eq '1'} '实际图层能力检测未完成'
+    Assert-True ($s.contextTools -eq '0') '多图层文档直接提供图层入口，不经过轻工具中转'
+    Command 1402
+    Start-Sleep -Milliseconds 300
+    Assert-True ([ViewingRegressionNative]::Find($process.Id,'YeImageViewer.PsdLayers') -eq [IntPtr]::Zero) 'PSD菜单只打开主窗口面板，不创建旧图层弹窗'
+    $s=Wait-State {param($v) $v.dockOpen -eq '1' -and $v.dockBusy -eq '0' -and $v.dockLayers -eq '3'} 'PSD停靠面板未完成索引'
+    Assert-True ([int]$s.dockX -lt [int]$s.width -and $s.dockVisible -eq '3' -and $s.dockOverride -eq '0') '原始可见性直接使用文件合成图，侧栏独立占位'
+    Assert-True ($s.dockBackend -eq '1') '真实窗口加载PhotoCraft后端，不使用旧RGB合成器冒充通过'
+    $dpiScale=[double]$s.dpi/96
+    $eyeX=[int]$s.dockX+[int](22*$dpiScale)
+    $eyeYs=@(0..2 | ForEach-Object {[int]([int]$s.dockListTop+($_+0.5)*[int]$s.dockRowHeight)})
+    Click $window $eyeX $eyeYs[0]
+    $s=Wait-State {param($v) $v.dockBusy -eq '0' -and $v.dockVisible -eq '2' -and $v.dockOverride -eq '1' -and $v.dockIssue -eq '0'} '隐藏顶层没有完成实际合成'
+    Assert-True ([int]$s.dockG -gt [int]$s.dockR+100 -and [int]$s.dockA -eq 255) '顶层眼睛关闭后，绿色中层真实出现在主画布数据中'
+    Click $window $eyeX $eyeYs[1]
+    $s=Wait-State {param($v) $v.dockBusy -eq '0' -and $v.dockVisible -eq '1'} '同时隐藏两层未生效'
+    Assert-True ([int]$s.dockB -gt [int]$s.dockR+100 -and [int]$s.dockB -gt [int]$s.dockG+100) '同时隐藏两层后显示蓝色底层，不只是单层独显'
+    $clipboardBefore=[ViewingRegressionNative]::GetClipboardSequenceNumber()
+    Command 1003
+    $clipboardPixel=$null
+    for($attempt=0;$attempt -lt 40;$attempt++) {
+        if([ViewingRegressionNative]::GetClipboardSequenceNumber() -ne $clipboardBefore) {$clipboardPixel=[ViewingRegressionNative]::ClipboardPixel();if($null -ne $clipboardPixel){break}}
+        Start-Sleep -Milliseconds 25
+    }
+    Assert-True ($null -ne $clipboardPixel -and [Math]::Abs([int]$clipboardPixel[0]-[int]$s.dockB) -le 1 -and [Math]::Abs([int]$clipboardPixel[2]-[int]$s.dockR) -le 1) '复制图片使用当前多层合成像素，不悄悄复制文件原始合成图'
+    for($step=0;$step -lt 20;$step++){Message $window 0x0100 0x26;Message $window 0x0101 0x26}
+    $s=Wait-State {param($v) (Number $v 'zoom') -ge 1000 -and $v.viewSettled -eq '1'} 'PSD主画布放大未稳定'
+    if(-not $PsdDockDataOnly) {
+    Save-ClientEvidence $window 'PSD-侧栏隐藏两层后主画布.png'
+    $origin=New-Object ViewingRegressionNative+POINT
+    [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
+    $pixel=[Drawing.Bitmap]::new(1,1);$graphics=[Drawing.Graphics]::FromImage($pixel)
+    try {
+        $graphics.CopyFromScreen($origin.X+[int]([int]$s.dockX/2),$origin.Y+[int]([int]$s.height/2),0,0,$pixel.Size)
+        $color=$pixel.GetPixel(0,0)
+        Assert-True ([Math]::Abs($color.B-[int]$s.dockB) -le 3 -and [Math]::Abs($color.R-[int]$s.dockR) -le 3) '真实屏幕画布像素与后台合成的蓝色结果一致'
+    } finally {$graphics.Dispose();$pixel.Dispose()}
+    } else {Write-Host 'SKIPPED 真实屏幕像素与截图：本次为明确的无读屏功能专项，不等于完整窗口验收。'}
+    Click $window $eyeX $eyeYs[2]
+    $s=Wait-State {param($v) $v.dockBusy -eq '0' -and $v.dockVisible -eq '0' -and $v.dockA -eq '0'} '全部隐藏没有生成透明画布'
+    Assert-True ($s.dockA -eq '0') '全部眼睛关闭是透明画布，不回退成原始图片'
+    Click $window $eyeX $eyeYs[0]
+    $s=Wait-State {param($v) $v.dockBusy -eq '0' -and $v.dockVisible -eq '1'} '恢复半透明顶层失败'
+    Assert-True ([int]$s.dockA -eq 128) '单个半透明图层保持原始透明度'
+    Click $window $eyeX $eyeYs[1];Click $window $eyeX $eyeYs[2];Click $window $eyeX $eyeYs[1]
+    $s=Wait-State {param($v) $v.dockBusy -eq '0' -and $v.dockVisible -eq '2' -and $v.dockIssue -eq '0'} '快速连点最后状态未交付'
+    Assert-True ([int]$s.dockR -gt 50 -and [int]$s.dockB -gt 50 -and [int]$s.dockG -lt 30) '快速连点只交付最新可见性，过期结果不覆盖红蓝合成'
+    Click $window $eyeX ([int](96*$dpiScale))
+    $s=Wait-State {param($v) $v.dockBusy -eq '0' -and $v.dockVisible -eq '3' -and $v.dockOverride -eq '0'} '恢复文件可见性失败'
+    Assert-True ($s.dockOverride -eq '0') '一键恢复回到文件自带合成图'
+    $tabX=[int]$s.dockX+[int](([int]$s.width-[int]$s.dockX)*0.75)
+    Click $window $tabX ([int](60*$dpiScale));Click $window $eyeX $eyeYs[1]
+    $s=Wait-State {param($v) $v.dockBusy -eq '0' -and $v.dockOverride -eq '1'} '显示R通道未完成'
+    Assert-True ($s.dockR -eq $s.dockG -and $s.dockG -eq $s.dockB -and $s.dockA -eq '255') 'R显示通道为真实灰度预览且明确与原始PSD色版区分'
+    if(-not $PsdDockDataOnly){Save-ClientEvidence $window 'PSD-显示通道.png'}
+    $beforeDockX=[int]$s.dockX;$beforeDockZoom=$s.zoom
+    Drag $beforeDockX ([int]([int]$s.height/3)) (-[int](40*$dpiScale)) 0
+    $s=Wait-State {param($v) [Math]::Abs([int]$v.dockX-$beforeDockX+40*$dpiScale) -le 2} '拖动分界线未改变侧栏宽度'
+    Assert-True ($s.zoom -eq $beforeDockZoom) '侧栏分界线可拖动，手动倍率保持不变'
+    Message $window 0x0100 0x1B;Message $window 0x0101 0x1B
+    $s=Wait-State {param($v) $v.dockOpen -eq '0' -and $v.dockOverride -eq '0'} 'Esc未收起停靠面板'
+    Assert-True (-not $process.HasExited -and $s.dockX -eq $s.width) 'Esc优先收起面板，恢复整幅画布而非关闭程序'
+    Command 1402;$s=Wait-State {param($v) $v.dockBusy -eq '0' -and $v.dockLayers -eq '3'} '重新打开面板失败'
+    Assert-True ($s.dockVisible -eq '3' -and $s.dockOverride -eq '0') '关闭后重开不把临时眼睛状态写进PSD或默认设置'
+    Command 1004
+    $s=Wait-State {param($v) $v.info -eq '1' -and $v.dockOpen -eq '0'} '信息面板与PSD侧栏未正确切换'
+    Assert-True ($s.dockOpen -eq '0' -and $s.info -eq '1') '图片信息命令切换到信息面板，不在PSD侧栏后面静默显示'
+    Command 1004
+    $s=Wait-State {param($v) $v.info -eq '0'} '信息面板隐藏命令尚未由主队列完成'
+    Command 1402
+    $s=Wait-State {param($v) $v.dockOpen -eq '1' -and $v.dockBusy -eq '0' -and $v.dockLayers -eq '3'} '信息面板后重新打开PSD侧栏失败'
+    Message $window 0x0100 0x24;Message $window 0x0101 0x24
+    $s=Wait-State {param($v) $v.image -eq '1' -and $v.loading -eq '0' -and $v.dockOpen -eq '0'} '切换普通图片未关闭图层面板'
+    Assert-True ($s.contextLayers -eq '0' -and $s.layerEntry -eq '0') '切普通图片立即移除图层入口，不残留旧PSD能力'
+    Assert-True ($s.dockOverride -eq '0' -and (Get-FileHash -LiteralPath $fixture).Hash -eq $beforeHash) '切图丢弃旧PSD异步结果，源文件SHA-256始终不变'
+    Stop-Viewer
+    $cmyk=Join-Path $pictures '11-readonly-cmyk.psd'
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../test/image-tools/readonly-cmyk.psd') -Destination $cmyk
+    $cmykHash=(Get-FileHash -LiteralPath $cmyk).Hash
+    $s=Start-Viewer $cmyk
+    $s=Wait-State {param($v) $v.layerEntry -eq '1'} 'CMYK最小夹具真实图层能力未完成'
+    Command 1402
+    $s=Wait-State {param($v) $v.dockOpen -eq '1' -and $v.dockBusy -eq '0' -and $v.dockLayers -eq '3'} 'CMYK只读树未完成索引'
+    $count=$s.dockVisible;$dpiScale=[double]$s.dpi/96
+    Click $window ([int]$s.dockX+[int](22*$dpiScale)) ([int](137*$dpiScale))
+    Start-Sleep -Milliseconds 180
+    $s=Read-State
+    $s=Wait-State {param($v) $v.dockBusy -eq '0' -and $v.dockOverride -eq '1'} 'PhotoCraft后端CMYK图层开关未生成画面'
+    Assert-True ([int]$s.dockVisible -eq ([int]$count-1) -and $s.dockIssue -eq '0') 'CMYK多图层走PhotoCraft后端，显隐实际生效，不再禁用眼睛'
+    Assert-True ((Get-FileHash -LiteralPath $cmyk).Hash -eq $cmykHash) 'CMYK只读浏览不改源文件'
+    Write-Host ("PSD停靠与多层合成回归通过：$script:passed 项")
 }
 
 function Test-KeyboardPan {
@@ -351,9 +479,12 @@ function Test-KeyboardPan {
             [ViewingRegressionNative]::Activate($window)
             $step=[Math]::Max(1,[Math]::Floor(((Number $before 'width')+(Number $before 'height'))/16))
             Assert-True ($before.zoom -eq '100' -and [Math]::Abs((Number $before 'slideX')) -le 2 -and [Math]::Abs((Number $before 'slideY')) -le 2) ($mode+' '+$direction.Name+' 测试从居中 100% 开始')
-            Message $window 0x0100 $direction.Key; Message $window 0x0101 $direction.Key
+            $keyTimer=[Diagnostics.Stopwatch]::StartNew()
+            Message $window 0x0100 $direction.Key; $downMs=$keyTimer.Elapsed.TotalMilliseconds
+            Message $window 0x0101 $direction.Key; $upMs=$keyTimer.Elapsed.TotalMilliseconds
             Start-Sleep -Milliseconds 400
             $s=Read-State
+            Write-Host ("DIAG WASD {0} {1} tap=1 downMs={2:N1} upMs={3:N1} slide={4},{5} expected={6},{7} foreground={8} main={9}" -f $mode,$direction.Name,$downMs,$upMs,$s.slideX,$s.slideY,($direction.X*$step),($direction.Y*$step),[ViewingRegressionNative]::GetForegroundWindow(),$window)
             Assert-True ([Math]::Abs((Number $s 'slideX')-(Number $before 'slideX')-$direction.X*$step) -le 1 -and
                 [Math]::Abs((Number $s 'slideY')-(Number $before 'slideY')-$direction.Y*$step) -le 1) ($mode+' '+$direction.Name+' 按屏幕方向移动且另一轴不变')
             $x=[int]([Math]::Round((Number $s 'width')/2+$direction.X*$step))
@@ -362,10 +493,17 @@ function Test-KeyboardPan {
             $opposite=Screen-Pixel ([int]([Math]::Round((Number $s 'width')/2-$direction.X*$step))) ([int]([Math]::Round((Number $s 'height')/2-$direction.Y*$step)))
             if($direction.Name -eq 'W 向上') {Save-ClientEvidence $window 'WASD-上移定位.png'}
             Assert-True ($pixel.R -gt 220 -and $pixel.G -lt 30 -and $opposite.G -gt 100) ($mode+' '+$direction.Name+' 红色定位标记实际绘制在正确方向：'+$pixel.ToString()+' / '+$opposite.ToString())
-            Message $window 0x0100 $direction.Key; Message $window 0x0101 $direction.Key
+            $keyTimer.Restart()
+            Message $window 0x0100 $direction.Key; $downMs=$keyTimer.Elapsed.TotalMilliseconds
+            Message $window 0x0101 $direction.Key; $upMs=$keyTimer.Elapsed.TotalMilliseconds
             Start-Sleep -Milliseconds 400
-            Message $window 0x0100 $direction.Key; Message $window 0x0101 $direction.Key
+            $s=Read-State
+            Write-Host ("DIAG WASD {0} {1} tap=2 downMs={2:N1} upMs={3:N1} slide={4},{5} foreground={6} main={7}" -f $mode,$direction.Name,$downMs,$upMs,$s.slideX,$s.slideY,[ViewingRegressionNative]::GetForegroundWindow(),$window)
+            $keyTimer.Restart()
+            Message $window 0x0100 $direction.Key; $downMs=$keyTimer.Elapsed.TotalMilliseconds
+            Message $window 0x0101 $direction.Key; $upMs=$keyTimer.Elapsed.TotalMilliseconds
             Start-Sleep -Milliseconds 400; $s=Read-State
+            Write-Host ("DIAG WASD {0} {1} tap=3 downMs={2:N1} upMs={3:N1} slide={4},{5} expected={6},{7} foreground={8} main={9}" -f $mode,$direction.Name,$downMs,$upMs,$s.slideX,$s.slideY,($direction.X*$step*3),($direction.Y*$step*3),[ViewingRegressionNative]::GetForegroundWindow(),$window)
             Assert-True ([Math]::Abs((Number $s 'slideX')-(Number $before 'slideX')-$direction.X*$step*3) -le 1 -and
                 [Math]::Abs((Number $s 'slideY')-(Number $before 'slideY')-$direction.Y*$step*3) -le 1) ($mode+' '+$direction.Name+' 连续按键保持同一方向')
         }
@@ -420,6 +558,19 @@ function Verify-PagePixel($State,[string]$Side,[Drawing.Color]$Expected) {
     $sampleX = [int][Math]::Round([Math]::Max(4,[Math]::Min((Number $State 'width')-4,$x+$w/2)))
     $sampleY = [int][Math]::Round([Math]::Max(4,[Math]::Min((Number $State 'height')-60,$y+$h/2)))
     $color = Screen-Pixel $sampleX $sampleY
+    # 保留第一次实际采样，不重试到通过。屏幕失败必须能区分坐标、画面与前台干扰。
+    $sampleOrigin=New-Object ViewingRegressionNative+POINT
+    [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$sampleOrigin)
+    $sampleScreen=New-Object ViewingRegressionNative+POINT
+    $sampleScreen.X=$sampleOrigin.X+$sampleX;$sampleScreen.Y=$sampleOrigin.Y+$sampleY
+    $diagnosticName='双页采样-'+$Side+'-'+[guid]::NewGuid().ToString('N')
+    $diagnostic=[ordered]@{Side=$Side;SampleX=$sampleX;SampleY=$sampleY;ScreenX=$sampleScreen.X;ScreenY=$sampleScreen.Y;
+        Actual=$color.ToString();Expected=$Expected.ToString();Window=$window.ToInt64();
+        Foreground=[ViewingRegressionNative]::DescribeWindow([ViewingRegressionNative]::GetForegroundWindow());
+        PointWindow=[ViewingRegressionNative]::DescribeWindow([ViewingRegressionNative]::WindowFromPoint($sampleScreen));State=$State}
+    [IO.File]::WriteAllText((Join-Path $evidence ($diagnosticName+'.json')),($diagnostic|ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))
+    Write-Host ('双页首次采样：'+$Side+'，实际='+$color.ToString()+'，预期='+$Expected.ToString()+'，客户区='+$sampleX+','+$sampleY+'，前台='+$diagnostic.Foreground+'，点窗口='+$diagnostic.PointWindow)
+    Save-ClientEvidence $window ($diagnosticName+'-采样后画面.png')
     Assert-True ([Math]::Abs($color.R-$Expected.R) -lt 40 -and [Math]::Abs($color.G-$Expected.G) -lt 40 -and
         [Math]::Abs($color.B-$Expected.B) -lt 40) ('双页 '+$Side+' 实际屏幕颜色对应正确文件，而非只检查状态')
 }
@@ -449,8 +600,17 @@ function Open-PanPopover {
     $actualClient=New-Object ViewingRegressionNative+RECT
     [void][ViewingRegressionNative]::GetCursorPos([ref]$actualCursor)
     [void][ViewingRegressionNative]::GetClientRect($window,[ref]$actualClient)
-    Write-Host ("悬停诊断：客户区=$($actualClient.Right)×$($actualClient.Bottom)，起点=$($origin.X),$($origin.Y)，目标=$x,$y，实际鼠标=$($actualCursor.X),$($actualCursor.Y)，命中=$([ViewingRegressionNative]::WindowFromPoint($actualCursor))，主窗=$window")
-    $s=Wait-State {param($v) $v.toolbarVisible -eq '1' -or $v.reader -eq '1' -or $v.panPopover -eq '1'} '工具栏未在实际鼠标悬停后显示'
+    $pointWindow=[ViewingRegressionNative]::WindowFromPoint($actualCursor)
+    Write-Host ("悬停诊断：客户区=$($actualClient.Right)×$($actualClient.Bottom)，起点=$($origin.X),$($origin.Y)，目标=$x,$y，实际鼠标=$($actualCursor.X),$($actualCursor.Y)，命中=$([ViewingRegressionNative]::DescribeWindow($pointWindow))，主窗=$([ViewingRegressionNative]::DescribeWindow($window))，前台=$([ViewingRegressionNative]::DescribeWindow([ViewingRegressionNative]::GetForegroundWindow()))")
+    try {
+        $s=Wait-State {param($v) $v.toolbarVisible -eq '1' -or $v.reader -eq '1' -or $v.panPopover -eq '1'} '工具栏未在实际鼠标悬停后显示'
+    } catch {
+        # 只读记录失败现场，不重试悬停、不激活窗口、不改变原断言或等待时限。
+        [void][ViewingRegressionNative]::GetCursorPos([ref]$actualCursor)
+        $pointWindow=[ViewingRegressionNative]::WindowFromPoint($actualCursor)
+        Write-Host ("悬停失败现场：实际鼠标=$($actualCursor.X),$($actualCursor.Y)，命中=$([ViewingRegressionNative]::DescribeWindow($pointWindow))，主窗=$([ViewingRegressionNative]::DescribeWindow($window))，前台=$([ViewingRegressionNative]::DescribeWindow([ViewingRegressionNative]::GetForegroundWindow()))")
+        throw
+    }
     Click $window $x $y
     return Wait-State {param($v) $v.panPopover -eq '1'} '倍率浮层未打开'
 }
@@ -468,12 +628,18 @@ function Set-Pan([int]$Level = -1) {
 
 function Pan-Drag([int]$Dx,[int]$Dy,[int]$Flags=1,[int]$Steps=1,[int]$Delay=20) {
     $s=Read-State; $x=[int]((Number $s 'width')/2); $y=[int]((Number $s 'height')/2)
+    $pressBefore=[int]$s.pressCount
     $origin=New-Object ViewingRegressionNative+POINT
     [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
     [void][ViewingRegressionNative]::SetCursorPos($origin.X+$x,$origin.Y+$y)
     Message $window 0x0200 0 (($x -band 65535) -bor (($y -band 65535) -shl 16))
     Start-Sleep -Milliseconds 330
     Message $window 0x0201 $Flags (($x -band 65535) -bor (($y -band 65535) -shl 16))
+    # 先确认生产探针已经记录本次按下，而不是设置页/上一手势的旧快照。
+    # 此闸门只匹配输入身份，不等待“位移正确”；未启动或取消仍由原断言报错。
+    $down=Wait-State {param($v) [int]$v.pressCount -gt $pressBefore -and [int]$v.pressX -eq $x -and [int]$v.pressY -eq $y} '本次拖拽按下未由生产探针确认'
+    $releaseBefore=[int]$down.panReleases
+    $pressIdentity=[int]$down.pressCount
     if ($ReaderPanOnly) {Start-Sleep -Milliseconds 80; $debug=Read-State; Write-Host ("DOWN 拖动=$($debug.imageDragging)，窗口=$($debug.windowDragging)，锚点=$($debug.readerAnchor)")}
     for($i=1;$i -le $Steps;$i++) {
         Start-Sleep -Milliseconds $Delay
@@ -487,7 +653,11 @@ function Pan-Drag([int]$Dx,[int]$Dy,[int]$Flags=1,[int]$Steps=1,[int]$Delay=20) 
     }
     Message $window 0x0202 0 (($mx -band 65535) -bor (($my -band 65535) -shl 16))
     Start-Sleep -Milliseconds 100
-    return Read-State
+    # 消息已发送不代表 DrawScene 已写出新快照；不能把固定100ms后的旧状态当成结果。
+    # 只等待本次释放确认，不补发手势、不放宽位移断言；未启动/失焦取消仍必须失败。
+    $after=Wait-State {param($v) [int]$v.panReleases -gt $releaseBefore -and [int]$v.pressCount -eq $pressIdentity} '本次拖拽释放未由生产探针确认'
+    Write-Host ("DIAG drag press={0} origin={1},{2} moves={3} slide={4},{5} foreground={6} main={7}" -f $pressIdentity,$x,$y,$after.panMoves,$after.slideX,$after.slideY,[ViewingRegressionNative]::GetForegroundWindow(),$window)
+    return $after
 }
 
 function Test-ResidualPan {
@@ -506,8 +676,20 @@ function Test-SensitivitySliders {
             $s=Set-Pan 4
             $x=[int]((Number $s 'panButtonX')+(Number $s 'panButtonW')/2)
             $y=[int]((Number $s 'panButtonY')+(Number $s 'panButtonH')/2)
+            if ($kind -eq 1 -and $level -eq 0) {
+                # 模拟窗口/捕获变化后的旧悬停状态；按下坐标必须是新的命中依据。
+                $cx=[int]((Number $s 'width')/2); $cy=[int]((Number $s 'height')/2)
+                $origin=New-Object ViewingRegressionNative+POINT
+                [void][ViewingRegressionNative]::ClientToScreen($window,[ref]$origin)
+                [void][ViewingRegressionNative]::SetCursorPos($origin.X+$cx,$origin.Y+$cy)
+                Message $window 0x0200 0 (($cx -band 65535) -bor ($cy -shl 16))
+                $s=Wait-State {param($v) $v.toolbarVisible -eq '0' -and $v.panPopover -eq '0'} '旧悬停状态未清除'
+            }
             Click $window $x $y
             $s=Wait-State {param($v) $v.panPopover -eq '1'} '滑杆测试弹层未打开'
+            if ($kind -eq 1 -and $level -eq 0) {
+                Assert-True ($s.panPopover -eq '1') '悬停状态失效后，按下实际手掌位置仍准确打开弹层'
+            }
             $sx=[int]((Number $s ($prefix+'X'))+(Number $s ($prefix+'W'))*$level/19)
             $sy=[int]((Number $s ($prefix+'Y'))+(Number $s ($prefix+'H'))/2)
             Click $window $sx $sy
@@ -637,7 +819,7 @@ function Test-Pan {
         $s=Read-State; $before=Number $s 'slideY'
         $s=Pan-Drag 100 -100
         Assert-True ([Math]::Abs((Number $s 'slideY')-$before+100*$factors[$level]) -le 1 -and $s.slideX -eq '0') `
-            ("TB-03/15 固定 $($factors[$level])× 移动准确，未溢出水平轴锁定")
+            ("TB-03/15 固定 $($factors[$level])× 移动准确，未溢出水平轴锁定；Y=$before→$($s.slideY)，移动=$($s.panMoves)，分支=$($s.pressRoute)，按下=$($s.pressX),$($s.pressY)，真鼠标=$($s.actualMouseX),$($s.actualMouseY)，原浮层=$($s.pressHadPopover)")
         $before=Number $s 'slideY'
         $s=Pan-Drag 0 100 5
         Assert-True ([Math]::Abs((Number $s 'slideY')-$before-25) -le 1 -and [int]$s.panFixed -eq $level) `
@@ -676,7 +858,7 @@ function Test-Pan {
     Start-Sleep -Milliseconds 200
     Message $window 0x0200 1 (($x -band 65535) -bor (($y-149) -shl 16))
     Start-Sleep -Milliseconds 60; $s=Read-State
-    Assert-True ([int]$s.panDeltaY -ge 0 -and [int]$s.panDeltaY -le 2) 'TB-09 自动加速手势中减速恢复 1:1'
+    Assert-True ([int]$s.panDeltaY -ge 0 -and [int]$s.panDeltaY -le 2) ("TB-09 自动加速手势中减速恢复 1:1：deltaY=$($s.panDeltaY)，moves=$($s.panMoves)，前台=$([ViewingRegressionNative]::GetForegroundWindow())，主窗=$window")
     Message $window 0x0202 0 (($x -band 65535) -bor (($y-149) -shl 16))
     $s=Set-Pan 4
     $s=Pan-Drag 0 (-[int](Number $s 'slideY'))
@@ -773,7 +955,9 @@ function Inertia-Flick([int]$Flags=1,[int]$Step=20,[int]$Delay=20,[int]$Pause=0,
     }
     if($Pause){Start-Sleep -Milliseconds $Pause}
     Message $window 0x0202 ($Flags -band 4) ((($x+$DxStep*8) -band 65535) -bor (($lastY-$ReleaseExtra) -shl 16))
-    return Wait-State {param($v) [int]$v.panReleases -gt $releaseCount} '甩动释放事件未完成'
+    $released=Wait-State {param($v) [int]$v.panReleases -gt $releaseCount} '甩动释放事件未完成'
+    Write-Host ("甩动首次状态：释放=$releaseCount→$($released.panReleases)，移动=$($released.panMoves)，末增量=$($released.panDeltaX),$($released.panDeltaY)，惯性=$($released.inertiaActive)，启动次数=$($released.inertiaStarts)，前台=$([ViewingRegressionNative]::DescribeWindow([ViewingRegressionNative]::GetForegroundWindow()))")
+    return $released
 }
 
 function Test-Inertia {
@@ -848,6 +1032,18 @@ function Test-Inertia {
     foreach($cancel in @('mouse','wheel','key','focus','capture','resize','menu','image','rotation')) {
         $s=Set-Option 22 0 333
         $s=Inertia-Flick
+        if($s.inertiaActive -ne '1') {
+            # 原始前置条件保持失败；后续只读样本用于区分迟到状态与实际未启动，不重试手势。
+            $diagnostic=[Collections.Generic.List[object]]::new()
+            $diagnostic.Add([pscustomobject]@{Phase='first';State=$s;Foreground=[ViewingRegressionNative]::DescribeWindow([ViewingRegressionNative]::GetForegroundWindow())})
+            foreach($delay in @(60,120)) {
+                Start-Sleep -Milliseconds $delay
+                $observed=Read-State
+                $diagnostic.Add([pscustomobject]@{Phase="after-${delay}ms";State=$observed;Foreground=[ViewingRegressionNative]::DescribeWindow([ViewingRegressionNative]::GetForegroundWindow())})
+                Write-Host ("惯性前置失败只读观察：$cancel，延迟=$delay，释放=$($observed.panReleases)，移动=$($observed.panMoves)，惯性=$($observed.inertiaActive)，启动次数=$($observed.inertiaStarts)")
+            }
+            $diagnostic | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence ('惯性前置失败-'+$cancel+'-'+[guid]::NewGuid().ToString('N')+'.json')) -Encoding utf8
+        }
         Assert-True ($s.inertiaActive -eq '1') ("$cancel 打断前惯性确实在运行")
         switch($cancel) {
             mouse {
@@ -952,7 +1148,7 @@ function Test-ShortcutAudit {
         if($name -and $name -ne 'Count') {$actionNumbers[$name]=$number; $number++}
     }
     $rows=@([regex]::Matches($settingSource,'ShortcutItem\{\s*ShortcutConfig::Action::(\w+),') | ForEach-Object {$_.Groups[1].Value})
-    Assert-True ($rows.Count -eq 34 -and $actionNumbers.Count -eq 34 -and (@($rows | Select-Object -Unique).Count -eq 34)) '快捷键审计清单覆盖全部生产界面动作且无重复'
+    Assert-True ($rows.Count -eq 35 -and $actionNumbers.Count -eq 35 -and (@($rows | Select-Object -Unique).Count -eq 35)) '快捷键审计清单覆盖全部生产界面动作且无重复'
     for($bindingIndex=0;$bindingIndex -lt $rows.Count;$bindingIndex++) {
         $settings=Open-ShortcutSettings
         $scale=[ViewingRegressionNative]::GetDpiForWindow($settings)/96.0
@@ -1172,6 +1368,11 @@ try {
     [void](New-Item -ItemType Directory -Path $evidence -Force)
     $testViewer = Join-Path $testRoot 'YeImageViewer.exe'
     Copy-Item -LiteralPath $Viewer -Destination $testViewer
+    foreach($file in @('YeLayerBackend.dll','LAYER_BACKEND_NOTICES.txt')){
+        $source=Join-Path (Split-Path -Parent $Viewer) $file;$target=Join-Path (Split-Path -Parent $testViewer) $file
+        Copy-Item -LiteralPath $source -Destination $target
+        if((Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath $target).Hash){throw '窗口回归后端副本哈希不符'}
+    }
     $pictures = Join-Path $testRoot 'pages'
     [void](New-Item -ItemType Directory -Path $pictures)
     $colors = @([Drawing.Color]::FromArgb(220,40,40),[Drawing.Color]::FromArgb(40,220,40),
@@ -1179,6 +1380,12 @@ try {
         [Drawing.Color]::FromArgb(180,40,220),[Drawing.Color]::FromArgb(40,180,220))
     $paths = @()
     for ($i=0;$i -lt 6;$i++) {
+        if ($ReaderWheelOnly -and $i -eq 1) {
+            $path = Join-Path $pictures '02.svg'
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../test/pan/reader-zoom-quantization.svg') -Destination $path
+            $paths += $path
+            continue
+        }
         $path = Join-Path $pictures ('{0:00}.png' -f ($i+1))
         $paths += $path
         $bitmap = [Drawing.Bitmap]::new($(if ($i%2) {800} else {1200}),$(if ($i%2) {1200} else {900}))
@@ -1207,6 +1414,7 @@ try {
     if ($SettingsDpiOnly) {$env:YEIMAGEVIEWER_TEST_REGISTRY_SANDBOX=$registrySandbox}
 
     $s = Start-Viewer $paths[0]
+    if ($PsdDockOnly -or $PsdDockDataOnly) {Test-PsdDock;return}
     if ($SettingsDpiOnly) {Test-AssociationDpi; return}
     if ($PanOnly) {Stop-Viewer; $s=Start-Viewer $tall; Test-Pan; return}
     if ($KeyboardPanOnly -or $KeyboardSmoothOnly -or $DefaultWheelOnly) {

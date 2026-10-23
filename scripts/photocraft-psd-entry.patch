@@ -1,0 +1,12 @@
+diff --git a/crates/io/src/lib.rs b/crates/io/src/lib.rs
+--- a/crates/io/src/lib.rs
++++ b/crates/io/src/lib.rs
+@@ -325,7 +325,7 @@
+     Ok(r)
+ }
+ 
+-fn import_psd(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt) -> Result<ImportResult, IoError> {
++pub fn import_psd(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt) -> Result<ImportResult, IoError> {
+     // A merged image the import reads is decoded with the parse: a ZIP one is inflated once.
+     let (file, merged) = PsdFile::from_bytes_and_merged_recovering(
+         bytes,

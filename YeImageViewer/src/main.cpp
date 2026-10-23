@@ -7,6 +7,8 @@
 #include "ImageDatabase.h"
 #include "ImageInterpolation.h"
 #include "ImageViewTransform.h"
+#include "RightDragZoom.h"
+#include "TransformSavePrompt.h"
 #include "SvgRenderer.h"
 #include "Printer.h"
 #include "Setting.h"
@@ -43,6 +45,15 @@
 #include "PanPopoverLayout.h"
 #include "KeyboardPanMotion.h"
 #include "RegistryTestSandbox.h"
+#include "HintLayout.h"
+#include "ImageExport.h"
+#include "ImageExportJob.h"
+#include "ScreenColorWindow.h"
+#include "ScreenPickerSession.h"
+#include "PsdLayersWindow.h"
+#include "PsdDock.h"
+#include "PsdCapability.h"
+#include <future>
 
 #include "D3D11App.h"
 #include <ppl.h>
@@ -62,8 +73,8 @@
 */
 
 std::wstring_view appName = L"YeImageViewer";
-std::wstring_view appVersion = L"v1.38.2";
-constinit int appVersionCode = 13802; // 主版本*10000 + 次版本*100 + 修订版本
+std::wstring_view appVersion = L"v1.39.0";
+constinit int appVersionCode = 13803; // 主版本*10000 + 次版本*100 + 修订版本
 
 std::wstring_view RepositoryLink = L"https://github.com/yakoye/YeImageViewer";
 
@@ -295,7 +306,7 @@ public:
     cv::Mat mainRes, leftArrow, rightArrow, leftRotate, rightRotate,
         flipHorizontal, flipVertical, hand, fitWindow, fitImage, actualSize, fullscreen,
         favorite, copy, deleteImage, setting, zoomOut, zoomIn,
-        play, pause,
+        play, pause, screenPicker,
         presentationClose, animationBarPlaying, animationBarPausing;
 
     // 按基准尺寸的 ICON_SUPERSAMPLE 倍渲染，绘制时一律 INTER_AREA 缩小。高 DPI 下
@@ -328,6 +339,7 @@ public:
         flipHorizontal = loadSvgIcon(IDR_SVG_FLIP_HORIZONTAL_ICON, OverlayLayout::BASE_ICON_SIZE);
         flipVertical = loadSvgIcon(IDR_SVG_FLIP_VERTICAL_ICON, OverlayLayout::BASE_ICON_SIZE);
         hand = loadSvgIcon(IDR_SVG_HAND_ICON, OverlayLayout::BASE_ICON_SIZE);
+        screenPicker = loadSvgIcon(IDR_SVG_PICKER_ICON, OverlayLayout::BASE_ICON_SIZE);
         fitWindow = loadSvgIcon(IDR_SVG_FIT_WINDOW_ICON, OverlayLayout::BASE_ICON_SIZE);
         actualSize = loadSvgIcon(IDR_SVG_ACTUAL_SIZE_ICON, OverlayLayout::BASE_ICON_SIZE);
         fitImage = loadSvgIcon(IDR_SVG_FIT_IMAGE_ICON, OverlayLayout::BASE_ICON_SIZE);
@@ -386,6 +398,8 @@ public:
     std::chrono::steady_clock::time_point kineticStartedAt{};
     bool ctrlIsPressing = false;
     bool rightClickMenuRequested = false;
+    RightDragZoom::Gesture rightZoom;
+    Cood rightZoomSlide;
     std::wstring fittedGeometryPath;
     std::wstring displayedImagePath;
     std::unordered_map<std::wstring, int64_t> rememberedImageZoom;
@@ -424,6 +438,11 @@ public:
     uint32_t lastExplicitScale = 0;
     std::wstring interactionProbePath;
     std::string interactionProbeLast;
+    uint64_t probeWheelCount = 0;
+    int probeWheelIntent = 0;
+    uint64_t probePressCount = 0;
+    int probePressRoute = 0, probePressX = 0, probePressY = 0;
+    int probeActualX = 0, probeActualY = 0, probePressPopover = 0;
     bool smoothShift = false;
     bool slideshowPlaying = false;
     bool showExif = false;
@@ -443,6 +462,7 @@ public:
     std::unordered_set<std::wstring> favoritePaths;
     bool presentationMode = false;
     bool framedWindowAnchored = false;
+    bool restoringFrameWithoutZoom = false;
     bool presentationClickCandidate = false;
     // 真图仍在后台解码时，这里记着它的路径，主循环据此轮询接手。
     wstring pendingImagePath;
@@ -454,6 +474,20 @@ public:
     int toastTextDpi = 0;
     int toastTextWidth = 0;
     std::string toastText;
+    std::future<std::pair<bool, std::wstring>> exportTask;
+    bool transformHintPending=false,exportReplacing=false;
+    TransformSavePrompt::Press savePromptPress;
+    std::wstring replacingSource;
+    std::wstring exportSource;
+    int exportRotation=0;bool exportHorizontal=false,exportVertical=false;
+    struct BakedView {std::wstring path;int64_t zoom;Cood slide;};
+    std::optional<BakedView> bakedReload;
+    PsdDock psdDock;
+    PsdCapability psdCapability;
+    bool colorMenuRequested=false;
+    bool dockPress = false;
+    bool dockResizing = false;
+    int imageViewportWidth() const { return psdDock.opened() ? psdDock.contentWidth() : winWidth; }
     std::chrono::steady_clock::time_point loadingStartedAt{};
     // 模糊预览是否已经顶上去了，避免每帧重复替换
     bool pendingPreviewShown = false;
@@ -1010,8 +1044,15 @@ public:
         }
         else if (oldZoom > 0 && curPar.zoomTarget != oldZoom &&
             (heldZoomKey || action == ActionENUM::zoomIn || action == ActionENUM::zoomOut || action == ActionENUM::zoomPercent)) {
-            readerEnlargedGroup = ReadingPolicy::groupForPage(curFileIdx, readerDouble(), readerShift);
-            readerEnlargement = std::clamp(readerEnlargement * double(curPar.zoomTarget) / oldZoom, 0.01, 100.0);
+            prepareReader();
+            const int group = ReadingPolicy::groupForPage(curFileIdx, readerDouble(), readerShift);
+            if (group < 0 || group >= static_cast<int>(readerLayout.groups.size())) return;
+            const double currentEnlargement = readerEnlargedGroup == group ? readerEnlargement : 1;
+            const double targetScale = double(curPar.zoomTarget) / curPar.ZOOM_BASE /
+                (curPar.previewToSource > 0 ? curPar.previewToSource : 1);
+            readerEnlargement = ReadingLayout::enlargementForScale(
+                readerLayout.groups[group].scale, currentEnlargement, targetScale);
+            readerEnlargedGroup = group;
             readerDirty = true;
         }
     }
@@ -1218,7 +1259,7 @@ public:
                 concurrency::parallel_for(0, target.height, [&](int row) {
                     auto* out = tile.image.ptr<uint32_t>(row);
                     for (int col = 0; col < target.width; ++col) {
-                        const auto point = ImageViewTransform::displayToSource(
+                        const auto point = ImageViewTransform::forSourceImage(
                             (target.x - x + col + 0.5) * sx - 0.5,
                             (target.y - y + row + 0.5) * sy - 0.5,
                             frame.cols, frame.rows, rotation, flipH, flipV);
@@ -1315,7 +1356,7 @@ public:
 
     void constrainPanAfterTransform() {
         if (readingEnabled() || !hasCurrentImagePath()) return;
-        const std::array<int64_t, 7> key{winWidth, winHeight, curPar.width, curPar.height,
+        const std::array<int64_t, 7> key{imageViewportWidth(), winHeight, curPar.width, curPar.height,
             curPar.rotation, curPar.zoomCur, curPar.zoomTarget};
         if (key == panTransformKey) return;
         panTransformKey = key;
@@ -1324,7 +1365,7 @@ public:
         const int height = (curPar.rotation & 1) ? curPar.width : curPar.height;
         const auto constrain = [&](Cood& slide, int64_t zoom) {
             const int xLimit = static_cast<int>(PanPolicy::limit(
-                width * double(zoom) / curPar.ZOOM_BASE, winWidth));
+                width * double(zoom) / curPar.ZOOM_BASE, imageViewportWidth()));
             const int yLimit = static_cast<int>(PanPolicy::limit(
                 height * double(zoom) / curPar.ZOOM_BASE, winHeight));
             slide.x = std::clamp(slide.x, -xLimit, xLimit);
@@ -1347,13 +1388,13 @@ public:
         int64_t zoom = curPar.ZOOM_BASE;
         const auto rule = static_cast<ViewingOptions::Scale>(options[ViewingOptions::SCALE]);
         if (!originalLong && (longImage || rule == ViewingOptions::Scale::Fit))
-            zoom = ZoomPolicy::fitWindowZoom(width, height, winWidth, winHeight,
+            zoom = ZoomPolicy::fitWindowZoom(width, height, imageViewportWidth(), winHeight,
                 curPar.ZOOM_BASE, options[ViewingOptions::UPSCALE] != 0);
         else if (!originalLong && rule == ViewingOptions::Scale::Remember) {
             const auto found = rememberedImageZoom.find(imgFileList[curFileIdx]);
             const int64_t saved = readingConfig.zoom(jarkUtils::wstringToUtf8(imgFileList[curFileIdx]));
             zoom = found == rememberedImageZoom.end() && saved <= 0 ?
-                ZoomPolicy::fitWindowZoom(width, height, winWidth, winHeight, curPar.ZOOM_BASE,
+                ZoomPolicy::fitWindowZoom(width, height, imageViewportWidth(), winHeight, curPar.ZOOM_BASE,
                     options[ViewingOptions::UPSCALE] != 0) :
                 (found == rememberedImageZoom.end() ? saved : found->second);
         }
@@ -1466,7 +1507,7 @@ public:
         const int workWidth = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
         const int workHeight = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
         const auto layout = InitialWindowLayout::calculateFitImage(
-            imageWidth, imageHeight, workWidth, workHeight);
+            imageWidth, imageHeight, (std::max)(1,workWidth-psdDock.sidebarWidth()), workHeight);
         if (layout.clientWidth <= 0 || layout.clientHeight <= 0)
             return;
 
@@ -1484,7 +1525,7 @@ public:
         curPar.slideCur = Cood{};
 
 
-        RECT outerRect{ 0, 0, layout.clientWidth, layout.clientHeight };
+        RECT outerRect{ 0, 0, layout.clientWidth+psdDock.sidebarWidth(), layout.clientHeight };
         const auto style = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_STYLE));
         const auto extendedStyle = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_EXSTYLE));
         if (!AdjustWindowRectExForDpi(&outerRect, style, FALSE, extendedStyle, GetDpiForWindow(m_hWnd)))
@@ -1588,7 +1629,7 @@ public:
         const int renderedHeight = static_cast<int>(std::lround(
             static_cast<double>(displayHeight) * curPar.zoomCur / curPar.ZOOM_BASE));
         const int left = curPar.slideCur.x + static_cast<int>(std::lround(
-            (winWidth - renderedWidth) / 2.0));
+            (imageViewportWidth() - renderedWidth) / 2.0));
         const int top = curPar.slideCur.y + static_cast<int>(std::lround(
             (winHeight - renderedHeight) / 2.0));
         return { left, top, left + renderedWidth, top + renderedHeight };
@@ -1610,7 +1651,6 @@ public:
     void enterPresentationMode() {
         if (presentationMode || !hasCurrentImagePath())
             return;
-
         presentationWindowedStyle = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_STYLE));
         presentationWindowedExtendedStyle = static_cast<DWORD>(GetWindowLongPtrW(m_hWnd, GWL_EXSTYLE));
         framedWindowAnchored = false;
@@ -1624,6 +1664,8 @@ public:
             return;
         }
 
+        // 与退出方向共用WM_SIZE保护。进入沉浸只改变窗口，不再次套适应规则。
+        PresentationLayout::PreserveDisplayedScale scaleTransition(curPar,restoringFrameWithoutZoom);
         SetWindowLongPtrW(m_hWnd, GWL_STYLE,
             presentationWindowedStyle & ~(WS_CAPTION | WS_THICKFRAME));
         SetWindowLongPtrW(m_hWnd, GWL_EXSTYLE,
@@ -1635,7 +1677,8 @@ public:
             monitorInfo.rcWork.right - monitorInfo.rcWork.left,
             monitorInfo.rcWork.bottom - monitorInfo.rcWork.top,
             SWP_NOACTIVATE | SWP_FRAMECHANGED);
-        applyPresentationImageLayout();
+        scaleTransition.finish();
+        curPar.viewingTemporaryZoom=true;
         operateQueue.push({ ActionENUM::refresh });
     }
 
@@ -1648,16 +1691,20 @@ public:
             return;
         const int workWidth = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
         const int workHeight = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
-        // Recalculate from the image that is visible at the moment of exit.
-        // Browsing in presentation must not keep the entry image's frame size.
-        const auto currentPresentationLayout = calculatePresentationLayout();
-        const auto windowed = PresentationLayout::calculateWindowed(
-            currentPresentationLayout, workWidth, workHeight);
+        // 以退出这一刻实际显示的缩放定窗口，不重新套默认沉浸/锁定规则。
+        // 旧路径会在同步 WM_SIZE 中重新缩放，导致点留白后图片突然变大或变小。
+        const int64_t displayedZoom=curPar.zoomCur;
+        const auto windowed=PresentationLayout::calculateWindowedAtScale(curPar.width,curPar.height,
+            static_cast<double>(displayedZoom)/curPar.ZOOM_BASE,workWidth,workHeight,
+            curPar.rotation==1||curPar.rotation==3);
+
+        PresentationLayout::PreserveDisplayedScale scaleTransition(curPar,restoringFrameWithoutZoom);
 
         presentationMode = false;
         rememberViewingRule(ViewingOptions::SHAPE, static_cast<uint32_t>(ViewingOptions::Shape::Normal));
         imageInfoScrollOffset = 0;
-        framedWindowAnchored = true;
+        framedWindowAnchored = false;
+        curPar.viewingTemporaryZoom = true; // 只影响当前图，下一张仍恢复用户锁定规则。
         presentationClickCandidate = false;
         presentationCloseClickCandidate = false;
         mouseIsPressing = false;
@@ -1685,6 +1732,7 @@ public:
         const int y = monitorInfo.rcWork.top + (workHeight - outerHeight) / 2;
         SetWindowPos(m_hWnd, HWND_TOP, x, y, outerWidth, outerHeight,
             SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        scaleTransition.finish();
         EnableWindow(m_hWnd, TRUE);
         BringWindowToTop(m_hWnd);
         SetActiveWindow(m_hWnd);
@@ -1748,7 +1796,12 @@ public:
     // （见 onWindowCreated），这里再 clear 一次会把在途的任务作废，白等一场。
     // 其他调用方（重新打开、重命名）必须清，旧路径的缓存和预览都已经失效。
     void initOpenFile(wstring filePath, bool keepWarmCache = false) {
+        if(bakedReload&&bakedReload->path!=filePath)bakedReload.reset();
+        transformHintPending=false;
+        rightZoom.cancel();
         stopKinetic();
+        psdDock.close();
+        psdCapability.reset();
         resetReader();
         namespace fs = std::filesystem;
 
@@ -1844,6 +1897,8 @@ public:
     // 返回值表示画面是否已经换成新文件的内容（真图或模糊预览）——
     // 还停在上一张时做切图动画没有意义，跳过。
     bool switchToImage(int newIdx, int neighborIdx) {
+        if(newIdx!=curFileIdx){transformHintPending=false;bakedReload.reset();}
+        rightZoom.cancel();
         if (!readerScrolling) stopKeyboardPan();
         if (!readerScrolling) stopKinetic();
         if (readingEnabled() && !readerScrolling) {
@@ -2019,6 +2074,10 @@ public:
             curPar.zoomUserAdjusted = true;
             curPar.viewingTemporaryZoom = oldTemporaryZoom;
         }
+        else if(bakedReload&&bakedReload->path==path&&!curPar.imageAssetPtr->isLoading){
+            curPar.setZoom(bakedReload->zoom);curPar.slideCur=curPar.slideTarget=bakedReload->slide;
+            curPar.viewingTemporaryZoom=curPar.zoomUserAdjusted=true;
+        }
         else if (hasInitWinSize && !path.empty() && !curPar.imageAssetPtr->isLoading &&
             !presentationMode && !jarkUtils::IsFullScreen(m_hWnd) && !readingEnabled() && fittedGeometryPath != path &&
             !(currentIsLongImage() && GlobalVar::settingParameter.reserve[ViewingOptions::LONG_IMAGE] == 0) &&
@@ -2026,6 +2085,7 @@ public:
             applyImageFittedWindowSize();
             fittedGeometryPath = path;
         }
+        if(bakedReload&&bakedReload->path==path&&!curPar.imageAssetPtr->isLoading)bakedReload.reset();
         constrainLongImage();
         if (currentIsLivePhoto())
             startLivePlayback(ViewerOptions::livePhotoAutoSound(GlobalVar::settingParameter.reserve));
@@ -2128,13 +2188,13 @@ public:
     }
 
     OverlayLayout::Rect panButtonRect() const {
-        auto rect = OverlayLayout::panMultiplierRect(winWidth, winHeight, overlayDpi());
+        auto rect = OverlayLayout::panMultiplierRect(imageViewportWidth(), winHeight, overlayDpi());
         if (readingEnabled()) rect.y = std::max(0, rect.y - 52);
         return rect;
     }
 
     OverlayLayout::Rect panPanelRect() const {
-        auto rect = PanPopoverLayout::panel(winWidth, winHeight, overlayDpi());
+        auto rect = PanPopoverLayout::panel(imageViewportWidth(), winHeight, overlayDpi());
         if (readingEnabled()) rect.y = std::max(0, rect.y - 52);
         return rect;
     }
@@ -2178,7 +2238,7 @@ public:
         }
         else {
             const auto rect = currentImageRect();
-            const int limitX = static_cast<int>(PanPolicy::limit(rect.right - rect.left, winWidth));
+            const int limitX = static_cast<int>(PanPolicy::limit(rect.right - rect.left, imageViewportWidth()));
             const int limitY = static_cast<int>(PanPolicy::limit(rect.bottom - rect.top, winHeight));
             const int x = kineticImageAnchor.x + static_cast<int>(std::lround(offset.x));
             const int y = kineticImageAnchor.y + static_cast<int>(std::lround(offset.y));
@@ -2245,9 +2305,35 @@ public:
         switch ((uint64_t)btnState)
         {
         case WM_LBUTTONDOWN: {//左键
+            if(savePromptVisible()){
+                const auto prompt=savePromptLayout();
+                if(savePromptPress.begin(prompt,x,y)){
+                    presentationClickCandidate=presentationCloseClickCandidate=false;mouseIsPressing=false;SetCapture(m_hWnd);
+                    operateQueue.push({ActionENUM::refresh});return;
+                }
+            }
+            if(psdDock.splitterHit(x)) {dockResizing=true;SetCapture(m_hWnd);return;}
+            if (psdDock.contains(x,y) && !(presentationCloseVisible() &&
+                OverlayLayout::presentationCloseRect(winWidth,winHeight,overlayDpi()).contains(x,y))) {
+                dockPress=true;psdDock.click(x,y);psdDock.layout(winWidth,winHeight,overlayDpi());
+                if(psdDock.draggingScroll())SetCapture(m_hWnd);
+                operateQueue.push({ActionENUM::refresh});return;
+            }
+            const bool probeInput = !interactionProbePath.empty();
+            if (probeInput) {
+                ++probePressCount; probePressRoute = 0; probePressX = x; probePressY = y;
+                probePressPopover = panPopoverOpen ? 1 : 0;
+                POINT actual{}; GetCursorPos(&actual); ScreenToClient(m_hWnd, &actual);
+                probeActualX = actual.x; probeActualY = actual.y;
+            }
+            // 窗口移动、捕获释放或排队的离开消息可能让悬停缓存过期。
+            // 空闲点击按当前坐标重新命中；不能在已有拖拽/捕获期间补一次移动。
+            if (!mouseIsPressing && !windowDragActive && !panSliderDragging && !frameDragging)
+                OnMouseMove(0, x, y);
             if (panButtonRect().contains(x, y) &&
                 (readingEnabled() || extraUIFlag == ShowExtraUI::bottomToolbar || panPopoverOpen)) {
                 panPopoverOpen = !panPopoverOpen;
+                if (probeInput) probePressRoute = 1;
                 mouseIsPressing = false; presentationClickCandidate = false;
                 operateQueue.push({ActionENUM::refresh});
                 return;
@@ -2255,6 +2341,7 @@ public:
             if (panPopoverOpen) {
                 const auto panel = panPanelRect();
                 if (panel.contains(x, y)) {
+                    if (probeInput) probePressRoute = 2;
                     mouseIsPressing = false; presentationClickCandidate = false;
                     if (PanPopoverLayout::automatic(panel).contains(x, y)) {
                         GlobalVar::settingParameter.reserve[PanOptions::MODE] = 0;
@@ -2272,6 +2359,7 @@ public:
                     return;
                 }
                 panPopoverOpen = false;
+                if (probeInput) probePressRoute = 3;
                 operateQueue.push({ActionENUM::refresh});
                 return; // 外部点击只收起，不穿透成为图片拖动。
             }
@@ -2299,7 +2387,7 @@ public:
                     return;
                 }
             }
-            if (presentationMode &&
+            if (presentationCloseVisible() &&
                 OverlayLayout::presentationCloseRect(winWidth, winHeight, overlayDpi()).contains(x, y)) {
                 presentationClickCandidate = false;
                 presentationCloseClickCandidate = true;
@@ -2340,7 +2428,7 @@ public:
             }
 
             const bool zoomTextClicked = extraUIFlag == ShowExtraUI::bottomToolbar &&
-                OverlayLayout::zoomTextRect(winWidth, winHeight, overlayDpi()).contains(x, y);
+                OverlayLayout::zoomTextRect(imageViewportWidth(), winHeight, overlayDpi()).contains(x, y);
             if (zoomTextEditing && !zoomTextClicked)
                 commitZoomTextEdit();
             if (zoomTextClicked) {
@@ -2351,6 +2439,7 @@ public:
             }
 
             if (presentationMode && cursorPos == CursorPos::centerArea) {
+                if (probeInput) probePressRoute = 4;
                 const bool insideImage = isPointInsideCurrentImage(x, y);
                 // 沉浸预览里图片区域此前直接吞掉按下事件，双击根本走不到判定。
                 // 图片上的双击要和普通窗口里一样触发配置的动作。
@@ -2372,6 +2461,7 @@ public:
 
             if (cursorPos == CursorPos::centerArea) {
                 if (isImageDoubleClick(x, y)) {
+                    if (probeInput) probePressRoute = 6;
                     applyDoubleClickAction();
                 }
                 else if (ViewerOptions::dragShouldMoveWindow(
@@ -2384,10 +2474,12 @@ public:
                     !IsZoomed(m_hWnd) && !jarkUtils::IsFullScreen(m_hWnd) &&
                     ((wParam & MK_SHIFT) == 0 || !isPointInsideCurrentImage(x, y))) {
                     beginWindowDrag();
+                    if (probeInput) probePressRoute = 7;
                     return;
                 }
                 else {
                     mouseIsPressing = isPointInsideCurrentImage(x, y);
+                    if (probeInput) probePressRoute = mouseIsPressing ? 5 : 8;
                     if (mouseIsPressing) beginImagePan();
                 }
             }
@@ -2395,7 +2487,7 @@ public:
             mousePressPos = { x, y };
 
             const auto toolbarCommand = ToolbarCommand::resolve(
-                OverlayLayout::hitTest(winWidth, winHeight, x, y, overlayDpi(), edgeArrowsEnabled()));
+                OverlayLayout::hitTest(imageViewportWidth(), winHeight, x, y, overlayDpi(), edgeArrowsEnabled()));
             switch (toolbarCommand) {
             case ToolbarCommand::Command::PreviousImage: operateQueue.push({ ActionENUM::preImg }); break;
             case ToolbarCommand::Command::PlayPause: operateQueue.push({ ActionENUM::toggleSlideshow }); break;
@@ -2422,6 +2514,7 @@ public:
             case ToolbarCommand::Command::Settings: operateQueue.push({ ActionENUM::setting, 0 }); break;
             case ToolbarCommand::Command::ZoomOut: operateQueue.push({ ActionENUM::zoomOut }); break;
             case ToolbarCommand::Command::ZoomIn: operateQueue.push({ ActionENUM::zoomIn }); break;
+            case ToolbarCommand::Command::ScreenPicker: openScreenPicker(); break;
             case ToolbarCommand::Command::EditZoom:
             case ToolbarCommand::Command::None:
                 if (cursorPos == CursorPos::leftEdge)
@@ -2434,7 +2527,13 @@ public:
         }
 
         case WM_RBUTTONDOWN: {//右键
+            colorMenuRequested=extraUIFlag==ShowExtraUI::bottomToolbar && OverlayLayout::screenPickerRect(winWidth,winHeight,overlayDpi()).contains(x,y);
             rightClickMenuRequested = (wParam & MK_CONTROL) != 0;
+            if(!colorMenuRequested&&!rightClickMenuRequested&&!(savePromptVisible()&&savePromptLayout().panel.contains(x,y))&&GlobalVar::settingParameter.reserve[ViewerOptions::RIGHT_DRAG_INDEX]&&
+                curPar.imageAssetPtr&&!curPar.imageAssetPtr->isLoading&&hasCurrentImagePath()&&x<imageViewportWidth()&&
+                !(extraUIFlag==ShowExtraUI::bottomToolbar&&OverlayLayout::toolbarRect(winWidth,winHeight,overlayDpi()).contains(x,y))){
+                curPar.selectZoomTarget(curPar.zoomCur);rightZoomSlide=curPar.slideCur;rightZoom.begin(x,y,curPar.zoomCur);SetCapture(m_hWnd);
+            }
             return;
         }
 
@@ -2464,6 +2563,16 @@ public:
         switch ((uint64_t)btnState)
         {
         case WM_LBUTTONUP: {//左键
+            if(savePromptPress.held()){
+                const int button=savePromptPress.release(savePromptLayout(),x,y);
+                ReleaseCapture();
+                if(savePromptVisible()){
+                    if(button==0)saveCurrentOriginal();else if(button==1)saveCurrentImageCopy();else if(button==2)transformHintPending=false;
+                }
+                operateQueue.push({ActionENUM::refresh});return;
+            }
+            if(dockResizing){dockResizing=false;ReleaseCapture();return;}
+            if(dockPress){psdDock.release();dockPress=false;if(GetCapture()==m_hWnd)ReleaseCapture();operateQueue.push({ActionENUM::refresh});return;}
             if (panSliderDragging) {
                 updatePanSlider(x); panSliderDragging = false; ReleaseCapture();
                 return;
@@ -2480,7 +2589,7 @@ public:
                 return;
             }
             if (presentationCloseClickCandidate) {
-                const bool shouldClose = presentationMode &&
+                const bool shouldClose = presentationCloseVisible() &&
                     OverlayLayout::presentationCloseRect(winWidth, winHeight, overlayDpi()).contains(x, y);
                 presentationCloseClickCandidate = false;
                 mouseIsPressing = false;
@@ -2533,6 +2642,10 @@ public:
         }
 
         case WM_RBUTTONUP: {//右键
+            const bool zoomGesture=rightZoom.release();
+            if(GetCapture()==m_hWnd)ReleaseCapture();
+            if(zoomGesture){curPar.selectZoomTarget(curPar.zoomCur);rightClickMenuRequested=colorMenuRequested=false;return;}
+            if(colorMenuRequested){colorMenuRequested=false;rightClickMenuRequested=false;openColorPanel();return;}
             const bool controlHeld = rightClickMenuRequested || (wParam & MK_CONTROL) != 0;
             rightClickMenuRequested = false;
             if (ContextMenuPolicy::rightClickOpensMenu(
@@ -2566,6 +2679,29 @@ public:
     }
 
     void OnMouseMove(WPARAM btnState, int x, int y) override {
+        if(savePromptVisible())operateQueue.push({ActionENUM::refresh});
+        if(psdDock.move(x,y))operateQueue.push({ActionENUM::refresh});
+        if(psdDock.draggingScroll())return;
+        if(rightZoom.held()){
+            if(!(btnState&MK_RBUTTON)){rightZoom.cancel();if(GetCapture()==m_hWnd)ReleaseCapture();return;}
+            const auto zoom=rightZoom.move(x,y,overlayDpi(),GlobalVar::settingParameter.reserve[ViewerOptions::RIGHT_DRAG_SENSITIVITY],
+                GlobalVar::settingParameter.reserve[ViewerOptions::RIGHT_DRAG_INDEX]==2);
+            if(zoom){
+                const auto previous=curPar.zoomTarget;const double ratio=double(*zoom)/rightZoom.initialZoom();
+                const double ax=rightZoom.x()-imageViewportWidth()/2.,ay=rightZoom.y()-winHeight/2.;
+                curPar.slideCur=curPar.slideTarget=Cood{int(std::lround(ax+(rightZoomSlide.x-ax)*ratio)),int(std::lround(ay+(rightZoomSlide.y-ay)*ratio))};
+                curPar.zoomCur=curPar.zoomTarget=*zoom;curPar.zoomUserAdjusted=curPar.viewingTemporaryZoom=true;
+                applyReaderZoom(previous,ActionENUM::zoomPercent);constrainLongImage();constrainPanAfterTransform();showZoomIndicator();
+                operateQueue.push({ActionENUM::refresh});
+            }
+            return;
+        }
+        if(dockResizing){psdDock.resize(x);operateQueue.push({ActionENUM::refresh});return;}
+        if(psdDock.splitterHit(x)){SetCursor(LoadCursorW(nullptr,IDC_SIZEWE));return;}
+        if(psdDock.contains(x,y) && !mouseIsPressing && !windowDragActive && !panSliderDragging &&
+            !(presentationCloseVisible() && OverlayLayout::presentationCloseRect(winWidth,winHeight,overlayDpi()).contains(x,y))) {
+            SetCursor(LoadCursorW(nullptr,IDC_ARROW));return;
+        }
         if ((mouseIsPressing || windowDragActive) && (btnState & MK_LBUTTON) != 0) {
             const int tolerance = std::max(1, 5 * overlayDpi() / 96);
             if (std::abs(x - lastClickPosition.x) > tolerance ||
@@ -2617,7 +2753,7 @@ public:
             cursorPos = CursorPos::centerArea;
         }
         else {
-            switch (OverlayLayout::hitTest(winWidth, winHeight, x, y, overlayDpi(), edgeArrowsEnabled())) {
+            switch (OverlayLayout::hitTest(imageViewportWidth(), winHeight, x, y, overlayDpi(), edgeArrowsEnabled())) {
             case OverlayLayout::Hit::PanMultiplier:
                 cursorPos = CursorPos::toolbarPan;
                 break;
@@ -2681,11 +2817,14 @@ public:
             case OverlayLayout::Hit::ZoomIn:
                 cursorPos = CursorPos::toolbarZoomIn;
                 break;
+            case OverlayLayout::Hit::ScreenPicker:
+                cursorPos = CursorPos::toolbarScreenPicker;
+                break;
             case OverlayLayout::Hit::Toolbar:
                 cursorPos = CursorPos::toolbar;
                 break;
             case OverlayLayout::Hit::PresentationClose:
-                cursorPos = presentationMode ? CursorPos::presentationClose : CursorPos::centerArea;
+                cursorPos = presentationCloseVisible() ? CursorPos::presentationClose : CursorPos::centerArea;
                 break;
             default:
                 cursorPos = CursorPos::centerArea;
@@ -2729,6 +2868,7 @@ public:
             case CursorPos::toolbarZoomOut:
             case CursorPos::toolbarZoomText:
             case CursorPos::toolbarZoomIn:
+            case CursorPos::toolbarScreenPicker:
             case CursorPos::toolbarPrevious:
             case CursorPos::toolbarPlayPause:
             case CursorPos::toolbarNext:
@@ -2751,7 +2891,7 @@ public:
 
         if (mouseIsPressing && (btnState & MK_LBUTTON) != 0) {
             const auto rect = currentImageRect();
-            const int limitX = static_cast<int>(PanPolicy::limit(rect.right - rect.left, winWidth));
+            const int limitX = static_cast<int>(PanPolicy::limit(rect.right - rect.left, imageViewportWidth()));
             const int limitY = static_cast<int>(PanPolicy::limit(rect.bottom - rect.top, winHeight));
             const auto delta = imagePanDelta(x, y, btnState, limitX > 0, limitY > 0);
             const Cood before = curPar.slideCur;
@@ -2766,6 +2906,8 @@ public:
     }
 
     void OnMouseLeave() override {
+        if(psdDock.draggingScroll()&&GetCapture()==m_hWnd)return;
+        if(psdDock.move(-1,-1))operateQueue.push({ActionENUM::refresh});
         if ((mouseIsPressing || panSliderDragging) && GetCapture() == m_hWnd) return;
         endWindowDrag();
         liveBadgeHovered = false;
@@ -2781,6 +2923,9 @@ public:
         stopKinetic();
         POINT clientPoint{ static_cast<short>(x), static_cast<short>(y) };
         ScreenToClient(m_hWnd, &clientPoint);
+        if(psdDock.wheel(clientPoint.x,clientPoint.y,zDelta)) {
+            operateQueue.push({ActionENUM::refresh});return;
+        }
         if (showExif && (nFlags & (MK_CONTROL | MK_SHIFT)) == 0 &&
             imageInfoPanelRect.contains(cv::Point{ clientPoint.x, clientPoint.y })) {
             if (imageInfoContentHeight > imageInfoViewportHeight) {
@@ -2804,6 +2949,10 @@ public:
             ShortcutConfig::getWheelAction(shortcutStorage, 0),
             ShortcutConfig::getWheelAction(shortcutStorage, 1),
             ShortcutConfig::getWheelAction(shortcutStorage, 2));
+        if (!interactionProbePath.empty()) {
+            ++probeWheelCount;
+            probeWheelIntent = static_cast<int>(modifiedWheel.intent);
+        }
         switch (modifiedWheel.intent) {
         case WheelInput::Intent::ZoomIn:
             operateQueue.push({ ActionENUM::zoomIn });
@@ -3041,6 +3190,7 @@ public:
                 curPar.imageAssetPtr->format == ImageFormat::Still) ?
                 curPar.imageAssetPtr->primaryFrame :
                 curPar.imageAssetPtr->frames[curPar.curFrameIdx];
+            if(!psdDock.image().empty())source=psdDock.image();
             jarkUtils::copyImageToClipboard(source);
             ctrlIsPressing = false;
         } break;
@@ -3151,6 +3301,9 @@ public:
             break;
         case ShortcutConfig::Action::Count:
             return false;
+        case ShortcutConfig::Action::ScreenPicker:
+            openScreenPicker();
+            break;
         }
         return true;
     }
@@ -3172,6 +3325,10 @@ public:
 
     void OnKeyDown(WPARAM keyValue) override {
         stopKinetic();
+        if(keyValue==VK_ESCAPE && psdDock.opened()) {
+            psdDock.close();psdDock.layout(winWidth,winHeight,overlayDpi());
+            operateQueue.push({ActionENUM::refresh});return;
+        }
         if (keyValue == VK_ESCAPE && panPopoverOpen) {
             panPopoverOpen = false; panSliderDragging = false;
             if (GetCapture() == m_hWnd) ReleaseCapture();
@@ -3322,6 +3479,7 @@ public:
                 else
                     srcImg = curPar.imageAssetPtr->frames[curPar.curFrameIdx];
 
+                if(!psdDock.image().empty())srcImg=psdDock.image();
                 jarkUtils::copyImageToClipboard(srcImg);
                 ctrlIsPressing = false;
             }break;
@@ -3524,6 +3682,10 @@ public:
     }
 
     void OnCaptureLost() override {
+        psdDock.release();psdDock.move(-1,-1);
+        savePromptPress.cancel();
+        rightZoom.cancel();
+        dockResizing=false;dockPress=false;
         stopKeyboardPan();
         stopKinetic();
         mouseIsPressing = false; panSliderDragging = false;
@@ -3532,6 +3694,10 @@ public:
     }
 
     void OnFocusLost() override {
+        psdDock.release();psdDock.move(-1,-1);
+        savePromptPress.cancel();
+        rightZoom.cancel();
+        dockResizing=false;dockPress=false;
         stopKeyboardPan();
         stopKinetic();
         if (panPopoverOpen) operateQueue.push({ActionENUM::refresh});
@@ -3558,6 +3724,116 @@ public:
                 showToast(trW(L"未能保存图片缩放记录", L"Could not save image zooms", L"未能儲存圖片縮放紀錄"));
         }
         D3D11App::OnDestroy();
+    }
+
+    bool presentationCloseVisible() const {
+        const bool caption=(GetWindowLongPtrW(m_hWnd,GWL_STYLE)&WS_CAPTION)!=0;
+        return OverlayLayout::shouldDrawPresentationClose(presentationMode,caption,true);
+    }
+
+    // 生产CPU绘制离屏回归：不建窗口、不读取桌面，也不保存输入文件。
+    static bool transformRenderSelfTest(const std::wstring& file,const std::filesystem::path& directory){
+        std::filesystem::create_directories(directory);std::ofstream log(directory/"render.txt");
+        YeImageViewerApp app;auto asset=app.imgDB.decodeForExport(file);
+        if(asset.primaryFrame.empty()||app.imgDB.isErrorTipsFrame(asset.primaryFrame))return false;
+        const auto& pixels=asset.primaryFrame;
+        app.curPar.imageAssetPtr=std::make_shared<ImageAsset>();app.curPar.imageAssetPtr->primaryFrame=pixels;
+        GlobalVar::settingParameter.backgroundMode=uint32_t(BackgroundMode::White);
+        GlobalVar::settingParameter.reserve[ViewingOptions::QUALITY]=uint32_t(ViewingOptions::Quality::High);
+        int passed=0,failed=0;
+        for(int percent:{17,50,100}){
+            app.curPar.zoomCur=app.curPar.zoomTarget=int64_t(std::llround(CurImageParameter::ZOOM_BASE*percent/100.));app.curPar.slideCur=app.curPar.slideTarget=Cood{0,0};
+            app.curPar.rotation=0;app.curPar.flipHorizontal=app.curPar.flipVertical=false;
+            const int w=std::max(1,int(std::lround(double(pixels.cols)*app.curPar.zoomCur/CurImageParameter::ZOOM_BASE))),h=std::max(1,int(std::lround(double(pixels.rows)*app.curPar.zoomCur/CurImageParameter::ZOOM_BASE)));
+            cv::Mat baseline(h,w,CV_8UC4);app.drawCanvas(pixels,baseline);
+            for(int r=0;r<4;++r)for(bool horizontal:{false,true})for(bool vertical:{false,true}){
+                app.curPar.rotation=r;app.curPar.flipHorizontal=horizontal;app.curPar.flipVertical=vertical;
+                const auto expected=ImageExport::transform(baseline,r,horizontal,vertical);cv::Mat actual(expected.size(),CV_8UC4);app.drawCanvas(pixels,actual);
+                cv::Mat difference;cv::absdiff(actual,expected,difference);double maximum=0;cv::minMaxLoc(difference.reshape(1),nullptr,&maximum);
+                const bool okay=maximum==0;okay?++passed:++failed;
+                log<<(okay?"PASS ":"FAIL ")<<"percent="<<percent<<" rotation="<<r<<" h="<<horizontal<<" v="<<vertical<<" max="<<maximum<<"\n";
+                if(!okay&&failed==1){cv::imwrite((directory/"actual.png").string(),actual);cv::imwrite((directory/"expected.png").string(),expected);}
+            }
+        }
+        log<<"passed="<<passed<<" failed="<<failed<<"\n";return failed==0&&passed==48;
+    }
+
+    void saveCurrentImageCopy() {
+        if(psdDock.opened() && psdDock.busy()) {
+            showToast(trW(L"请等待图层预览完成后再保存副本",L"Wait for the layer preview before saving",L"請等待圖層預覽完成後再儲存副本"));return;
+        }
+        if (!requireCurrentPixels() || !hasCurrentImagePath()) return;
+        if (exportTask.valid()) {
+            showToast(trW(L"正在保存上一份副本",L"A copy is still being saved",L"正在儲存上一份副本")); return;
+        }
+        const std::wstring source=imgFileList[curFileIdx];
+        std::wstring name=(std::filesystem::path(source).stem().wstring()+L"-copy.png");
+        std::vector<wchar_t> buffer(32768);
+        std::copy_n(name.c_str(), std::min(name.size(),buffer.size()-1), buffer.data());
+        const std::wstring directory=std::filesystem::path(source).parent_path().wstring();
+        OPENFILENAMEW dialog{sizeof(dialog)}; dialog.hwndOwner=m_hWnd;
+        dialog.lpstrFile=buffer.data();dialog.nMaxFile=static_cast<DWORD>(buffer.size());
+        dialog.lpstrFilter=L"PNG (*.png)\0*.png\0JPEG (*.jpg)\0*.jpg;*.jpeg\0\0";
+        dialog.nFilterIndex=1;dialog.lpstrDefExt=L"png";dialog.lpstrInitialDir=directory.c_str();
+        dialog.lpstrTitle=trW(L"保存副本（8 位 sRGB，不覆盖已有文件）",L"Save copy (8-bit sRGB; existing files are protected)",L"儲存副本（8 位 sRGB，不覆蓋既有檔案）");
+        dialog.Flags=OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
+        if(!GetSaveFileNameW(&dialog))return;
+        std::filesystem::path target(buffer.data());
+        auto extension=target.extension().wstring();
+        for(auto& c:extension)c=static_cast<wchar_t>(towlower(c));
+        const bool jpeg=extension==L".jpg"||extension==L".jpeg";
+        if(extension!=L".png"&&!jpeg) {
+            showToast(trW(L"请选择 PNG 或 JPEG 文件名",L"Choose a PNG or JPEG filename",L"請選擇 PNG 或 JPEG 檔名"));return;
+        }
+        const int rotation=curPar.rotation, frame=curPar.curFrameIdx;
+        const bool horizontal=curPar.flipHorizontal, vertical=curPar.flipVertical;
+        const auto dockImage=psdDock.exportImage();
+        showToast(trW(L"正在生成副本，原文件不会改动",L"Saving a copy; the source stays unchanged",L"正在產生副本，原檔案不會改動"));
+        try {
+            exportReplacing=false;
+            exportSource=source;exportRotation=rotation;exportHorizontal=horizontal;exportVertical=vertical;
+            exportTask=std::async(std::launch::async,[source,target,rotation,frame,horizontal,vertical,jpeg,dockImage] {
+                const bool saved=dockImage.empty()?ImageExportJob::save(source,target,rotation,horizontal,vertical,jpeg,frame):
+                    ImageExport::saveNew(target,ImageExport::transform(dockImage,rotation,horizontal,vertical),jpeg);
+                return std::pair{saved,target.filename().wstring()};
+            });
+        }catch(...) {showToast(trW(L"无法启动副本保存任务",L"Cannot start the save task",L"無法啟動副本儲存工作"));}
+    }
+
+    bool savePromptVisible()const{return transformHintPending&&hasCurrentImagePath()&&!exportTask.valid()&&GlobalVar::settingParameter.reserve[ViewerOptions::TRANSFORM_SAVE_HINT];}
+    TransformSavePrompt::Layout savePromptLayout()const{
+        const auto logical=curPar.rotation%2?std::pair{curPar.height,curPar.width}:std::pair{curPar.width,curPar.height};
+        const int w=int(std::min<int64_t>(INT_MAX/4,int64_t(logical.first)*curPar.zoomCur/curPar.ZOOM_BASE));
+        const int h=int(std::min<int64_t>(INT_MAX/4,int64_t(logical.second)*curPar.zoomCur/curPar.ZOOM_BASE));
+        return TransformSavePrompt::layout(imageViewportWidth(),winHeight,overlayDpi(),
+            {imageViewportWidth()/2+curPar.slideCur.x-w/2,winHeight/2+curPar.slideCur.y-h/2,w,h});
+    }
+    void saveCurrentOriginal(){
+        if(!requireCurrentPixels()||!hasCurrentImagePath()||exportTask.valid())return;
+        const auto source=imgFileList[curFileIdx];
+        if(!ImageExportJob::canReplace(source)||curPar.imageAssetPtr->format!=ImageFormat::Still||!psdDock.image().empty()){
+            showToast(trW(L"此格式/图层预览请保存到副本，不覆盖原文件",L"Save this format/layer preview as a copy",L"此格式/圖層預覽請儲存副本，不覆蓋原檔"));return;
+        }
+        auto ext=std::filesystem::path(source).extension().wstring();for(auto& c:ext)c=wchar_t(towlower(c));
+        if(ext!=L".png"&&MessageBoxW(m_hWnd,trW(L"JPEG会重新编码，可能影响画质。原图将保留为同目录备份，是否继续？",L"JPEG will be re-encoded. An original backup will be kept. Continue?",L"JPEG會重新編碼，可能影響畫質。原圖將保留同目錄備份，是否繼續？"),trW(L"保存到原图",L"Save original",L"儲存原圖"),MB_YESNO|MB_DEFBUTTON2|MB_ICONWARNING)!=IDYES)return;
+        const int rotation=curPar.rotation;const bool h=curPar.flipHorizontal,v=curPar.flipVertical;
+        try{exportReplacing=true;replacingSource=exportSource=source;exportRotation=rotation;exportHorizontal=h;exportVertical=v;exportTask=std::async(std::launch::async,[source,rotation,h,v]{
+            const auto result=ImageExportJob::saveOriginal(source,rotation,h,v);
+            return std::pair{result.saved,result.saved?result.backup.wstring():result.backup.wstring()+L" | "+result.recovery.wstring()+L" ("+std::to_wstring(result.error)+L")"};
+        });}catch(...){exportReplacing=false;showToast(trW(L"无法启动保存任务，原图未改动",L"Cannot start save; original unchanged",L"無法啟動儲存工作，原圖未改動"));}
+    }
+    void drawTransformSavePrompt(cv::Mat& canvas){
+        if(!savePromptVisible())return;const auto layout=savePromptLayout();const bool dark=GlobalVar::isCurrentUIDarkMode;
+        const auto rect=[](const auto& r){return cv::Rect(r.x,r.y,r.width,r.height);};const auto bounds=cv::Rect(0,0,canvas.cols,canvas.rows);
+        auto panel=rect(layout.panel)&bounds;if(panel.empty())return;
+        cv::rectangle(canvas,panel,jarkUtils::to_cv_scalar(dark?0xFF323232u:0xFFF4F6F8u),cv::FILLED);
+        const auto fg=dark?0xFFEEEEEEu:0xFF202020u;const int old=textDrawer.getSize();textDrawer.setSize(std::max(1,MulDiv(12,overlayDpi(),96)));
+        textDrawer.putAlignCenter(canvas,rect(layout.label)&bounds,tr("是否保存操作结果？","Save transformation result?","是否儲存操作結果？"),fg);
+        const char* labels[]{tr("保存到原图","Save original","儲存原圖"),tr("保存到副本","Save a copy","儲存副本"),tr("否","No","否")};
+        for(int i=0;i<3;++i){auto r=rect(layout.buttons[i])&bounds;if(r.empty())continue;
+            const bool hovered=layout.buttons[i].contains(mousePos.x,mousePos.y),pressed=hovered&&savePromptPress.button()==i;
+            const auto color=ControlFeedback::background(dark,i==1,hovered,pressed,false);const uint32_t bg=0xFF000000u|(GetRValue(color)<<16)|(GetGValue(color)<<8)|GetBValue(color);
+            cv::rectangle(canvas,r,jarkUtils::to_cv_scalar(bg),cv::FILLED);cv::rectangle(canvas,r,jarkUtils::to_cv_scalar(hovered?(dark?0xFF86CAFFu:0xFF005FAFu):(dark?0xFF707070u:0xFFB0B0B0u)),1);textDrawer.putAlignCenter(canvas,r,labels[i],fg);}textDrawer.setSize(old);
     }
 
     void OnContextMenuCommand(WPARAM wParam) override {
@@ -3622,6 +3898,24 @@ public:
             return;
 
         switch ((ContextMenu)wParam) {
+        case ContextMenu::saveImageCopy: saveCurrentImageCopy(); break;
+        case ContextMenu::screenColorPicker: openScreenPicker(); break;
+        case ContextMenu::colorEditor: openColorPanel(); break;
+        case ContextMenu::psdLayers:
+            if(CanBrowseLayers()) {
+                if(readingEnabled()) {
+                    showToast(trW(L"请先退出连续阅读，再打开图层面板",L"Leave continuous reading before opening layers",L"請先離開連續閱讀，再開啟圖層面板"));
+                    break;
+                }
+                showExif=false;
+                psdDock.open(imgFileList[curFileIdx]);psdDock.layout(winWidth,winHeight,overlayDpi());
+                if(!curPar.viewingTemporaryZoom) {
+                    curPar.setZoom(curPar.fitWindowZoom(imageViewportWidth(),winHeight));
+                    curPar.slideCur=Cood{};curPar.slideTarget=Cood{};
+                }
+                operateQueue.push({ActionENUM::refresh});
+            }
+            break;
         case ContextMenu::openNewImage: {
             openImageFromDialog();
         }break;
@@ -3640,6 +3934,7 @@ public:
                 srcImg = curPar.imageAssetPtr->primaryFrame;
             else
                 srcImg = curPar.imageAssetPtr->frames[curPar.curFrameIdx];
+            if(!psdDock.image().empty())srcImg=psdDock.image();
             jarkUtils::copyImageToClipboard(srcImg);
         }break;
 
@@ -3718,6 +4013,14 @@ public:
             setBackgroundMode(BackgroundMode::FrostedGlass);
         }break;
 
+        case ContextMenu::backgroundCheckerAutomatic:
+        case ContextMenu::backgroundCheckerLight:
+        case ContextMenu::backgroundCheckerDark:
+            GlobalVar::settingParameter.reserve[BackgroundOptions::TONE] =
+                static_cast<uint32_t>(wParam) - static_cast<uint32_t>(ContextMenu::backgroundCheckerAutomatic);
+            setBackgroundMode(BackgroundMode::Checkerboard);
+            break;
+
         default:
             break;
         }
@@ -3730,6 +4033,12 @@ public:
     void setBackgroundMode(BackgroundMode mode) {
         GlobalVar::settingParameter.backgroundMode = static_cast<uint32_t>(mode);
         ApplyWindowBackgroundMode();
+        if (mode == BackgroundMode::FrostedGlass && !IsFrostedGlassActive())
+            showToast(trW(L"系统未能启用背景模糊，已回退到实色背景", L"Background blur unavailable; using a solid background",
+                L"系統未能啟用背景模糊，已回退到實色背景"));
+        if (mode == BackgroundMode::Transparent && !IsCompositionAlphaActive())
+            showToast(trW(L"当前图形环境不支持透明背景", L"Transparent background unavailable in this graphics environment",
+                L"目前圖形環境不支援透明背景"));
         operateQueue.push({ ActionENUM::refresh });
     }
 
@@ -3821,11 +4130,12 @@ public:
     }
 
     uint32_t windowBackgroundPixel() const {
-        // 旋转动画拿它当 warpAffine 的边框常量色，只能是单值：棋盘格取左上角那一格。
+        // 旋转动画的图外边框与普通留白相同，固定透明灰，不采图片棋盘格。
         return BackgroundPolicy::windowCanvasPixel(
             currentBackgroundMode(), presentationMode,
             IsCompositionAlphaActive(), IsFrostedGlassActive(),
-            0, 0, GlobalVar::currentTheme.BG);
+            0, 0, GlobalVar::currentTheme.BG,
+            BackgroundOptions::tone(GlobalVar::settingParameter.reserve));
     }
 
     void fillCanvasBackground(cv::Mat& canvas) const {
@@ -3837,7 +4147,7 @@ public:
         if (BackgroundPolicy::usesUniformWindowCanvas(mode, presentationMode)) {
             const uint32_t canvasPixel = BackgroundPolicy::windowCanvasPixel(
                 mode, presentationMode, alphaSurfaceActive, frostedGlassActive,
-                0, 0, themeBackground);
+                0, 0, themeBackground, BackgroundOptions::tone(GlobalVar::settingParameter.reserve));
             concurrency::parallel_for(0, canvas.rows, [&, canvasPixel](int y) {
                 auto row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
                 std::fill(row, row + canvas.cols, canvasPixel);
@@ -3845,13 +4155,13 @@ public:
             return;
         }
 
-        // 棋盘格按坐标取值，整片铺满窗口。
+        // 为其他未来的窗口留白策略保留通用路径；图片背景不在此处绘制。
         concurrency::parallel_for(0, canvas.rows, [&](int y) {
             auto row = reinterpret_cast<uint32_t*>(canvas.ptr(y));
             for (int x = 0; x < canvas.cols; ++x) {
                 row[x] = BackgroundPolicy::windowCanvasPixel(
                     mode, presentationMode, alphaSurfaceActive, frostedGlassActive,
-                    x, y, themeBackground);
+                    x, y, themeBackground, BackgroundOptions::tone(GlobalVar::settingParameter.reserve));
             }
         });
     }
@@ -3871,6 +4181,7 @@ public:
             GlobalVar::settingParameter.reserve[ViewingOptions::LONG_IMAGE] == 0;
         winWidth = width;
         winHeight = height;
+        psdDock.layout(winWidth,winHeight,overlayDpi());
         readerDirty = true;
 
         if (winWidth != mainCanvas.cols || winHeight != mainCanvas.rows) {
@@ -3879,7 +4190,9 @@ public:
         }
 
         if (hasInitWinSize) {
-            if (readingEnabled())
+            if (restoringFrameWithoutZoom)
+                curPar.updateZoomList(winWidth,winHeight);
+            else if (readingEnabled())
                 curPar.updateZoomList(winWidth, winHeight);
             else if (!applyingViewingSettings && originalLong && currentIsLongImage()) {
                 // 客户区变高时保留图片顶部相对窗口的位置，不重新跳回图顶。
@@ -3954,7 +4267,8 @@ public:
         return BackgroundRenderer::compositeBgra(
             srcPx.u32, BackgroundPolicy::imageAreaMode(currentBackgroundMode()),
             IsFrostedGlassActive(), mainX, mainY,
-            GlobalVar::currentTheme.BG);
+            GlobalVar::currentTheme.BG, BackgroundOptions::tone(GlobalVar::settingParameter.reserve),
+            IsCompositionAlphaActive());
     }
 
     inline uint32_t getSrcPx4(const cv::Mat& srcImg, int srcX, int srcY, int mainX, int mainY) const {
@@ -4060,6 +4374,12 @@ public:
     }
 
     void drawCanvas(const cv::Mat& srcImg, cv::Mat& canvas) const {
+        if(psdDock.opened() && canvas.cols==winWidth && imageViewportWidth()<canvas.cols) {
+            cv::Mat content(canvas.rows,imageViewportWidth(),canvas.type());
+            drawCanvas(psdDock.image().empty()?srcImg:psdDock.image(),content);
+            content.copyTo(canvas(cv::Rect(0,0,content.cols,content.rows)));
+            return;
+        }
         if (curPar.imageAssetPtr && curPar.imageAssetPtr->svgRenderer &&
             srcImg.data == curPar.imageAssetPtr->primaryFrame.data) {
             drawSvgCanvas(canvas);
@@ -4170,13 +4490,13 @@ public:
                 for (int x = xStart; x < xEnd; ++x) {
                     intUnion pixel;
                     if (useCache) {
-                        const auto point = ImageViewTransform::displayToSource(double(x - deltaW), double(y - deltaH),
+                        const auto point = ImageViewTransform::forSourceImage(double(x - deltaW), double(y - deltaH),
                             w, h, curPar.rotation, curPar.flipHorizontal, curPar.flipVertical);
                         pixel.u32 = qualityCache.at<uint32_t>(std::clamp(static_cast<int>(point.y), 0, h - 1),
                             std::clamp(static_cast<int>(point.x), 0, w - 1));
                     }
                     else {
-                        const auto point = ImageViewTransform::displayToSource((x - deltaW + 0.5) * zoomInvert - 0.5,
+                        const auto point = ImageViewTransform::forSourceImage((x - deltaW + 0.5) * zoomInvert - 0.5,
                             (y - deltaH + 0.5) * zoomInvert - 0.5, srcImg.cols, srcImg.rows,
                             curPar.rotation, curPar.flipHorizontal, curPar.flipVertical);
                         const double radius = zoomInvert / 2;
@@ -5164,6 +5484,7 @@ public:
         case CursorPos::toolbarZoomOut: return tr("缩小", "Zoom out", "縮小");
         case CursorPos::toolbarZoomText: return tr("输入缩放倍率", "Enter zoom percentage", "輸入縮放倍率");
         case CursorPos::toolbarZoomIn: return tr("放大", "Zoom in", "放大");
+        case CursorPos::toolbarScreenPicker: return tr("取色（左键取色，右键颜色面板）", "Pick color (left: pick; right: color panel)", "取色（左鍵取色，右鍵色彩面板）");
         default: return nullptr;
         }
     }
@@ -5256,13 +5577,13 @@ public:
         jarkUtils::overlayImg(canvas, pill, toolbar.x, toolbar.y);
 
         const int scale = OverlayLayout::toolbarScale(canvas.cols, overlayDpi());
-        for (const int baseX : { 42, 199 + OverlayLayout::PAN_INSERT_WIDTH, 342 + OverlayLayout::PAN_INSERT_WIDTH }) {
+        for (const int baseX : OverlayLayout::TOOLBAR_SEPARATORS) {
             const int x = toolbar.x + OverlayLayout::scaled(
                 OverlayLayout::BASE_TOOLBAR_PADDING + baseX, scale);
             const int half = OverlayLayout::scaled(10, scale);
             cv::line(canvas, { x, toolbar.y + toolbar.height / 2 - half },
                 { x, toolbar.y + toolbar.height / 2 + half },
-                cv::Scalar(255, 255, 255, 26), 1, cv::LINE_AA);
+                jarkUtils::to_cv_scalar(HintLayout::SEPARATOR_COLOR), 1, cv::LINE_AA);
         }
 
         drawToolbarButton(canvas, OverlayLayout::settingsRect(canvas.cols, canvas.rows, overlayDpi()),
@@ -5288,7 +5609,7 @@ public:
         // 高亮判定改成按当前缩放比对，不再看缓存索引——索引会因为 zoomList 重建而指偏。
         drawToolbarButton(canvas, OverlayLayout::zoomFitRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.fitWindow, CursorPos::toolbarZoomFit,
-            curPar.zoomTarget == curPar.fitWindowZoom(winWidth, winHeight));
+            curPar.zoomTarget == curPar.fitWindowZoom(imageViewportWidth(), winHeight));
         drawToolbarButton(canvas, OverlayLayout::fitImageRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.fitImage, CursorPos::toolbarFitImage);
         drawToolbarButton(canvas, OverlayLayout::zoomActualRect(canvas.cols, canvas.rows, overlayDpi()),
@@ -5300,6 +5621,8 @@ public:
             extraUIRes.zoomOut, CursorPos::toolbarZoomOut, false, false, true);
         drawToolbarButton(canvas, OverlayLayout::zoomInRect(canvas.cols, canvas.rows, overlayDpi()),
             extraUIRes.zoomIn, CursorPos::toolbarZoomIn, false, false, true);
+        drawToolbarButton(canvas, OverlayLayout::screenPickerRect(canvas.cols, canvas.rows, overlayDpi()),
+            extraUIRes.screenPicker, CursorPos::toolbarScreenPicker);
 
         const auto zoomTextLayout = OverlayLayout::zoomTextRect(canvas.cols, canvas.rows, overlayDpi());
         if (zoomTextEditing) {
@@ -5346,23 +5669,17 @@ public:
             case CursorPos::toolbarZoomOut: hovered = OverlayLayout::zoomOutRect(canvas.cols, canvas.rows, overlayDpi()); break;
             case CursorPos::toolbarZoomText: hovered = OverlayLayout::zoomTextRect(canvas.cols, canvas.rows, overlayDpi()); break;
             case CursorPos::toolbarZoomIn: hovered = OverlayLayout::zoomInRect(canvas.cols, canvas.rows, overlayDpi()); break;
+            case CursorPos::toolbarScreenPicker: hovered = OverlayLayout::screenPickerRect(canvas.cols, canvas.rows, overlayDpi()); break;
             default: break;
             }
-            const auto tooltipWide = jarkUtils::utf8ToWstring(tooltip);
-            int tooltipTextWidth = 0;
-            for (const wchar_t character : tooltipWide)
-                tooltipTextWidth += character > 0xFF ? 14 : 7;
-            const int tooltipWidth = std::min(180, std::max(72,
-                tooltipTextWidth + 24));
-            const int tooltipHeight = 30;
-            const int tooltipX = std::clamp(hovered.x + hovered.width / 2 - tooltipWidth / 2,
-                4, canvas.cols - tooltipWidth - 4);
-            const int tooltipY = std::max(4, toolbar.y - tooltipHeight - 8);
-            auto surface = roundedSurface(tooltipWidth, tooltipHeight, 7,
+            const auto hint = HintLayout::tooltip(canvas.cols, canvas.rows,
+                hovered.x + hovered.width / 2, toolbar.y,
+                textDrawer.measureWidth(tooltip, true), textDrawer.getSize(), overlayDpi());
+            auto surface = roundedSurface(hint.width, hint.height, HintLayout::scale(7, overlayDpi()),
                 0xE6000000u, 0x1AFFFFFFu);
-            jarkUtils::overlayImg(canvas, surface, tooltipX, tooltipY);
+            jarkUtils::overlayImg(canvas, surface, hint.x, hint.y);
             textDrawer.putAlignCenter(canvas,
-                { tooltipX, tooltipY, tooltipWidth, tooltipHeight }, tooltip, 0xFFE8EAF0u);
+                { hint.x, hint.y, hint.width, hint.height }, tooltip, 0xFFE8EAF0u);
         }
     }
 
@@ -5385,12 +5702,10 @@ public:
             imgDB.estimatedDecodeMs(pendingImagePath), elapsedMs);
 
         const char* text = label.c_str();
-        const auto wide = jarkUtils::utf8ToWstring(text);
-        int textWidth = 0;
-        for (const wchar_t character : wide)
-            textWidth += character > 0xFF ? 14 : 7;
-
-        const int width = scale(std::max(96, textWidth + 26));
+        textDrawer.setSize(TextRenderingPolicy::scaledPixelSize(
+            TextRenderingPolicy::LOGICAL_FONT_SIZE, static_cast<uint32_t>(dpi)));
+        const int width = std::min(canvas.cols - scale(16),
+            std::max(scale(96), textDrawer.measureWidth(text, true) + scale(26)));
         const int height = scale(28);
         if (canvas.cols < width + scale(16) || canvas.rows < height * 3)
             return;
@@ -5575,10 +5890,60 @@ public:
         put("width", winWidth); put("height", winHeight); put("dpi", overlayDpi());
         put("shape", presentationMode ? 1 : (jarkUtils::IsFullScreen(m_hWnd) ? 2 : 0));
         put("zoom", curPar.displayZoomPercent());
+        put("dockOpen",psdDock.opened()?1:0);put("dockBusy",psdDock.busy()?1:0);
+        put("layerEntry",CanBrowseLayers()?1:0);
+        put("screenPickerBusy",ScreenPickerSession::isRunning()?1:0);
+        put("screenPickerWorker",ScreenPickerSession::workerThreadId());
+        put("colorPanelBusy",ScreenColorWindow::isRunning()?1:0);
+        // 与绘制同一线程、在一帧边界记录，避免外部探针数到TextDrawer正在使用的临时DC/字体/位图。
+        // 仅探针启用时清点真实菜单，普通运行不创建额外菜单。
+        static int auditedCapability=-1;
+        static bool tools=false,layers=false,backgroundMenuValid=false,colorMenuIcons=false;
+        if(auditedCapability!=int(CanBrowseLayers())) {
+            auditedCapability=int(CanBrowseLayers());tools=layers=false;
+            const HMENU context=CreateContextMenu(m_hWnd);
+            MENUITEMINFOW pickerIcon{sizeof(pickerIcon)},paletteIcon{sizeof(paletteIcon)};pickerIcon.fMask=paletteIcon.fMask=MIIM_BITMAP;
+            colorMenuIcons=GetMenuItemInfoW(context,UINT(ContextMenu::screenColorPicker),FALSE,&pickerIcon)&&GetMenuItemInfoW(context,UINT(ContextMenu::colorEditor),FALSE,&paletteIcon)&&pickerIcon.hbmpItem&&paletteIcon.hbmpItem&&pickerIcon.hbmpItem!=paletteIcon.hbmpItem;
+            for(int i=0;i<GetMenuItemCount(context);++i) {
+                wchar_t label[256]{};GetMenuStringW(context,i,label,256,MF_BYPOSITION);
+                tools|=std::wstring_view(label)==L"轻工具"||std::wstring_view(label)==L"輕工具"||std::wstring_view(label)==L"Image tools";
+                layers|=GetMenuItemID(context,i)==UINT(ContextMenu::psdLayers);
+                if(const auto menu=GetSubMenu(context,i);menu&&GetMenuItemID(menu,0)==1100) {
+                    const auto checker=GetSubMenu(menu,4);
+                    wchar_t checkerName[64]{};GetMenuStringW(menu,4,checkerName,64,MF_BYPOSITION);
+                    backgroundMenuValid=GetMenuItemCount(menu)==5&&checker&&GetMenuItemCount(checker)==3&&
+                        std::wstring_view(checkerName)==trW(L"棋盘格",L"Checkerboard",L"棋盤格")&&
+                        GetMenuItemID(checker,0)==1104&&GetMenuItemID(checker,2)==1106;
+                }
+            }
+            DestroyMenu(context);
+        }
+        put("contextTools",tools?1:0);put("contextLayers",layers?1:0);
+        put("backgroundMenuValid",backgroundMenuValid?1:0);
+        put("colorMenuIcons",colorMenuIcons?1:0);
+        put("gdiObjects",GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS));
+        put("currentColor",CurrentColor::pack(CurrentColor::get()));put("currentAlpha",CurrentColor::alpha());
+        put("dockLayers",psdDock.layerCount());put("dockVisible",psdDock.visibleCount());
+        put("dockIssue",psdDock.issue());put("dockOverride",psdDock.image().empty()?0:1);put("dockBackend",psdDock.usesPhotocraft()?1:0);
+        put("dockX",imageViewportWidth());
+        put("dockListTop",MulDiv(PsdTree::LIST_TOP,overlayDpi(),96));
+        put("dockRowHeight",MulDiv(PsdTree::ROW_HEIGHT,overlayDpi(),96));
+        if(!psdDock.image().empty()) {
+            const auto pixel=psdDock.image().at<cv::Vec4b>(0,0);
+            put("dockB",int(pixel[0]));put("dockG",int(pixel[1]));put("dockR",int(pixel[2]));put("dockA",int(pixel[3]));
+        }
+        put("zoomRaw", curPar.zoomTarget); put("zoomIndex", curPar.zoomIndex);
+        put("zoomPrevious", curPar.zoomIndex > 0 ? curPar.zoomList[curPar.zoomIndex - 1] : 0);
+        put("wheelCount", probeWheelCount); put("wheelIntent", probeWheelIntent);
+        put("readerEnlargement", readerEnlargement);
         put("zoomExact", double(curPar.zoomTarget) / curPar.ZOOM_BASE /
             (curPar.previewToSource > 0 ? curPar.previewToSource : 1));
         put("slideX", curPar.slideCur.x); put("slideY", curPar.slideCur.y);
         put("panPopover", panPopoverOpen ? 1 : 0);
+        put("pressCount", probePressCount); put("pressRoute", probePressRoute);
+        put("pressX", probePressX); put("pressY", probePressY);
+        put("actualMouseX", probeActualX); put("actualMouseY", probeActualY);
+        put("pressHadPopover", probePressPopover);
         put("imageDragging", mouseIsPressing ? 1 : 0);
         put("windowDragging", windowDragActive ? 1 : 0);
         put("panMoves",panMoveCount); put("panDeltaX",lastPanDelta.x); put("panDeltaY",lastPanDelta.y);
@@ -5627,6 +5992,12 @@ public:
         put("settingRememberMonitor", setting.rememberLastMonitor ? 1 : 0);
         put("settingSwitchAnimation", setting.switchImageAnimationMode);
         put("settingTheme", setting.UI_Mode); put("settingLanguage", setting.UI_LANG);
+        put("themeDark", GlobalVar::isCurrentUIDarkMode);
+        put("backgroundMode", setting.backgroundMode);
+        put("checkerboardTone", static_cast<uint32_t>(BackgroundOptions::tone(setting.reserve)));
+        put("compositionAlpha", IsCompositionAlphaActive());
+        put("frostedActive", IsFrostedGlassActive());
+        put("blurCompatibility",IsCompatibilityBlurActive());put("backgroundRemoteSession",IsBackgroundRemoteSession());
         put("settingRightClick", setting.rightClickAction);
         for (size_t index=0; index<ShortcutConfig::DEFAULT_BINDINGS.size(); ++index)
             state << "binding" << index << '=' << setting.reserve[ShortcutConfig::BINDING_BASE_INDEX+index] << '\n';
@@ -5722,6 +6093,7 @@ public:
         drawReaderControls(canvas);
         if (readingEnabled()) drawPanButton(canvas);
         drawToast(canvas);
+        drawTransformSavePrompt(canvas);
         drawLivePhotoBadge(canvas);
 
         // 空占位图只有 1×1，工具栏、翻页箭头这些都无从谈起。
@@ -5734,7 +6106,10 @@ public:
         switch (extraUIFlag) {
         case ShowExtraUI::bottomToolbar: {
             if (readingEnabled()) { drawPanPopover(canvas); break; }
-            drawViewerToolbar(canvas);
+            if(psdDock.opened()) {
+                auto content=canvas(cv::Rect(0,0,imageViewportWidth(),canvas.rows)).clone();
+                drawViewerToolbar(content);content.copyTo(canvas(cv::Rect(0,0,content.cols,content.rows)));
+            } else drawViewerToolbar(canvas);
             drawPanPopover(canvas);
         } break;
         case ShowExtraUI::leftArrow:
@@ -5761,14 +6136,12 @@ public:
             break;
         }
 
-        const bool windowHasCaption =
-            (GetWindowLongPtrW(m_hWnd, GWL_STYLE) & WS_CAPTION) != 0;
-        if (OverlayLayout::shouldDrawPresentationClose(
-            presentationMode, windowHasCaption, !extraUIRes.presentationClose.empty())) {
+        psdDock.draw(canvas,textDrawer);
+        if (presentationCloseVisible()) {
             const auto close = OverlayLayout::presentationCloseRect(canvasWidth, canvasHeight, overlayDpi());
             const cv::Point center{ close.x + close.width / 2, close.y + close.height / 2 };
-            cv::circle(canvas, center, close.width / 2 - 1,
-                cv::Scalar(33, 32, 32, 235), -1, cv::LINE_AA);
+            cv::rectangle(canvas, toCvRect(close),
+                cv::Scalar(33, 32, 32, 255), cv::FILLED);
             // 叉号跟着按钮尺寸走，按钮已按 DPI 放大，固定臂长会显得越来越小。
             const int arm = std::max(3,
                 close.width * 9 / OverlayLayout::PRESENTATION_CLOSE_SIZE);
@@ -5830,6 +6203,7 @@ public:
             GlobalVar::isNeedUpdateTheme = false;
             BOOL themeMode = GlobalVar::isCurrentUIDarkMode;
             DwmSetWindowAttribute(m_hWnd, 20, &themeMode, sizeof(BOOL));
+            ApplyWindowBackgroundMode();
             operateQueue.push({ ActionENUM::refresh });
         }
         if (ViewingOptions::changed && !Setting::isWorking) {
@@ -5853,6 +6227,7 @@ public:
 
         if (GlobalVar::isNeedReloadImageCache) {
             GlobalVar::isNeedReloadImageCache = false;
+            psdDock.close();
             if (curFileIdx >= 0 && curFileIdx < (int)imgFileList.size()) {
                 const auto currentPath = imgFileList[curFileIdx];
                 imgDB.clear();
@@ -5873,6 +6248,29 @@ public:
         }
 
         const auto now = std::chrono::steady_clock::now();
+        const auto documentPath=hasCurrentImagePath()?imgFileList[curFileIdx]:L"";
+        if(psdCapability.poll(documentPath))operateQueue.push({ActionENUM::refresh});
+        if(psdDock.poll(hasCurrentImagePath()?imgFileList[curFileIdx]:L"",m_hWnd)) {
+            psdDock.layout(winWidth,winHeight,overlayDpi());
+            operateQueue.push({ActionENUM::refresh});
+        }
+        if(exportTask.valid()&&exportTask.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
+            std::pair<bool,std::wstring> completed{false,L""};
+            try{completed=exportTask.get();}catch(...){completed.second=trW(L"处理失败，请检查文件；未报告保存成功",L"Processing failed; save not reported successful",L"處理失敗，請檢查檔案；未報告儲存成功");}
+            const auto& [okay,name]=completed;
+            if(exportReplacing){
+                exportReplacing=false;
+                if(okay){const auto source=replacingSource;rotationStore.erase(source);rotationStore.save();imgDB.erase(source);
+                    if(hasCurrentImagePath()&&imgFileList[curFileIdx]==source){bakedReload=BakedView{source,curPar.zoomCur,curPar.slideCur};initOpenFile(source);transformHintPending=false;}
+                    showToast(std::wstring(trW(L"已保存原图，备份：",L"Original saved; backup: ",L"已儲存原圖，備份："))+name);
+                }else showToast(std::wstring(trW(L"保存未完成；备份/恢复信息：",L"Save incomplete; backup/recovery: ",L"儲存未完成；備份/復原資訊："))+name);
+                replacingSource.clear();
+            }else{
+            if(okay&&hasCurrentImagePath()&&imgFileList[curFileIdx]==exportSource&&curPar.rotation==exportRotation&&curPar.flipHorizontal==exportHorizontal&&curPar.flipVertical==exportVertical)transformHintPending=false;
+            showToast((okay?std::wstring(trW(L"已保存副本：",L"Saved copy: ",L"已儲存副本：")):
+                std::wstring(trW(L"保存失败（已有文件受保护或无法写入）：",L"Save failed (existing file protected or write failed): ",L"儲存失敗（既有檔案受保護或無法寫入）：")))+name);
+            }
+        }
         if (!toastMessage.empty() && now >= toastUntil) {
             toastMessage.clear();
             operateQueue.push({ ActionENUM::refresh });
@@ -5917,6 +6315,7 @@ public:
                 else
                     srcImg = curPar.imageAssetPtr->frames[curPar.curFrameIdx];
 
+                if(!psdDock.image().empty())srcImg=psdDock.image();
                 std::thread printerThread([](cv::Mat image, int rotation) {
                     cv::Mat rotatedImage;
 
@@ -5973,6 +6372,7 @@ public:
                 source = curPar.imageAssetPtr->primaryFrame;
             else
                 source = curPar.imageAssetPtr->frames[curPar.curFrameIdx];
+            if(!psdDock.image().empty())source=psdDock.image();
             jarkUtils::copyImageToClipboard(source);
             return;
         }
@@ -6152,6 +6552,7 @@ public:
         } break;
 
         case ActionENUM::toggleExif: {
+            if(psdDock.opened()){psdDock.close();psdDock.layout(winWidth,winHeight,overlayDpi());}
             showExif = !showExif;
             imageInfoScrollOffset = 0;
         } break;
@@ -6206,7 +6607,7 @@ public:
         // 这三个都改成当场按窗口算，不再读缓存的 zoomIndexFix / zoomIndex100percent：
         // 那两个索引指向的是随时会被重建的 zoomList，重建后就指到别的档位上了。
         case ActionENUM::zoomFix: {
-            const auto fitZoom = curPar.fitWindowZoom(winWidth, winHeight);
+            const auto fitZoom = curPar.fitWindowZoom(imageViewportWidth(), winHeight);
             const auto zoomNext = (curPar.zoomTarget == curPar.ZOOM_BASE) ?
                 fitZoom : curPar.ZOOM_BASE;
             if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
@@ -6219,7 +6620,7 @@ public:
 
         case ActionENUM::zoomFit: {
             rememberViewingRule(ViewingOptions::SCALE, static_cast<uint32_t>(ViewingOptions::Scale::Fit));
-            const auto zoomNext = curPar.fitWindowZoom(winWidth, winHeight);
+            const auto zoomNext = curPar.fitWindowZoom(imageViewportWidth(), winHeight);
             if (curPar.zoomTarget && zoomNext != curPar.zoomTarget)
                 computeZoomSlide(zoomNext);
             curPar.selectZoomTarget(zoomNext);
@@ -6245,6 +6646,7 @@ public:
         } break;
 
         case ActionENUM::rotateLeft: {
+            if(exportReplacing){showToast(trW(L"请等待原图保存完成",L"Wait for the original save",L"請等待原圖儲存完成"));break;}
             if (GlobalVar::settingParameter.isAllowRotateAnimation) {
                 rotateLeftAnimation();
             }
@@ -6257,9 +6659,11 @@ public:
             else
                 curPar.updateZoomList(winWidth, winHeight);
             persistCurrentRotation();
+            transformHintPending=curPar.rotation||curPar.flipHorizontal||curPar.flipVertical;
         } break;
 
         case ActionENUM::rotateRight: {
+            if(exportReplacing){showToast(trW(L"请等待原图保存完成",L"Wait for the original save",L"請等待原圖儲存完成"));break;}
             if (GlobalVar::settingParameter.isAllowRotateAnimation) {
                 rotateRightAnimation();
             }
@@ -6272,14 +6676,19 @@ public:
             else
                 curPar.updateZoomList(winWidth, winHeight);
             persistCurrentRotation();
+            transformHintPending=curPar.rotation||curPar.flipHorizontal||curPar.flipVertical;
         } break;
 
         case ActionENUM::flipHorizontal: {
+            if(exportReplacing)break;
             curPar.flipHorizontal = !curPar.flipHorizontal;
+            transformHintPending=curPar.rotation||curPar.flipHorizontal||curPar.flipVertical;
         } break;
 
         case ActionENUM::flipVertical: {
+            if(exportReplacing)break;
             curPar.flipVertical = !curPar.flipVertical;
+            transformHintPending=curPar.rotation||curPar.flipHorizontal||curPar.flipVertical;
         } break;
 
         case ActionENUM::toggleFavorite: {
@@ -6495,7 +6904,32 @@ public:
         }
     }
 
+    bool CanBrowseLayers() const override {
+        return hasCurrentImagePath() && psdCapability.available(imgFileList[curFileIdx]);
+    }
+    void openScreenPicker() {
+        ScreenPickerSession::open(m_hWnd, std::filesystem::path(GlobalVar::settingPath).parent_path() / L"YeImageViewer.color-picker.ini",
+            GlobalVar::isCurrentUIDarkMode);
+    }
+    void openColorPanel(bool edit=false){prepareColorPanelImage();if(!ScreenColorWindow::open(edit))showToast(trW(L"颜色面板未能启动或响应，请重试",L"Color panel did not start or respond; retry",L"色彩面板未能啟動或回應，請重試"));}
+    void prepareColorPanelImage(){
+        if(!curPar.imageAssetPtr||curPar.imageAssetPtr->isLoading){ColorCatalog::setCurrent({});return;}
+        const auto& asset=*curPar.imageAssetPtr;
+        const auto& image=asset.format==ImageFormat::Animated&&!asset.frames.empty()?asset.frames[(std::min)(size_t(curPar.curFrameIdx),asset.frames.size()-1)]:asset.primaryFrame;
+        ColorCatalog::setCurrent(image);
+    }
+
+    void OnScreenPickerResult(WPARAM result, LPARAM) override {
+        if(result==ScreenPickerSession::Selected)openColorPanel(true);
+        if (result == ScreenPickerSession::Copied)
+            showToast(trW(L"颜色已复制", L"Color copied", L"色彩已複製"));
+        else if (result == ScreenPickerSession::CaptureFailed || result == ScreenPickerSession::StartFailed)
+            showToast(trW(L"无法读取当前桌面，取色已退出", L"Cannot capture this desktop; picker closed", L"無法讀取目前桌面，取色已結束"));
+    }
+
     void OnRequestExitOtherWindows() {
+        ScreenPickerSession::requestExit();
+        // 颜色工作台是独立单实例；关闭看图窗口不关闭用户正在使用的颜色面板。
         Printer::requestExit();
         Setting::requestExit();
 
@@ -7046,6 +7480,71 @@ int WINAPI wWinMain(
 
     int argumentCount = 0;
     LPWSTR* arguments = ::CommandLineToArgvW(::GetCommandLineW(), &argumentCount);
+    if(arguments&&argumentCount>=2&&argumentCount<=3&&(std::wstring_view(arguments[1])==L"--screen-picker"||std::wstring_view(arguments[1])==L"--color-panel")&&
+        (argumentCount==2||(std::wstring_view(arguments[1])==L"--color-panel"&&std::wstring_view(arguments[2])==L"--service"))) {
+        const bool panel=std::wstring_view(arguments[1])==L"--color-panel";
+        const bool service=argumentCount==3;
+        wchar_t module[32768]{};GetModuleFileNameW(nullptr,module,32768);
+        const auto directory=std::filesystem::path(module).parent_path();
+        GlobalVar::settingPath=(directory/L"YeImageViewer.db").wstring();
+        // 只读已有语言/主题，独立工具不创建看图窗口、不迁移或改写DB。
+        SettingParameter settings;
+        std::ifstream file(directory/L"YeImageViewer.db",std::ios::binary);
+        if(file.read(reinterpret_cast<char*>(&settings),sizeof(settings))){settings.ValidateParameters();GlobalVar::settingParameter=settings;}
+        GlobalVar::isSystemDarkMode=jarkUtils::getSystemDarkMode();
+        GlobalVar::isCurrentUIDarkMode=GlobalVar::settingParameter.UI_Mode==0?GlobalVar::isSystemDarkMode:GlobalVar::settingParameter.UI_Mode==2;
+        LocalFree(arguments);
+        int result=0;
+        if(panel)ScreenColorWindow::runStandalone(false,service);
+        else {
+            const auto state=ScreenPickerSession::runStandalone(directory/L"YeImageViewer.color-picker.ini",GlobalVar::isCurrentUIDarkMode);
+            if(state==ScreenPickerSession::Selected)ScreenColorWindow::runStandalone(true);
+            else if(state==ScreenPickerSession::CaptureFailed||state==ScreenPickerSession::StartFailed){MessageBoxW(nullptr,trW(L"无法读取当前桌面",L"Cannot capture this desktop",L"無法讀取目前桌面"),L"YeImageViewer",MB_OK|MB_ICONWARNING);result=2;}
+        }
+        StartupTrace::mark("standalone.beforeCoUninitialize");CoUninitialize();StartupTrace::mark("standalone.finished");return result;
+    }
+    if(arguments && argumentCount==3 && std::wstring_view(arguments[1])==L"--picker-layout-selftest") {
+        const bool okay=ScreenPickerSession::layoutSelfTest(arguments[2]);LocalFree(arguments);CoUninitialize();return okay?0:2;
+    }
+    if(arguments && argumentCount==3 && std::wstring_view(arguments[1])==L"--screen-picker-selftest") {
+        const bool okay=ScreenPickerSession::selfTest(std::filesystem::path(arguments[2]));
+        LocalFree(arguments);CoUninitialize();return okay?0:2;
+    }
+    if(arguments&&argumentCount==4&&std::wstring_view(arguments[1])==L"--psd-layer-audit") {
+        bool okay=false;
+        try{okay=PsdDock::audit(arguments[2],std::filesystem::path(arguments[3]));}catch(...){}
+        LocalFree(arguments);CoUninitialize();return okay?0:2;
+    }
+    if(arguments&&argumentCount==3&&std::wstring_view(arguments[1])==L"--original-save-selftest"){
+        bool okay=false;try{okay=ImageExportJob::originalSaveSelfTest(arguments[2]);}catch(...){}
+        LocalFree(arguments);CoUninitialize();return okay?0:2;
+    }
+    if(arguments&&argumentCount==3&&std::wstring_view(arguments[1])==L"--color-panel-offscreen-selftest"){
+        bool okay=false;try{okay=ScreenColorWindow::offscreenSelfTest();std::ofstream report(std::filesystem::path(arguments[2]),std::ios::binary);report<<ScreenColorWindow::diagnostics();}catch(...){}
+        LocalFree(arguments);CoUninitialize();return okay?0:2;
+    }
+    if(arguments&&argumentCount==4&&std::wstring_view(arguments[1])==L"--transform-render-selftest"){
+        bool okay=false;try{okay=YeImageViewerApp::transformRenderSelfTest(arguments[2],arguments[3]);}catch(...){}
+        LocalFree(arguments);CoUninitialize();return okay?0:2;
+    }
+    if(arguments&&argumentCount==4&&std::wstring_view(arguments[1])==L"--psd-dock-selftest") {
+        bool okay=false;
+        try{okay=PsdDock::selfTest(arguments[2],std::filesystem::path(arguments[3]));}catch(...){}
+        LocalFree(arguments);CoUninitialize();return okay?0:2;
+    }
+    if(arguments&&argumentCount==4&&std::wstring_view(arguments[1])==L"--image-tools-selftest") {
+        const bool picker=ScreenColorWindow::selfTest();
+        const bool layers=PsdLayersWindow::selfTest(arguments[2]);
+        std::ofstream result(std::filesystem::path(arguments[3]),std::ios::binary);
+        result<<"picker="<<picker<<"\nlayers="<<layers<<"\n"<<ScreenColorWindow::diagnostics()<<"\n";
+        LocalFree(arguments);CoUninitialize();return picker&&layers?0:2;
+    }
+    if(arguments&&argumentCount==7&&std::wstring_view(arguments[1])==L"--export-copy-probe") {
+        const auto target=std::filesystem::path(arguments[3]);
+        const auto extension=target.extension().wstring();
+        const bool okay=ImageExportJob::save(arguments[2],target,_wtoi(arguments[4]),_wtoi(arguments[5])!=0,_wtoi(arguments[6])!=0,extension==L".jpg"||extension==L".jpeg");
+        LocalFree(arguments);CoUninitialize();return okay?0:2;
+    }
     if (arguments != nullptr && argumentCount == 4
         && std::wstring_view(arguments[1]) == L"--png-decode-selftest") {
         const int selfTestResult = runPngDecodeSelfTest(arguments[2], arguments[3]);

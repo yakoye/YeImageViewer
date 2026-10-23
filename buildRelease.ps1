@@ -6,6 +6,9 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+& (Join-Path $PSScriptRoot 'scripts/build-layer-backend.ps1')
+if($LASTEXITCODE -ne 0){throw '图层后端构建失败'}
+
 # 装 Visual Studio 一定会带 vswhere，所以找不到它就是根本没装，
 # 而不是「装了但位置不对」——把这句话说明白，省掉一轮猜。
 $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"

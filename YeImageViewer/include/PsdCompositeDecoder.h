@@ -89,7 +89,8 @@ inline bool layerTransparency(std::span<const uint8_t> section, bool psb) {
     }
     return false;
 }
-inline Image decode(std::span<const uint8_t> bytes, size_t memoryLimit = 1024ULL * 1024 * 1024) noexcept {
+inline Image decode(std::span<const uint8_t> bytes, size_t memoryLimit = 1024ULL * 1024 * 1024,
+                    bool compositeWhiteMatte = true) noexcept {
     try {
         if (!signature(bytes)) return {};
         Reader reader(bytes);
@@ -221,6 +222,18 @@ inline Image decode(std::span<const uint8_t> bytes, size_t memoryLimit = 1024ULL
             return std::isfinite(value32) ? value32 : 0.0;
         };
         const auto byte = [](double value) {return static_cast<uint8_t>(std::lround(std::clamp(value, 0.0, 1.0) * 255));};
+        // 部分第三方写入器存直通RGB而非白色衬底。白衬底必须满足每个半透明
+        // 色值 >= 1-alpha（允许两次编码量化的1 LSB）；全图存在反例就不能撤衬底。
+        // 这检测的是编码恒等式，不用文件名、尺寸或某个特定位置的颜色猜来源。
+        bool undoWhiteMatte=compositeWhiteMatte&&alpha&&mode==3;
+        if(undoWhiteMatte) {
+            const double tolerance=depth==8?1.0/255:depth==16?1.0/65535:1e-6;
+            for(size_t index=0;index<pixels&&undoWhiteMatte;++index) {
+                const double a=sample(base,index);
+                if(a<=0||a>=1)continue;
+                for(size_t c=0;c<3;++c)if(sample(c,index)+a<1-tolerance){undoWhiteMatte=false;break;}
+            }
+        }
         std::vector<uint8_t> device(static_cast<size_t>(width) * (mode == 4 ? 4 : 1));
         std::vector<double> lab(mode == 9 ? static_cast<size_t>(width) * 3 : 0);
         std::vector<uint8_t> converted(static_cast<size_t>(width) * 3);
@@ -246,7 +259,23 @@ inline Image decode(std::span<const uint8_t> bytes, size_t memoryLimit = 1024ULL
                     lab[x * 3 + 1] = sample(1, index) * 255 - 128;
                     lab[x * 3 + 2] = sample(2, index) * 255 - 128;
                 } else if (mode == 3) {
-                    result.bgra[dst] = byte(sample(2, index)); result.bgra[dst + 1] = byte(sample(1, index)); result.bgra[dst + 2] = byte(sample(0, index));
+                    // Photoshop最终RGB合成图带白色衬底，图层本身的栅格不带。
+                    // 在原位深浮点精度下撤掉衬底，不能先量化为8位再反算。
+                    const double a=alpha?std::clamp(sample(base,index),0.0,1.0):1.0;
+                    const auto color=[&](size_t c) {
+                        const double value=sample(c,index);
+                        if(!undoWhiteMatte)return byte(value);
+                        if(a<=0)return uint8_t(0);
+                        if(depth==8||depth==16) {
+                            const int maximum=depth==8?255:65535;
+                            const int ac=static_cast<int>(std::lround(a*maximum));
+                            const int cc=static_cast<int>(std::lround(value*maximum));
+                            // 整数域先相减，避免 .5 因归一化减法误差变成 .499999…。
+                            return byte(double(cc+ac-maximum)/ac);
+                        }
+                        return byte((value+a-1)/a);
+                    };
+                    result.bgra[dst] = color(2); result.bgra[dst + 1] = color(1); result.bgra[dst + 2] = color(0);
                 } else if (mode == 2) {
                     const size_t palette = byte(sample(0, index));
                     result.bgra[dst] = colorData[512 + palette]; result.bgra[dst + 1] = colorData[256 + palette]; result.bgra[dst + 2] = colorData[palette];

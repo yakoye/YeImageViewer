@@ -24,6 +24,16 @@ struct Layout {
     }
 };
 
+// 当前布局保留浮点缩放；不要用已量化到 1/65536 的显示倍率反推比例，
+// 否则连续缩放会累积一个刻度的误差，插入与标准档位几乎重合的伪档位。
+inline double enlargementForScale(double currentScale, double currentEnlargement, double targetScale) {
+    if (!std::isfinite(currentScale) || currentScale <= 0 ||
+        !std::isfinite(currentEnlargement) || currentEnlargement <= 0 ||
+        !std::isfinite(targetScale) || targetScale <= 0) return 1;
+    const double baseScale = currentScale / currentEnlargement;
+    return (std::clamp)(targetScale / baseScale, 0.01, 100.0);
+}
+
 inline Layout build(std::span<const Size> sizes, int viewportWidth, int viewportHeight,
     bool horizontal, bool doublePage, int shift, bool upscale, bool actual,
     int enlargedGroup = -1, double enlargement = 1, double gap = 16,

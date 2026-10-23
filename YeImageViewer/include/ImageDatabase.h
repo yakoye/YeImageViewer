@@ -605,6 +605,8 @@ public:
 
 public:
     // 文件被删除或重命名后，系统缩略图也可能过期，跟缓存一起丢掉
+    ImageAsset decodeForExport(const wstring& path);
+
     void erasePreview(const wstring& key) {
         std::lock_guard<std::mutex> lock(previewMutex);
         previewReady.erase(key);

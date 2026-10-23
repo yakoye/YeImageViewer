@@ -54,7 +54,7 @@ inline constexpr int GENERAL_DISPLAY_CARD_Y =
 
 // 单选组的几何。定义在卡片之前，好让卡片高度和编辑器起点从行数推导出来——
 // 写死数字的话，每次增减单选组都得手算一遍，漏改就会和下面的编辑器卡片重叠。
-inline constexpr int GENERAL_RADIO_COUNT = 27;
+inline constexpr int GENERAL_RADIO_COUNT = 30;
 inline constexpr int GENERAL_RADIO_FIRST_Y = GENERAL_DISPLAY_CARD_Y + 38;
 inline constexpr int GENERAL_RADIO_PITCH = 48;
 inline constexpr int GENERAL_RADIO_HEIGHT = 38;
@@ -162,8 +162,13 @@ constexpr Rect associationButtonRect(int index, int buttonsY) {
 
 // 复制/移动快捷键各自的默认目标。点击路径可直接输入，… 浏览选择，行尾 × 清空；目标目录
 // 后来被删掉也没关系，真正执行复制/移动时会重新创建。
-inline constexpr Rect SHORTCUT_TARGET_HEADER{ 36, 1664, 548, 32 };
-inline constexpr int SHORTCUT_TARGET_ROW_Y = 1700;
+inline constexpr int SHORTCUT_KEYBOARD_ROW_Y = 288;
+inline constexpr int SHORTCUT_KEYBOARD_ROW_HEIGHT = 40;
+// 保持布局头独立；单元测试与真实界面审计分别反核动作数量。
+inline constexpr int SHORTCUT_KEYBOARD_ROW_COUNT = 35;
+inline constexpr Rect SHORTCUT_TARGET_HEADER{ 36,
+    SHORTCUT_KEYBOARD_ROW_Y + SHORTCUT_KEYBOARD_ROW_COUNT * SHORTCUT_KEYBOARD_ROW_HEIGHT + 16, 548, 32 };
+inline constexpr int SHORTCUT_TARGET_ROW_Y = SHORTCUT_TARGET_HEADER.y + 36;
 inline constexpr int SHORTCUT_TARGET_ROW_HEIGHT = 46;
 
 constexpr Rect shortcutTargetRow(int index) {
@@ -194,11 +199,8 @@ inline constexpr int SHORTCUT_WHEEL_ROW_HEIGHT = 42;
 inline constexpr Rect SHORTCUT_RESET_BUTTON{ 404, 204, 180, 36 };
 inline constexpr Rect SHORTCUT_FIXED_MENU_HINT{ 36, 204, 360, 36 };
 inline constexpr Rect SHORTCUT_KEYBOARD_HEADER{ 36, 252, 548, 32 };
-inline constexpr int SHORTCUT_KEYBOARD_ROW_Y = 288;
-inline constexpr int SHORTCUT_KEYBOARD_ROW_HEIGHT = 40;
 // 必须与 ShortcutConfig::Action::Count 一致；这里不引用那个头以保持布局可独立测试，
 // 由单元测试断言两者相等。新增动作时只改这一个数，卡片和内容高度会跟着算出来。
-inline constexpr int SHORTCUT_KEYBOARD_ROW_COUNT = 34;
 inline constexpr int SHORTCUT_KEYBOARD_BOTTOM =
     SHORTCUT_KEYBOARD_ROW_Y + SHORTCUT_KEYBOARD_ROW_COUNT * SHORTCUT_KEYBOARD_ROW_HEIGHT;
 inline constexpr int SHORTCUT_TARGET_BOTTOM =
@@ -409,7 +411,9 @@ constexpr bool shortcutItemsAreSeparated() {
         }
     }
     // 卡片要装得下最后一行，内容高度要滚得到卡片底部
-    return SHORTCUT_CARD.y + SHORTCUT_CARD.height >= SHORTCUT_KEYBOARD_BOTTOM &&
+    return SHORTCUT_TARGET_HEADER.y >= SHORTCUT_KEYBOARD_BOTTOM + 16 &&
+        SHORTCUT_TARGET_ROW_Y >= SHORTCUT_TARGET_HEADER.y + SHORTCUT_TARGET_HEADER.height &&
+        SHORTCUT_CARD.y + SHORTCUT_CARD.height >= SHORTCUT_KEYBOARD_BOTTOM &&
         isInsidePage(SHORTCUT_CARD, SHORTCUT_CONTENT_HEIGHT);
 }
 

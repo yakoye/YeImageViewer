@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 
 namespace OverlayLayout {
@@ -8,7 +9,11 @@ namespace OverlayLayout {
 // 在垂直翻转与上一张之间局部插入手掌＋倍率，其后的分隔线与功能组统一右移。
 // 左側设置、旋转、翻转的相对位置不变，不重排功能组、不增加第二排。
 inline constexpr int PAN_INSERT_WIDTH = 68;
-inline constexpr int BASE_TOOLBAR_WIDTH = 615 + PAN_INSERT_WIDTH;
+inline constexpr int PICKER_INSERT_WIDTH = 35;
+// 收回导航组前的21像素留白，保持主操作组接近中间。
+inline constexpr int NAV_INSERT_WIDTH = PICKER_INSERT_WIDTH - 21;
+inline constexpr int BASE_TOOLBAR_WIDTH = 629 + PAN_INSERT_WIDTH;
+inline constexpr std::array<int,3> TOOLBAR_SEPARATORS{42,199+PAN_INSERT_WIDTH+PICKER_INSERT_WIDTH,342+PAN_INSERT_WIDTH+NAV_INSERT_WIDTH};
 inline constexpr int BASE_TOOLBAR_HEIGHT = 50;
 inline constexpr int BASE_TOOLBAR_BOTTOM_MARGIN = 20;
 inline constexpr int BASE_TOOLBAR_REVEAL_SIDE_PADDING = 48;
@@ -23,7 +28,7 @@ inline constexpr int TOOLBAR_TEXT_SIZE = 16;
 inline constexpr int TOOLBAR_TEXT_BOLD_OFFSET = 0;
 inline constexpr int ICON_STROKE_EXPANSION = 0;
 inline constexpr int PRESENTATION_CLOSE_SIZE = 42;
-inline constexpr int PRESENTATION_CLOSE_MARGIN = 12;
+inline constexpr int PRESENTATION_CLOSE_MARGIN = 0;
 inline constexpr int ZOOM_INDICATOR_WIDTH = 72;
 inline constexpr int ZOOM_INDICATOR_HEIGHT = 38;
 inline constexpr int ZOOM_INDICATOR_MARGIN = 24;
@@ -76,6 +81,7 @@ enum class Hit {
     ZoomText,
     ZoomIn,
     PanMultiplier,
+    ScreenPicker,
     Toolbar,
     PresentationClose,
 };
@@ -108,11 +114,10 @@ constexpr int toolbarIconSize(int canvasWidth, const Rect& target,
         scaled(BASE_ICON_SIZE, scale) }));
 }
 
-constexpr Rect presentationCloseRect(int canvasWidth, int, int dpi = BASE_DPI) {
+constexpr Rect presentationCloseRect(int canvasWidth, int canvasHeight, int dpi = BASE_DPI) {
     const int scale = dpiScale(dpi);
-    const int size = scaled(PRESENTATION_CLOSE_SIZE, scale);
-    const int margin = scaled(PRESENTATION_CLOSE_MARGIN, scale);
-    return { canvasWidth - margin - size, margin, size, size };
+    const int size = std::max(0, std::min({scaled(PRESENTATION_CLOSE_SIZE, scale), canvasWidth, canvasHeight}));
+    return { canvasWidth - size, 0, size, size };
 }
 
 constexpr Rect zoomIndicatorRect(int, int canvasHeight, int dpi = BASE_DPI) {
@@ -163,31 +168,32 @@ constexpr Rect rotateRightRect(int width, int height, int dpi = BASE_DPI) { retu
 constexpr Rect flipHorizontalRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 120, BASE_BUTTON_SIZE, dpi); }
 constexpr Rect flipVerticalRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 155, BASE_BUTTON_SIZE, dpi); }
 constexpr Rect panMultiplierRect(int width, int height, int dpi = BASE_DPI) {
-    auto rect = baseToolbarButtonRect(width, height, 193, BASE_BUTTON_SIZE, dpi);
+    auto rect = baseToolbarButtonRect(width, height, 193 + PICKER_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi);
     rect.width = scaled(66, toolbarScale(width, dpi));
     return rect;
 }
-constexpr Rect toolbarPreviousRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 230 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect toolbarPlayPauseRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 265 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect toolbarNextRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 300 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect zoomFitRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 350 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect toolbarPreviousRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 230 + PAN_INSERT_WIDTH + NAV_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect toolbarPlayPauseRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 265 + PAN_INSERT_WIDTH + NAV_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect toolbarNextRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 300 + PAN_INSERT_WIDTH + NAV_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect zoomFitRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 350 + PAN_INSERT_WIDTH + NAV_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
 // 「适应图片」紧挨在「适应窗口」右边：一个是图片去迁就窗口，一个是窗口去迁就图片。
-constexpr Rect fitImageRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 385 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect zoomActualRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 420 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect fullscreenRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 455 + PAN_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
-constexpr Rect zoomOutRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 502 + PAN_INSERT_WIDTH, BASE_SMALL_BUTTON_SIZE, dpi); }
+constexpr Rect fitImageRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 385 + PAN_INSERT_WIDTH + NAV_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect zoomActualRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 420 + PAN_INSERT_WIDTH + NAV_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect fullscreenRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 455 + PAN_INSERT_WIDTH + NAV_INSERT_WIDTH, BASE_BUTTON_SIZE, dpi); }
+constexpr Rect zoomOutRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 502 + PAN_INSERT_WIDTH + NAV_INSERT_WIDTH, BASE_SMALL_BUTTON_SIZE, dpi); }
 constexpr Rect zoomTextRect(int width, int height, int dpi = BASE_DPI) {
     const int scale = toolbarScale(width, dpi);
     const auto toolbar = toolbarRect(width, height, dpi);
     const int rectHeight = scaled(BASE_SMALL_BUTTON_SIZE, scale);
     return {
-        toolbar.x + scaled(BASE_TOOLBAR_PADDING + 526 + PAN_INSERT_WIDTH, scale),
+        toolbar.x + scaled(BASE_TOOLBAR_PADDING + 526 + PAN_INSERT_WIDTH + NAV_INSERT_WIDTH, scale),
         toolbar.y + (toolbar.height - rectHeight) / 2,
         scaled(50, scale),
         rectHeight,
     };
 }
-constexpr Rect zoomInRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 580 + PAN_INSERT_WIDTH, BASE_SMALL_BUTTON_SIZE, dpi); }
+constexpr Rect zoomInRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 580 + PAN_INSERT_WIDTH + NAV_INSERT_WIDTH, BASE_SMALL_BUTTON_SIZE, dpi); }
+constexpr Rect screenPickerRect(int width, int height, int dpi = BASE_DPI) { return baseToolbarButtonRect(width, height, 190, BASE_BUTTON_SIZE, dpi); }
 
 // 左右两侧的翻页按钮。默认关闭，由设置里的开关决定是否参与命中与绘制。
 constexpr Rect edgePreviousRect(int, int canvasHeight, int dpi = BASE_DPI) {
@@ -265,14 +271,15 @@ constexpr Hit hitTest(int canvasWidth, int canvasHeight, int x, int y, int dpi =
     if (zoomOutRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomOut;
     if (zoomTextRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomText;
     if (zoomInRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ZoomIn;
+    if (screenPickerRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::ScreenPicker;
     if (toolbarRevealRect(canvasWidth, canvasHeight, dpi).contains(x, y)) return Hit::Toolbar;
     return Hit::None;
 }
 
 static_assert(toolbarRect(800, 600).width == BASE_TOOLBAR_WIDTH);
 static_assert(toolbarRect(800, 600).x == (800 - BASE_TOOLBAR_WIDTH) / 2);
-static_assert(toolbarRevealRect(800, 600).width == BASE_TOOLBAR_WIDTH +
-    BASE_TOOLBAR_REVEAL_SIDE_PADDING * 2);
+static_assert(toolbarRevealRect(800, 600).width == std::min(800, BASE_TOOLBAR_WIDTH +
+    BASE_TOOLBAR_REVEAL_SIDE_PADDING * 2));
 static_assert(toolbarRevealRect(800, 600).y == toolbarRect(800, 600).y -
     BASE_TOOLBAR_REVEAL_TOP_PADDING);
 static_assert(toolbarRevealRect(800, 600).y + toolbarRevealRect(800, 600).height == 600);

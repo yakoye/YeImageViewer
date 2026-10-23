@@ -144,6 +144,11 @@ std::string_view UIStringTable[STRING_MAX_NUM][3] = {
     {"9", "9", "9"},
     {"拖拽惯性滑动", "Drag inertia", "拖曳慣性滑動"}, // 130
     {"惯性滑动灵敏度", "Inertia sensitivity", "慣性滑動靈敏度"},
+    {"右键拖动缩放", "Right-drag zoom", "右鍵拖曳縮放"},
+    {"上拖放大", "Up enlarges", "上拖放大"},
+    {"下拖放大", "Down enlarges", "下拖放大"},
+    {"右拖缩放灵敏度", "Right-drag sensitivity", "右拖縮放靈敏度"},
+    {"变换后提示保存", "Show save actions", "變換後提示儲存"},
 };
 
 
@@ -190,7 +195,7 @@ std::wstring_view UIStringTableW[STRING_MAX_NUM][3] = {
     {L"设置", L"Settings", L"設定"},
     {L"打印", L"Print", L"列印"},  // 40
     {L"文件关联已完成，但缩略图扩展注册失败。部分格式可能无法在资源管理器中显示 YeImageViewer 缩略图。", L"Association completed, but thumbnail extension registration failed. Some formats may not show YeImageViewer thumbnails in File Explorer.", L"檔案關聯已完成，但縮圖擴充註冊失敗。部分格式可能無法在檔案總管中顯示 YeImageViewer 縮圖。"},
-    {L"背景颜色", L"Background", L"背景顏色"},
+    {L"图片背景色", L"Image background", L"圖片背景色"},
     {L"透明", L"Transparent", L"透明"},
     {L"白色", L"White", L"白色"},
     {L"黑色", L"Black", L"黑色"},

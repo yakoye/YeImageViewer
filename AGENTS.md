@@ -63,6 +63,12 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
 
 ## 修改注意事项
 
+- 每批完成并验证的开发都必须交付候选绿色包，并按项目/候选版本目录复制到
+  `C:\Users\color\Downloads\yakoye-release` 和
+  `\\192.168.7.100\Downloads\yakoye-release`，逐文件核对大小与 SHA-256。
+  未经本轮明确授权不要公开发布；候选包不能覆盖正式版或既有候选包。
+  NAS 不可用时仍交付本地包并明确说明。不能只交付源码和报告让用户无法试用。
+
 - `SettingParameter` 按固定 4096 字节持久化在 `YeImageViewer.db` 开头；不要随意调整成员顺序、大小或删除保留字段，否则会破坏旧设置兼容性。
 - 那 4096 字节之后是 UTF-8 文本区（`ConfigFile.h`），外部编辑器、复制/移动目标、图片旋转记录都写在那里，落地文件只有本体、缩略图 DLL 和这一个配置。写设置必须用 `r+b` 就地改写，用 `wb` 会截断文件、把文本区连同三样配置一起抹掉。三块数据各认自己的键前缀，保存时要把别人的行原样带回去（`ConfigFile::foreignLines`）。
 - 新增图片格式时，同时检查 `ImageDatabase::supportExt` / `supportRaw`、加载分派逻辑、EXIF/方向处理、设置页文件关联列表和 README 格式列表。
@@ -96,7 +102,9 @@ YeImageViewer 是基于 JarkViewer 开发的 Windows 10/11 x64 原生图片查�
   6. 没人靠「尺寸 + 左上角像素颜色」去认内置的「打不开」提示图。那是在猜，会误伤真图。
   静态检查最危险的失效方式是什么都抓不到（正则写歪一个字符就照样 PASS），所以配了
   `scripts/verify-source-invariant-checks.ps1`：逐条制造该抓的错误，确认真会报错，
-  跑完按原字节还原（不用 `git checkout --`，那会连未提交的改动一起抹掉）。
+  仅在临时源码快照制造破坏并按原字节还原；开发目录始终只读（不用 `git checkout --`，
+  那会连未提交的改动一起抹掉）。`test-invariant-isolation.ps1` 锁住私有输入夹具并核对全部哈希，
+  验证破坏测试不依赖写入原目录；`runTests.ps1` 通过它运行全部破坏检查。
   新增一条检查就在它里面加一条对应的破坏，发布闸门里有这一环。
 - 打印的逐像素处理（亮度/对比度、黑白抖动、反相）在 `PrintAdjustments.h`，不依赖 OpenCV，
   有配套单元测试；`Printer.h` 只负责把 Mat 的数据指针和步长交过去。这类错只有纸出来才

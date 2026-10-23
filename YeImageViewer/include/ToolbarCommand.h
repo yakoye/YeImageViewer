@@ -21,6 +21,7 @@ enum class Command {
     ZoomOut,
     EditZoom,
     ZoomIn,
+    ScreenPicker,
 };
 
 constexpr Command resolve(OverlayLayout::Hit hit) {
@@ -40,6 +41,7 @@ constexpr Command resolve(OverlayLayout::Hit hit) {
     case OverlayLayout::Hit::ZoomOut: return Command::ZoomOut;
     case OverlayLayout::Hit::ZoomText: return Command::EditZoom;
     case OverlayLayout::Hit::ZoomIn: return Command::ZoomIn;
+    case OverlayLayout::Hit::ScreenPicker: return Command::ScreenPicker;
     default: return Command::None;
     }
 }

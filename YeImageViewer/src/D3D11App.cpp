@@ -3,8 +3,48 @@
 #include "BackgroundPolicy.h"
 #include "MonitorPlacement.h"
 #include "FramePacingPolicy.h"
+#include "SvgRenderer.h"
+#include "../resource.h"
+#include <map>
+#include <wtsapi32.h>
+#pragma comment(lib,"wtsapi32.lib")
 
 namespace {
+
+bool isRemoteGraphicsSession(){
+    LPWSTR data=nullptr;DWORD bytes=0;BOOL remote=FALSE;
+    const bool queried=WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE,WTS_CURRENT_SESSION,WTSIsRemoteSession,&data,&bytes)&&bytes>=sizeof(remote);
+    if(queried)memcpy(&remote,data,sizeof(remote));if(data)WTSFreeMemory(data);
+    return queried?remote!=FALSE:GetSystemMetrics(SM_REMOTESESSION)!=0;
+}
+
+// 菜单不拥有hbmpItem。按有界像素尺寸/主题缓存，直到进程退出统一释放。
+HBITMAP colorMenuIcon(int resource,UINT dpi,bool dark){
+    struct Cache {std::map<int,HBITMAP> values;~Cache(){for(const auto& [key,bitmap]:values)DeleteObject(bitmap);}};
+    static Cache cache;const int side=std::clamp(MulDiv(16,dpi,96),12,64),key=(resource<<16)|(side<<1)|int(dark);
+    if(const auto found=cache.values.find(key);found!=cache.values.end())return found->second;
+    const auto bytes=jarkUtils::GetResource(resource,L"SVG");const auto svg=SvgRenderer::create({static_cast<const uint8_t*>(bytes.ptr),bytes.size});if(!svg)return nullptr;
+    const auto image=svg->renderToBitmap(side,side);if(image.empty())return nullptr;
+    BITMAPINFO info{};info.bmiHeader={sizeof(BITMAPINFOHEADER),side,-side,1,32,BI_RGB};void* pixels=nullptr;
+    const auto bitmap=CreateDIBSection(nullptr,&info,DIB_RGB_COLORS,&pixels,nullptr,0);if(!bitmap||!pixels){if(bitmap)DeleteObject(bitmap);return nullptr;}
+    const uint8_t ink=dark?235:35;auto* output=static_cast<uint8_t*>(pixels);
+    for(size_t p=0;p<size_t(side)*side;++p){const auto alpha=image.bgra[p*4+3];output[p*4]=output[p*4+1]=output[p*4+2]=uint8_t((int(ink)*alpha+127)/255);output[p*4+3]=alpha;}
+    cache.values.emplace(key,bitmap);return bitmap;
+}
+
+// Win10 兼容路径：动态探测非文档化导出，失败时由调用方明确提示实色回退。
+// 禁用时也走同一路径，防止换成透明后仍残留模糊。不静态链接这个兼容接口。
+bool setLegacyBlur(HWND window, bool enabled) {
+    struct AccentPolicy { int state; int flags; DWORD color; int animation; };
+    struct CompositionData { int attribute; void* data; SIZE_T size; };
+    using SetAttribute = BOOL(WINAPI*)(HWND, CompositionData*);
+    static const auto setAttribute = reinterpret_cast<SetAttribute>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetWindowCompositionAttribute"));
+    if (!setAttribute) return false;
+    AccentPolicy policy{ enabled ? 3 : 0, 0, 0, 0 }; // ACCENT_ENABLE_BLURBEHIND / DISABLED
+    CompositionData data{ 19, &policy, sizeof(policy) }; // WCA_ACCENT_POLICY
+    return setAttribute(window, &data) != FALSE;
+}
 
 enum class PreferredAppMode {
     Default = 0,
@@ -336,8 +376,8 @@ void D3D11App::ApplyWindowBackgroundMode() {
         return;
     }
 
-    // 沉浸模式的压暗层由画布自己绘制，不需要 DWM 背景特效；只有用户把背景设为毛玻璃
-    // 时才启用亚克力，让画布留空的地方透出 DWM 的模糊层。
+    setLegacyBlur(m_hWnd, false);
+    // 普通与沉浸统一：只有毛玻璃启用模糊，完全透明必须去掉所有系统背景材质。
     const auto mode = BackgroundRenderer::normalizeMode(
         GlobalVar::settingParameter.backgroundMode);
     const bool requestFrostedGlass = BackgroundPolicy::requestsFrostedGlass(
@@ -348,12 +388,19 @@ void D3D11App::ApplyWindowBackgroundMode() {
 
     const HRESULT alphaResult = DwmSetWindowAttribute(
         m_hWnd, DWMWA_REDIRECTIONBITMAP_ALPHA, &useAlpha, sizeof(useAlpha));
-    const HRESULT backdropResult = DwmSetWindowAttribute(
-        m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
-    m_isFrostedGlassActive = requestFrostedGlass &&
-        SUCCEEDED(alphaResult) && SUCCEEDED(backdropResult);
+    wchar_t forceLegacy[2]{};
+    const bool legacyProbe = GetEnvironmentVariableW(L"YEIMAGEVIEWER_TEST_LEGACY_BLUR",
+        forceLegacy, ARRAYSIZE(forceLegacy)) && forceLegacy[0] == L'1';
+    m_backgroundRemoteSession=isRemoteGraphicsSession();m_compatibilityBlurActive=false;
+    // 远程会话里系统材质可能成功返回却只是实色；优先使用可实时模糊底图的兼容路径。
+    const bool compatibility=BackgroundPolicy::preferCompatibilityBlur(m_backgroundRemoteSession,legacyProbe);
+    const HRESULT backdropResult = compatibility && requestFrostedGlass ? E_NOTIMPL :
+        DwmSetWindowAttribute(m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
+    m_isFrostedGlassActive = m_compositionAlphaActive && requestFrostedGlass &&
+        SUCCEEDED(backdropResult);
+    (void)alphaResult; // 新版属性不是已有 DirectComposition alpha 表面的必要条件。
 
-    // 亚克力申请失败就彻底关掉背景特效，让画布回落到不透明底色，而不是留下一片空洞。
+    // 系统材质不可用时移除残留，再探测 Win10 blur-behind；两者都失败才回退实色。
     if (requestFrostedGlass && !m_isFrostedGlassActive) {
         const BOOL disableAlpha = FALSE;
         const DWM_SYSTEMBACKDROP_TYPE noBackdrop = DWMSBT_NONE;
@@ -361,6 +408,8 @@ void D3D11App::ApplyWindowBackgroundMode() {
             &disableAlpha, sizeof(disableAlpha));
         DwmSetWindowAttribute(m_hWnd, DWMWA_SYSTEMBACKDROP_TYPE,
             &noBackdrop, sizeof(noBackdrop));
+        m_isFrostedGlassActive = m_compositionAlphaActive && setLegacyBlur(m_hWnd, true);
+        m_compatibilityBlurActive=m_isFrostedGlassActive;
     }
     DwmFlush();
 }
@@ -630,6 +679,7 @@ LRESULT D3D11App::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         LPCREATESTRUCT pcs = (LPCREATESTRUCT)lParam;
         D3D11App* pApp = (D3D11App*)pcs->lpCreateParams;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)pApp);
+        WTSRegisterSessionNotification(hwnd,NOTIFY_FOR_THIS_SESSION);
         return TRUE;
     }
     case WM_GETMINMAXINFO: {
@@ -732,19 +782,27 @@ LRESULT D3D11App::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_COMMAND:
         pApp->OnContextMenuCommand(wParam);
         break;
+    case WM_APP + 67:
+        // 快取会话的完成消息仅传值，不传跨线程裸指针。
+        pApp->OnScreenPickerResult(wParam, lParam);
+        return S_OK;
 
     case WM_SIZE:
         pApp->OnResize(LOWORD(lParam), HIWORD(lParam));
         break;
 
+    case WM_WTSSESSION_CHANGE:
+        pApp->ApplyWindowBackgroundMode();GlobalVar::isNeedUpdateTheme=true;break;
     case WM_SETTINGCHANGE:
         GlobalVar::isSystemDarkMode = jarkUtils::getSystemDarkMode();
         GlobalVar::isCurrentUIDarkMode = GlobalVar::settingParameter.UI_Mode == 0 ? GlobalVar::isSystemDarkMode : (GlobalVar::settingParameter.UI_Mode == 2);
+        GlobalVar::currentTheme = GlobalVar::isCurrentUIDarkMode ? deepTheme : lightTheme;
         GlobalVar::isNeedUpdateTheme = true;
         break;
 
     case WM_DESTROY:
     {
+        WTSUnRegisterSessionNotification(hwnd);
         pApp->OnRequestExitOtherWindows();
         pApp->OnDestroy();
         PostQuitMessage(0);
@@ -765,6 +823,18 @@ HMENU D3D11App::CreateContextMenu(HWND hwnd) {
     SetMenuInfo(hMenu, &mi);
 
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::openNewImage, getUIStringW(35));
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::screenColorPicker,
+        trW(L"取色…", L"Pick color…", L"取色…"));
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::colorEditor,
+        trW(L"颜色面板…", L"Color panel…", L"色彩面板…"));
+    for(const auto& [command,resource]:std::array<std::pair<ContextMenu,int>,2>{{{ContextMenu::screenColorPicker,IDR_SVG_PICKER_ICON},{ContextMenu::colorEditor,IDR_SVG_PALETTE_ICON}}}){
+        MENUITEMINFOW item{sizeof(item)};item.fMask=MIIM_BITMAP;item.hbmpItem=colorMenuIcon(resource,GetDpiForWindow(hwnd),GlobalVar::isCurrentUIDarkMode);SetMenuItemInfoW(hMenu,UINT(command),FALSE,&item);
+    }
+    AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::saveImageCopy,
+        trW(L"保存旋转/镜像后的副本…", L"Save rotated/mirrored copy…", L"儲存旋轉/鏡像後的副本…"));
+    const auto* app=reinterpret_cast<D3D11App*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
+    if(app && app->CanBrowseLayers()) AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::psdLayers,
+        trW(L"图层与通道", L"Layers and channels", L"圖層與通道"));
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
     AppendMenuW(hMenu, MF_STRING, (UINT_PTR)ContextMenu::copyImageInfo, getUIStringW(25));
@@ -852,13 +922,23 @@ HMENU D3D11App::CreateContextMenu(HWND hwnd) {
     AppendMenuW(backgroundMenu, MF_STRING, (UINT_PTR)ContextMenu::backgroundWhite, getUIStringW(44));
     AppendMenuW(backgroundMenu, MF_STRING, (UINT_PTR)ContextMenu::backgroundBlack, getUIStringW(45));
     AppendMenuW(backgroundMenu, MF_STRING, (UINT_PTR)ContextMenu::backgroundFrostedGlass, getUIStringW(46));
-    const UINT selectedBackground = (UINT)ContextMenu::backgroundTransparent +
-        (UINT)BackgroundRenderer::normalizeMode(GlobalVar::settingParameter.backgroundMode);
-    CheckMenuRadioItem(backgroundMenu,
-        (UINT)ContextMenu::backgroundTransparent,
-        (UINT)ContextMenu::backgroundFrostedGlass,
-        selectedBackground,
-        MF_BYCOMMAND);
+    const auto mode = BackgroundRenderer::normalizeMode(GlobalVar::settingParameter.backgroundMode);
+    HMENU checkerMenu = CreatePopupMenu();
+    const wchar_t* toneNames[] = {
+        trW(L"跟随配色方案", L"Follow color scheme", L"跟隨配色方案"),
+        trW(L"浅色", L"Light", L"淺色"), trW(L"深色", L"Dark", L"深色") };
+    for (UINT i = 0; i < 3; ++i)
+        AppendMenuW(checkerMenu, MF_STRING, (UINT)ContextMenu::backgroundCheckerAutomatic + i, toneNames[i]);
+    if (mode == BackgroundMode::Checkerboard)
+        CheckMenuRadioItem(checkerMenu, (UINT)ContextMenu::backgroundCheckerAutomatic,
+            (UINT)ContextMenu::backgroundCheckerDark, (UINT)ContextMenu::backgroundCheckerAutomatic +
+            (UINT)BackgroundOptions::tone(GlobalVar::settingParameter.reserve), MF_BYCOMMAND);
+    AppendMenuW(backgroundMenu, MF_POPUP | (mode == BackgroundMode::Checkerboard ? MF_CHECKED : 0),
+        (UINT_PTR)checkerMenu, trW(L"棋盘格", L"Checkerboard", L"棋盤格"));
+    if (mode != BackgroundMode::Checkerboard)
+        CheckMenuRadioItem(backgroundMenu, (UINT)ContextMenu::backgroundTransparent,
+            (UINT)ContextMenu::backgroundFrostedGlass,
+            (UINT)ContextMenu::backgroundTransparent + (UINT)mode, MF_BYCOMMAND);
     AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)backgroundMenu, getUIStringW(42));
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 

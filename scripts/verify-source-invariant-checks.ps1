@@ -5,12 +5,12 @@
 .DESCRIPTION
 静态检查最危险的失效方式不是误报，而是**什么都抓不到**——正则写歪一个字符、
 源码换了写法让匹配落空，检查照样打印 PASS，于是看起来有护栏，其实没有。
-所以每加一条检查，这里就加一条配套的「破坏」：临时改坏一处源码，确认检查
-以预期的那句话失败，然后立刻把文件按原字节还原。
+所以每加一条检查，这里就加一条配套的「破坏」：先复制检查器的完整文本输入，
+只在临时快照里改坏源码，确认检查以预期的那句话失败，然后按原字节还原快照。
 
 还原用的是改之前的字节，不是 git checkout：工作区里常有还没提交的改动，
 `git checkout --` 会连那些一起抹掉（已经踩过一次）。
-中途被 Ctrl+C 打断也会还原——finally 兜着。
+中途被 Ctrl+C 打断也不会污染开发目录；保留快照便于排查。
 
     ./scripts/verify-source-invariant-checks.ps1
 #>
@@ -20,6 +20,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+. (Join-Path $PSScriptRoot 'New-SourceInvariantSnapshot.ps1')
+$RepoRoot = New-SourceInvariantSnapshot -RepoRoot $RepoRoot
+Write-Host "源码破坏测试仅写入临时快照：$RepoRoot"
 
 $checker = Join-Path $PSScriptRoot "check-source-invariants.ps1"
 if (-not (Test-Path -LiteralPath $checker -PathType Leaf)) {
@@ -130,37 +134,44 @@ $cases = @(
     @{
         Name = "发版只改了 .rc，关于页的版本号还停在上一版"
         File = "YeImageViewer\src\main.cpp"
-        Old = 'appVersion = L"v1.38.2"'
+        Old = 'appVersion = L"v1.39.0"'
         New = 'appVersion = L"v1.37.5"'
         Expect = "the About page shows v1.37.5 while the version resource says"
     },
     @{
+        Name = '恢复边框又额外放大了图片'
+        File = 'YeImageViewer\src\main.cpp'
+        Old = 'PresentationLayout::PreserveDisplayedScale scaleTransition(curPar,restoringFrameWithoutZoom);'
+        New = '/* removed scale preservation */'
+        Expect = '恢复边框必须保留当前显示倍率'
+    },
+    @{
         Name = "FileVersion 和 ProductVersion 对不上"
         File = "YeImageViewer\YeImageViewer.rc"
-        Old = 'VALUE "FileVersion", "1.38.2.0"'
-        New = 'VALUE "FileVersion", "1.39.0.0"'
+        Old = 'VALUE "FileVersion", "1.39.0.0"'
+        New = 'VALUE "FileVersion", "1.40.0.0"'
         Expect = "disagree in YeImageViewer.rc"
     },
     @{
         Name = "README 的版本号没跟着发版一起改"
         File = "README.md"
-        Old = "当前版本：**v1.38.2**"
+        Old = "当前版本：**v1.39.0**"
         New = "当前版本：**v1.37.2-rc1**"
         Expect = "README.md says v1.37.2-rc1 while the program is"
     },
     @{
         Name = "测试文档里那份版本号没跟着发版一起改"
         File = "test\README.md"
-        Old = 'EXE 版本为 `1.38.2.0`（ProductVersion `1.38.2`）'
+        Old = 'EXE 版本为 `1.39.0.0`（ProductVersion `1.39.0`）'
         New = 'EXE 版本为 `1.37.5.0`（ProductVersion `1.37.5`）'
         Expect = "test/README.md says 1.37.5.0 / 1.37.5 while the program is"
     },
     @{
         Name = "候选版本后缀与关于页不一致"
         File = "YeImageViewer\YeImageViewer.rc"
-        Old = 'VALUE "ProductVersion", "1.38.2"'
-        New = 'VALUE "ProductVersion", "1.38.2-rc2"'
-        Expect = "the About page shows v1.38.2 while the version resource says 1.38.2-rc2"
+        Old = 'VALUE "ProductVersion", "1.39.0"'
+        New = 'VALUE "ProductVersion", "1.39.0-rc1"'
+        Expect = "the About page shows v1.39.0 while the version resource says 1.39.0-rc1"
     }
 )
 
@@ -215,5 +226,5 @@ if ($problems.Count -gt 0) {
     throw ("The source invariant checks are not trustworthy:`n - " + ($problems -join "`n - "))
 }
 
-Write-Host ("PASS all $($cases.Count) deliberate breakages were caught, and the tree is back to " +
-    "where it started.")
+Write-Host ("PASS all $($cases.Count) deliberate breakages were caught, and the snapshot is back to " +
+    "where it started. The input source directory was not modified.")
