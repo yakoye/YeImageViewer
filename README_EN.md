@@ -15,7 +15,7 @@
 
 Current version: **v1.39.0** · [Changelog](CHANGELOG.md)
 
-本版基于 **v1.38.3-rc18**，保留当前颜色工具、图层与通道、浏览及轻加工功能；发布验收状态与功能边界见[中文发布说明](docs/v1.39.0-发布说明.md)。
+本版基于 **v1.38.3-rc18**，保留当前颜色工具、图层与通道、浏览及轻加工功能；功能边界见[中文发布说明](docs/v1.39.0-发布说明.md)。
 
 This project is based on [JarkViewer](https://github.com/jark006/JarkViewer) and is licensed under GNU GPL v3. Thanks to upstream author JARK006 and all contributors.
 

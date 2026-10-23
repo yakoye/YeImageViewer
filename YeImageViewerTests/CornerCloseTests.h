@@ -169,6 +169,9 @@ inline int runCornerCloseProbe(const std::filesystem::path &viewer, const std::f
                         ",shape=" + std::to_string(before.contains("shape") ? before.at("shape") : -1) +
                         "->" + std::to_string(after.contains("shape") ? after.at("shape") : -1) +
                         ",stale-hover=" + std::to_string(staleHover);
+                for(const auto key:{"viewSettled","left","top","right","bottom"})
+                    stage+=" "+std::string(key)+"="+std::to_string(before.contains(key)?before.at(key):-9999)+"->"+
+                        std::to_string(after.contains(key)?after.at(key):-9999);
                 // 同一张图：首次A -> 普通A -> 双击沉浸A，连续往返，不能只测退出方向。
                 const auto waitShape=[&](int shape){
                     for(int attempt=0;attempt<250;++attempt){const auto state=readWindowProbe(probe);
@@ -182,9 +185,17 @@ inline int runCornerCloseProbe(const std::filesystem::path &viewer, const std::f
                     for(int trip=0;trip<5&&okay;++trip){
                         GetClientRect(target.hwnd,&client);POINT inside{client.right/2,client.bottom/2};ClientToScreen(target.hwnd,&inside);SetCursorPos(inside.x,inside.y);Sleep(40);
                         SendMessageW(target.hwnd,WM_MOUSEMOVE,0,MAKELPARAM(client.right/2,client.bottom/2));
-                        SendMessageW(target.hwnd,WM_LBUTTONDBLCLK,MK_LBUTTON,MAKELPARAM(client.right/2,client.bottom/2));
+                        // 主窗不注册 CS_DBLCLKS，由两次 DOWN 的时间/距离识别双击。
+                        // 直接伪造 WM_LBUTTONDBLCLK 不会进入生产处理分支。
+                        SendMessageW(target.hwnd,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(client.right/2,client.bottom/2));
+                        SendMessageW(target.hwnd,WM_LBUTTONUP,0,MAKELPARAM(client.right/2,client.bottom/2));
+                        Sleep(60);
+                        SendMessageW(target.hwnd,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(client.right/2,client.bottom/2));
                         SendMessageW(target.hwnd,WM_LBUTTONUP,0,MAKELPARAM(client.right/2,client.bottom/2));
                         const auto immersive=waitShape(1);okay=immersive.contains("shape")&&immersive.at("shape")==1&&immersive.contains("zoomExact")&&std::abs(immersive.at("zoomExact")-expected)<1e-6;
+                        stage+=" enter="+std::to_string(phase)+"/"+std::to_string(trip)+":"+
+                            std::to_string(immersive.contains("shape")?immersive.at("shape"):-1)+","+
+                            std::to_string(immersive.contains("zoomExact")?immersive.at("zoomExact"):-1)+" expected="+std::to_string(expected);
                         if(!okay)break;
                         GetClientRect(target.hwnd,&client);int bx=-1,by=client.bottom/2;
                         if(immersive.contains("left")&&immersive.at("left")>20)bx=10;

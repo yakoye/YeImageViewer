@@ -13,7 +13,7 @@
 
 **YeImageViewer** 是一款简约、快速的原生 Windows 图片查看器，支持常见静态图、动图、RAW、iOS Live Photo 和 Android Motion Photo，并提供 EXIF 查看、打印、简单编辑和文件关联功能。
 
-当前版本：**v1.39.0**（基于 v1.38.3-rc18，发布验收中） · [修改记录](CHANGELOG.md)
+当前版本：**v1.39.0**（基于 v1.38.3-rc18） · [修改记录](CHANGELOG.md)
 
 颜色助手提供独立取色和颜色面板。快速取色以色值为主，Shift 切换 HEX/RGB/HSL/HSV/CMYK/HSI/CIE-LAB 七种格式；左键/Enter 复制退出，Esc/右键取消，C 复制保留，P 切坐标，方向键细移，F2 保存偏好；成功取色后两秒内右键可带色进入面板。当前为**快照模式**，空格/F5 重新抓屏，不是实时屏幕采样。见[操作说明](docs/color-picker/QuickStart.md)及[开发台账](docs/color-picker/Audit.md)。
 

@@ -84,7 +84,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $repoRoot $document) -Destination (Join-Path $stagingRoot $document)
     }
     # 当前阶段的真实能力与使用限制随包提供，不把未完成的颜色助手页面当已交付。
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/color-picker/QuickStart.md') -Destination (Join-Path $stagingRoot '颜色取色-候选使用说明.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/color-picker/QuickStart.md') -Destination (Join-Path $stagingRoot '颜色取色-使用说明.md')
     foreach($launcher in @('屏幕快速取色.cmd','颜色面板.cmd')) {
         Copy-Item -LiteralPath (Join-Path $repoRoot ('tools/'+$launcher)) -Destination (Join-Path $stagingRoot $launcher)
     }
