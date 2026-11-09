@@ -1,6 +1,5 @@
 name: 问题反馈
 description: 报告打不开图片、显示异常、崩溃或其他使用问题。
-labels: [bug]
 body:
   - type: dropdown
     id: version
