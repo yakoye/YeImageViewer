@@ -130,6 +130,13 @@ git clone git@github.com:jark006/JarkViewer.git --depth=50
 - 支持 64 位 Windows 10 和 Windows 11。
 - 不支持 32 位 Windows 和 Windows 7 及更早版本。
 
+## 问题反馈与功能建议
+
+遇到问题或有功能建议，欢迎先[搜索已有 Issue](https://github.com/yakoye/YeImageViewer/issues)，再[选择模板提交](https://github.com/yakoye/YeImageViewer/issues/new/choose)。
+
+- **问题反馈**：请写明软件版本、复现步骤、实际结果和预期结果。只在特定图片上出现的问题，附一份可公开的原始样图更有助于复现。
+- **需求建议**：请说说希望改进什么；如果能补充使用场景，也欢迎一起写上。
+
 ## 许可证
 
 本项目采用 GPL-3.0 许可证开放源代码，详见 [LICENSE](LICENSE)。

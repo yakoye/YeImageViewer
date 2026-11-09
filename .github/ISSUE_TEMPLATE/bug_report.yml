@@ -1,0 +1,36 @@
+name: 问题反馈
+description: 报告打不开图片、显示异常、崩溃或其他使用问题。
+labels: [bug]
+body:
+  - type: dropdown
+    id: version
+    attributes:
+      label: 当前版本号
+      description: 可在「设置 → 关于」查看。若选「旧版或其他版本」，请在下方写出具体版本（包括候选版后缀）。
+      options:
+        - 不确定
+        # BEGIN RELEASE OPTIONS
+        - v1.39.0
+        - v1.38.2
+        - v1.38.1
+        # END RELEASE OPTIONS
+        - 旧版或其他版本
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows 11
+        - Windows 10
+        - 其他或不确定
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 请写出复现步骤、实际结果和预期结果。若只在特定图片上发生，请注明格式和尺寸，并尽量附一份可以公开的原始样图。截图或录屏也欢迎，上传前请检查路径、EXIF 和其他隐私信息。
+      placeholder: 例如：双击打开一张 6000 × 4000 的 TIFF，缩放到 100% 后画面变黑；预期能正常查看。每次都能复现。
+    validations:
+      required: true
